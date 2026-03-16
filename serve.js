@@ -66,42 +66,49 @@ const RPC_DEFINITIONS = Object.freeze({
 
 const database = createDatabase();
 const mailer = createMailer();
-const server = http.createServer((request, response) => {
-  void routeRequest(request, response);
-});
 
-server.listen(PORT, HOST, () => {
-  const networkUrls = Object.values(os.networkInterfaces())
-    .flat()
-    .filter((entry) => entry && entry.family === "IPv4" && !entry.internal)
-    .map((entry) => `http://${entry.address}:${PORT}`);
-
-  const status = database.getStatus();
-  const mailStatus = mailer.getStatus();
-
-  console.log(`Route Ledger available at http://127.0.0.1:${PORT}`);
-  console.log(
-    status.configured
-      ? "Neon database connection is configured."
-      : `Neon database connection is not configured yet: ${status.reason}`,
-  );
-  console.log(
-    mailStatus.configured
-      ? `CSV mail-out is configured via ${mailStatus.provider} for ${mailStatus.from} -> ${mailStatus.to}.`
-      : `CSV mail-out is not configured yet: ${mailStatus.reason}`,
-  );
-  networkUrls.forEach((url) => {
-    console.log(`Route Ledger network URL: ${url}`);
+function startServer() {
+  const server = http.createServer((request, response) => {
+    void routeRequest(request, response);
   });
-});
 
-process.on("SIGINT", () => {
-  void database.close().finally(() => process.exit(0));
-});
+  server.listen(PORT, HOST, () => {
+    const networkUrls = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((entry) => entry && entry.family === "IPv4" && !entry.internal)
+      .map((entry) => `http://${entry.address}:${PORT}`);
 
-process.on("SIGTERM", () => {
-  void database.close().finally(() => process.exit(0));
-});
+    const status = database.getStatus();
+    const mailStatus = mailer.getStatus();
+
+    console.log(`Route Ledger available at http://127.0.0.1:${PORT}`);
+    console.log(
+      status.configured
+        ? "Neon database connection is configured."
+        : `Neon database connection is not configured yet: ${status.reason}`,
+    );
+    console.log(
+      mailStatus.configured
+        ? `CSV mail-out is configured via ${mailStatus.provider} for ${mailStatus.from} -> ${mailStatus.to}.`
+        : `CSV mail-out is not configured yet: ${mailStatus.reason}`,
+    );
+    networkUrls.forEach((url) => {
+      console.log(`Route Ledger network URL: ${url}`);
+    });
+  });
+
+  process.on("SIGINT", () => {
+    void database.close().finally(() => process.exit(0));
+  });
+
+  process.on("SIGTERM", () => {
+    void database.close().finally(() => process.exit(0));
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
 
 async function routeRequest(request, response) {
   const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
@@ -773,3 +780,8 @@ function normalizeErrorMessage(error) {
 
   return error.message || "Something went wrong.";
 }
+
+module.exports = {
+  routeRequest,
+  startServer,
+};
