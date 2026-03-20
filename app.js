@@ -27,6 +27,7 @@ const state = {
   mailConfigured: false,
   mailConfigReason: "",
   mailTo: "admin3@giftwrap.co.za",
+  artworkTo: "artwork3@giftwrap.co.za",
   currentPage: "",
   editingSupplierId: "",
   pagination: {
@@ -48,6 +49,9 @@ const state = {
     suppliers: [],
     locations: [],
     orders: [],
+    stockItems: [],
+    stockMovements: [],
+    artworkRequests: [],
   },
 };
 
@@ -68,6 +72,7 @@ async function boot() {
     state.mailConfigured = Boolean(status.mailConfigured);
     state.mailConfigReason = status.mailReason || "";
     state.mailTo = status.mailTo || state.mailTo;
+    state.artworkTo = status.artworkTo || state.artworkTo;
 
     if (!status.configured) {
       state.booting = false;
@@ -104,6 +109,7 @@ async function fetchServerStatus() {
     mailConfigured: Boolean(payload?.mailConfigured),
     mailReason: payload?.mailReason || "",
     mailTo: payload?.mailTo || "",
+    artworkTo: payload?.artworkTo || "",
   };
 }
 
@@ -203,6 +209,9 @@ function createEmptySnapshot() {
     suppliers: [],
     locations: [],
     orders: [],
+    stockItems: [],
+    stockMovements: [],
+    artworkRequests: [],
   };
 }
 
@@ -222,6 +231,9 @@ function normalizeSnapshot(data) {
     suppliers: Array.isArray(data?.suppliers) ? data.suppliers : [],
     locations: Array.isArray(data?.locations) ? data.locations : [],
     orders: Array.isArray(data?.orders) ? data.orders : [],
+    stockItems: Array.isArray(data?.stockItems) ? data.stockItems : [],
+    stockMovements: Array.isArray(data?.stockMovements) ? data.stockMovements : [],
+    artworkRequests: Array.isArray(data?.artworkRequests) ? data.artworkRequests : [],
   };
 }
 
@@ -277,6 +289,18 @@ async function handleSubmit(event) {
 
   if (formId === "add-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     await createOrder(formData, currentUser);
+  }
+
+  if (formId === "add-stock-item" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await createStockItem(formData);
+  }
+
+  if (formId === "add-stock-movement" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await recordStockMovement(formData);
+  }
+
+  if (formId === "request-artwork" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await requestArtwork(formData);
   }
 }
 
@@ -408,6 +432,11 @@ function handleChange(event) {
     && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]'))
   ) {
     syncMoveToFactoryField(orderForm);
+  }
+
+  const stockMovementForm = target.closest('form[data-form="add-stock-movement"]');
+  if (stockMovementForm instanceof HTMLFormElement && target.matches('[name="movementType"]')) {
+    syncStockMovementFields(stockMovementForm);
   }
 }
 
@@ -669,6 +698,109 @@ async function saveOrderAssignment(button, currentUser) {
   );
 }
 
+async function createStockItem(formData) {
+  const name = String(formData.get("name") || "").trim();
+  const sku = String(formData.get("sku") || "").trim();
+  const unit = String(formData.get("unit") || "").trim();
+  const notes = String(formData.get("notes") || "").trim();
+
+  if (!name) {
+    showFlash("Stock item name is required.", "error");
+    render();
+    return;
+  }
+
+  await runMutation(
+    "create_stock_item",
+    {
+      p_token: sessionToken,
+      p_name: name,
+      p_sku: sku,
+      p_unit: unit || "units",
+      p_notes: notes,
+    },
+    `Stock item added: ${name}.`,
+  );
+}
+
+async function recordStockMovement(formData) {
+  const stockItemId = String(formData.get("stockItemId") || "").trim();
+  const movementType = String(formData.get("movementType") || "in").trim();
+  const quantity = Number(formData.get("quantity"));
+  const supplierName = String(formData.get("supplierName") || "").trim();
+  const driverUserId = String(formData.get("driverUserId") || "").trim();
+  const notes = String(formData.get("notes") || "").trim();
+
+  if (!stockItemId || !movementType || !Number.isInteger(quantity) || quantity <= 0) {
+    showFlash("Stock item, movement type, and a valid quantity are required.", "error");
+    render();
+    return;
+  }
+
+  if (movementType === "in" && !supplierName) {
+    showFlash("Supplier is required for stock coming in.", "error");
+    render();
+    return;
+  }
+
+  if (movementType === "out" && !driverUserId) {
+    showFlash("Driver is required for stock going out.", "error");
+    render();
+    return;
+  }
+
+  await runMutation(
+    "record_stock_movement",
+    {
+      p_token: sessionToken,
+      p_stock_item_id: stockItemId,
+      p_movement_type: movementType,
+      p_quantity: quantity,
+      p_supplier_name: supplierName,
+      p_driver_user_id: driverUserId || null,
+      p_notes: notes,
+    },
+    movementType === "in" ? "Stock receipt recorded." : "Stock issue recorded.",
+  );
+}
+
+async function requestArtwork(formData) {
+  const stockItemId = String(formData.get("stockItemId") || "").trim();
+  const requestedQuantity = Number(formData.get("requestedQuantity"));
+  const notes = String(formData.get("notes") || "").trim();
+
+  if (!stockItemId || !Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+    showFlash("Stock item and requested quantity are required.", "error");
+    render();
+    return;
+  }
+
+  state.busy = true;
+  render();
+
+  try {
+    const payload = await requestJson(`${API_ROOT}/artwork/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        token: sessionToken,
+        stockItemId,
+        requestedQuantity,
+        notes,
+      }),
+    });
+
+    showFlash(`Artwork request emailed to ${payload?.sentTo || state.artworkTo}.`, "success");
+    await refreshSnapshot();
+  } catch (error) {
+    state.busy = false;
+    showFlash(normalizeError(error), "error");
+    render();
+  }
+}
+
 function render() {
   renderHeader();
   renderPageNavigation();
@@ -690,16 +822,37 @@ function render() {
 
   if (state.snapshot.user.role === "admin") {
     appEl.innerHTML = renderAdminScreen();
+    syncPostRenderUi();
     return;
   }
 
   if (state.snapshot.user.role === "sales") {
     appEl.innerHTML = renderSalesScreen();
+    syncPostRenderUi();
+    return;
+  }
+
+  if (state.snapshot.user.role === "logistics") {
+    appEl.innerHTML = renderLogisticsScreen();
+    syncPostRenderUi();
     return;
   }
 
   appEl.innerHTML = renderDriverScreen();
+  syncPostRenderUi();
   drawDriverRoute(state.snapshot.user.id);
+}
+
+function syncPostRenderUi() {
+  const orderForm = document.querySelector('form[data-form="add-order"]');
+  if (orderForm instanceof HTMLFormElement) {
+    syncMoveToFactoryField(orderForm);
+  }
+
+  const stockMovementForm = document.querySelector('form[data-form="add-stock-movement"]');
+  if (stockMovementForm instanceof HTMLFormElement) {
+    syncStockMovementFields(stockMovementForm);
+  }
 }
 
 function renderHeader() {
@@ -717,10 +870,14 @@ function renderHeader() {
     return;
   }
 
+  const summaryLine = currentUser.role === "logistics"
+    ? `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}`
+    : `${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}`;
+
   authMetaEl.innerHTML = `
     <strong>${escapeHtml(currentUser.name)}</strong><br>
     <span class="muted">${capitalize(currentUser.role)} account</span><br>
-    <span class="muted">${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}</span>
+    <span class="muted">${escapeHtml(summaryLine)}</span>
   `;
   userActionsEl.innerHTML = `
     <button class="button button-ghost" data-action="logout"${state.busy ? " disabled" : ""}>Logout</button>
@@ -764,6 +921,7 @@ function getNavigationItems(role) {
       { id: "dashboard", label: "Dashboard" },
       { id: "entries", label: "Global List" },
       { id: "assignments", label: "Assignments" },
+      { id: "stock", label: "Stock" },
       { id: "network", label: "Network" },
       { id: "users", label: "Users" },
       { id: "drivers", label: "Driver Lists" },
@@ -776,6 +934,13 @@ function getNavigationItems(role) {
       { id: "entries", label: "Global List" },
       { id: "assignments", label: "Assignments" },
       { id: "drivers", label: "Driver Lists" },
+    ];
+  }
+
+  if (role === "logistics") {
+    return [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "stock", label: "Stock" },
     ];
   }
 
@@ -1008,19 +1173,24 @@ function renderAdminScreen() {
           <p class="eyebrow">Admin scope</p>
           <h3>Full control</h3>
           <p class="muted">
-            Manage users, pickup locations, driver entries, and CSV delivery from one live database.
+            Manage users, pickup locations, stock tracking, driver entries, and CSV delivery from one live database.
           </p>
           <div class="chip-row">
             <span class="chip chip-role-admin">Admin</span>
             <span class="chip">${state.snapshot.locations.length} locations</span>
+            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
           </div>
         </div>
         <div class="sidebar-card">
           <h3>Email delivery</h3>
           <p class="muted">
-            ${state.mailConfigured ? `CSV email is ready for ${escapeHtml(state.mailTo)}.` : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}
+            ${
+              state.mailConfigured
+                ? `CSV email is ready for ${escapeHtml(state.mailTo)} and artwork requests go to ${escapeHtml(state.artworkTo)}.`
+                : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")
+            }
           </p>
-          <p class="muted">Use the Global List page to download the CSV, send it, or run a test email.</p>
+          <p class="muted">Use the Global List page for CSV delivery and the Stock page for artwork requests.</p>
         </div>
       </aside>
       <div class="content">
@@ -1056,6 +1226,41 @@ function renderSalesScreen() {
       </aside>
       <div class="content">
         ${renderSalesPageContent()}
+      </div>
+    </section>
+  `;
+}
+
+function renderLogisticsScreen() {
+  return `
+    <section class="screen-grid">
+      <aside class="sidebar">
+        <div class="sidebar-card">
+          <p class="eyebrow">Logistics scope</p>
+          <h3>Stock control</h3>
+          <p class="muted">
+            Track incoming and outgoing stock, keep a live on-hand view, and request artwork from the artwork department.
+          </p>
+          <div class="chip-row">
+            <span class="chip chip-role-logistics">Logistics</span>
+            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
+            <span class="chip">${getStockOnHandTotal()} on hand</span>
+          </div>
+        </div>
+        <div class="sidebar-card">
+          <h3>Artwork requests</h3>
+          <p class="muted">
+            ${
+              state.mailConfigured
+                ? `Requests will email ${escapeHtml(state.artworkTo)} through the configured mail account.`
+                : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")
+            }
+          </p>
+          <p class="muted">Use the Stock page to log movements and send artwork requests after the stock is queued.</p>
+        </div>
+      </aside>
+      <div class="content">
+        ${renderLogisticsPageContent()}
       </div>
     </section>
   `;
@@ -1132,6 +1337,14 @@ function renderAdminPageContent() {
     `;
   }
 
+  if (state.currentPage === "stock") {
+    return renderStockWorkspace({
+      viewerRole: "admin",
+      title: "Stock tracking for logistics",
+      subtitle: "Record stock coming in, stock going out with drivers, and artwork requests from one live workspace.",
+    });
+  }
+
   if (state.currentPage === "network") {
     return `
       <section class="hero-card">
@@ -1149,7 +1362,7 @@ function renderAdminPageContent() {
       <section class="hero-card">
         <p class="eyebrow">Users</p>
         <h2>Team accounts and permissions</h2>
-        <p>Create admin, sales, and driver accounts, then manage their status from one place.</p>
+        <p>Create admin, sales, driver, and logistics accounts, then manage their status from one place.</p>
       </section>
       ${renderFlash()}
       <section class="panel-grid">
@@ -1187,8 +1400,9 @@ function renderAdminPageContent() {
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
+      ${renderPageSummaryCard("Stock", "Track stock in/out and send artwork requests.", "stock")}
       ${renderPageSummaryCard("Network", "Maintain pickup locations.", "network")}
-      ${renderPageSummaryCard("Users", "Manage admin, sales, and driver accounts.", "users")}
+      ${renderPageSummaryCard("Users", "Manage admin, sales, driver, and logistics accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
@@ -1267,6 +1481,295 @@ function renderSalesPageContent() {
   `;
 }
 
+function renderLogisticsPageContent() {
+  const stockItems = state.snapshot.stockItems;
+  const stockMovements = state.snapshot.stockMovements;
+  const artworkRequests = state.snapshot.artworkRequests;
+
+  if (state.currentPage === "stock") {
+    return renderStockWorkspace({
+      viewerRole: "logistics",
+      title: "Logistics stock workspace",
+      subtitle: "Manage stock in, stock out, and artwork requests without leaving the logistics workflow.",
+    });
+  }
+
+  return `
+    <section class="hero-card">
+      <p class="eyebrow">Dashboard</p>
+      <h2>Live stock tracking for logistics</h2>
+      <p>Keep a running ledger of stock receipts and issues, then request artwork from the artwork department when new work is needed.</p>
+    </section>
+    ${renderFlash()}
+    <section class="metrics">
+      ${renderMetric("Stock items", stockItems.length)}
+      ${renderMetric("On hand", getStockOnHandTotal())}
+      ${renderMetric("Movements", stockMovements.length)}
+      ${renderMetric("Artwork requests", artworkRequests.length)}
+    </section>
+    <section class="panel-grid">
+      ${renderPageSummaryCard("Stock", "Log stock in/out and send artwork requests.", "stock")}
+    </section>
+  `;
+}
+
+function renderStockWorkspace({ viewerRole, title, subtitle }) {
+  const stockMovements = state.snapshot.stockMovements;
+  const inboundCount = stockMovements.filter((movement) => movement.movementType === "in").length;
+  const outboundCount = stockMovements.filter((movement) => movement.movementType === "out").length;
+
+  return `
+    <section class="hero-card">
+      <p class="eyebrow">Stock</p>
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(subtitle)}</p>
+    </section>
+    ${renderFlash()}
+    <section class="metrics">
+      ${renderMetric("Stock items", state.snapshot.stockItems.length)}
+      ${renderMetric("On hand", getStockOnHandTotal())}
+      ${renderMetric("Stock in", inboundCount)}
+      ${renderMetric("Stock out", outboundCount)}
+      ${renderMetric("Artwork requests", state.snapshot.artworkRequests.length)}
+    </section>
+    <section class="panel-grid">
+      ${renderStockItemPanel()}
+      ${renderStockMovementPanel()}
+    </section>
+    ${renderArtworkRequestPanel(viewerRole)}
+    ${renderStockItemsSection()}
+    ${renderStockMovementsSection()}
+    ${renderArtworkRequestsSection()}
+  `;
+}
+
+function renderStockItemPanel() {
+  return `
+    <article class="panel">
+      <p class="eyebrow">Stock master</p>
+      <h3 class="panel-title">Add stock item</h3>
+      <p class="panel-subtitle">Create the item once, then log every stock movement against it.</p>
+      <form data-form="add-stock-item">
+        <label>
+          Item name
+          <input name="name" type="text" required>
+        </label>
+        <div class="form-grid">
+          <label>
+            Stock code
+            <input name="sku" type="text" placeholder="SKU-001">
+          </label>
+          <label>
+            Unit
+            <input name="unit" type="text" value="units">
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea name="notes" placeholder="Material, finish, size, or any internal note"></textarea>
+        </label>
+        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+          Add stock item
+        </button>
+      </form>
+    </article>
+  `;
+}
+
+function renderStockMovementPanel() {
+  return `
+    <article class="panel">
+      <p class="eyebrow">Stock ledger</p>
+      <h3 class="panel-title">Log stock in or out</h3>
+      <p class="panel-subtitle">Every stock movement is timestamped and linked to the staff member who recorded it.</p>
+      <form data-form="add-stock-movement">
+        <div class="form-grid">
+          <label>
+            Stock item
+            <select name="stockItemId" required>
+              ${renderStockItemOptions()}
+            </select>
+          </label>
+          <label>
+            Movement type
+            <select name="movementType" required>
+              <option value="in">Stock in</option>
+              <option value="out">Stock out</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Quantity
+            <input name="quantity" type="number" min="1" step="1" required>
+          </label>
+          <label data-stock-supplier-field>
+            Supplier
+            <input name="supplierName" type="text" placeholder="Supplier name">
+          </label>
+          <label data-stock-driver-field class="hidden">
+            Driver
+            <select name="driverUserId">
+              ${renderDriverOptions("", true)}
+            </select>
+          </label>
+        </div>
+        <p class="field-note" data-stock-movement-note>
+          Record which supplier the stock arrived from.
+        </p>
+        <label>
+          Notes
+          <textarea name="notes" placeholder="Batch note, dispatch note, or anything the team should keep on record"></textarea>
+        </label>
+        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+          Save movement
+        </button>
+      </form>
+    </article>
+  `;
+}
+
+function renderArtworkRequestPanel(viewerRole) {
+  return `
+    <article class="panel">
+      <p class="eyebrow">Artwork</p>
+      <h3 class="panel-title">Email artwork request</h3>
+      <p class="panel-subtitle">
+        Send a request to ${escapeHtml(state.artworkTo)} so the artwork department can prepare what logistics needs.
+      </p>
+      <form data-form="request-artwork">
+        <div class="form-grid">
+          <label>
+            Stock item
+            <select name="stockItemId" required>
+              ${renderStockItemOptions()}
+            </select>
+          </label>
+          <label>
+            Requested quantity
+            <input name="requestedQuantity" type="number" min="1" step="1" required>
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea name="notes" placeholder="Artwork size, finish, due date, or any design instruction"></textarea>
+        </label>
+        <button type="submit" class="button button-secondary"${state.busy || !state.mailConfigured ? " disabled" : ""}>
+          Send artwork request
+        </button>
+        ${
+          !state.mailConfigured
+            ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
+            : ""
+        }
+      </form>
+    </article>
+  `;
+}
+
+function renderStockItemsSection() {
+  return `
+    <section class="table-card">
+      <p class="eyebrow">Current stock</p>
+      <h3 class="panel-title">On-hand summary</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Stock code</th>
+              <th>Unit</th>
+              <th>On hand</th>
+              <th>Notes</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              state.snapshot.stockItems.length
+                ? state.snapshot.stockItems.map((item) => renderStockItemRow(item)).join("")
+                : `
+                  <tr>
+                    <td colspan="6">No stock items added yet.</td>
+                  </tr>
+                `
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderStockMovementsSection() {
+  return `
+    <section class="table-card">
+      <p class="eyebrow">Stock history</p>
+      <h3 class="panel-title">Movement ledger</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Logged</th>
+              <th>Item</th>
+              <th>Type</th>
+              <th>Quantity</th>
+              <th>Supplier / driver</th>
+              <th>Notes</th>
+              <th>Recorded by</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              state.snapshot.stockMovements.length
+                ? state.snapshot.stockMovements.map((movement) => renderStockMovementRow(movement)).join("")
+                : `
+                  <tr>
+                    <td colspan="7">No stock movements logged yet.</td>
+                  </tr>
+                `
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderArtworkRequestsSection() {
+  return `
+    <section class="table-card">
+      <p class="eyebrow">Artwork requests</p>
+      <h3 class="panel-title">Email request log</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Sent</th>
+              <th>Item</th>
+              <th>Quantity</th>
+              <th>Requested by</th>
+              <th>Sent to</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              state.snapshot.artworkRequests.length
+                ? state.snapshot.artworkRequests.map((request) => renderArtworkRequestRow(request)).join("")
+                : `
+                  <tr>
+                    <td colspan="6">No artwork requests sent yet.</td>
+                  </tr>
+                `
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function renderDriverPageContent() {
   const currentUser = state.snapshot.user;
   const plan = getRoutePlan(currentUser.id);
@@ -1340,7 +1843,7 @@ function renderAccountPanel() {
     <article class="panel">
       <p class="eyebrow">Accounts</p>
       <h3 class="panel-title">Add team member</h3>
-      <p class="panel-subtitle">Create admin, sales, or driver accounts with name-based login.</p>
+      <p class="panel-subtitle">Create admin, sales, driver, or logistics accounts with name-based login.</p>
       <form data-form="add-account">
         <div class="form-grid">
           <label>
@@ -1352,6 +1855,7 @@ function renderAccountPanel() {
             <select name="role" data-driver-role-select required>
               <option value="sales">Sales</option>
               <option value="driver">Driver</option>
+              <option value="logistics">Logistics</option>
               <option value="admin">Admin</option>
             </select>
           </label>
@@ -1467,7 +1971,7 @@ function renderUsersSection() {
   return `
     <section class="table-card">
       <p class="eyebrow">Users</p>
-      <h3 class="panel-title">Sales and driver account management</h3>
+      <h3 class="panel-title">Team account management</h3>
       <div class="table-scroll">
         <table>
           <thead>
@@ -1946,6 +2450,52 @@ function renderLocationRow(location) {
   `;
 }
 
+function renderStockItemRow(item) {
+  return `
+    <tr>
+      <td>${escapeHtml(item.name)}</td>
+      <td>${escapeHtml(item.sku || "Not set")}</td>
+      <td>${escapeHtml(item.unit || "units")}</td>
+      <td>${escapeHtml(String(item.onHandQuantity || 0))}</td>
+      <td>${escapeHtml(item.notes || "None")}</td>
+      <td>${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
+    </tr>
+  `;
+}
+
+function renderStockMovementRow(movement) {
+  return `
+    <tr>
+      <td>${escapeHtml(formatDateTime(movement.createdAt) || "")}</td>
+      <td>
+        <strong>${escapeHtml(movement.itemName || "Unknown")}</strong><br>
+        <span class="muted">${escapeHtml(movement.sku || "No stock code")}</span>
+      </td>
+      <td>${movement.movementType === "in" ? '<span class="chip chip-success">Stock in</span>' : '<span class="chip chip-warning">Stock out</span>'}</td>
+      <td>${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}</td>
+      <td>${escapeHtml(getStockMovementPartyLabel(movement))}</td>
+      <td>${escapeHtml(movement.notes || "None")}</td>
+      <td>${escapeHtml(movement.createdByName || "Unknown")}</td>
+    </tr>
+  `;
+}
+
+function renderArtworkRequestRow(request) {
+  return `
+    <tr>
+      <td>${escapeHtml(formatDateTime(request.sentAt) || "")}</td>
+      <td>
+        <strong>${escapeHtml(request.itemName || "Unknown")}</strong><br>
+        <span class="muted">${escapeHtml(request.sku || "No stock code")}</span>
+      </td>
+      <td>${escapeHtml(String(request.requestedQuantity || 0))}</td>
+      <td>${escapeHtml(request.requestedByName || "Unknown")}</td>
+      <td>${escapeHtml(request.sentTo || state.artworkTo)}</td>
+      <td>${escapeHtml(request.notes || "None")}</td>
+    </tr>
+  `;
+}
+
 function renderStopCard(stop, index, viewerRole) {
   const allowComplete = viewerRole === "admin" || viewerRole === "driver";
   const allowDelete = viewerRole === "admin";
@@ -2073,6 +2623,19 @@ function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
     .join("");
 }
 
+function renderStockItemOptions(selectedStockItemId = "") {
+  if (!state.snapshot.stockItems.length) {
+    return '<option value="">Create a stock item first</option>';
+  }
+
+  return state.snapshot.stockItems
+    .map((item) => {
+      const label = item.sku ? `${item.name} (${item.sku})` : item.name;
+      return `<option value="${item.id}"${item.id === selectedStockItemId ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
 function renderLocationOptions() {
   if (!state.snapshot.locations.length) {
     return '<option value="">Create a location first</option>';
@@ -2123,6 +2686,18 @@ function getActiveOrders() {
 
 function getUnassignedActiveOrders() {
   return getActiveOrders().filter((order) => !order.driverUserId);
+}
+
+function getStockOnHandTotal() {
+  return state.snapshot.stockItems.reduce((sum, item) => sum + Number(item.onHandQuantity || 0), 0);
+}
+
+function getStockMovementPartyLabel(movement) {
+  if (movement?.movementType === "in") {
+    return movement?.supplierName || "Supplier not set";
+  }
+
+  return movement?.driverName || "Driver not set";
 }
 
 function getCompletedOrders(driverUserId = "") {
@@ -2689,6 +3264,47 @@ function syncMoveToFactoryField(form) {
   }
 
   noteEl.textContent = "Check this when the collected stock must be moved to a factory.";
+}
+
+function syncStockMovementFields(form) {
+  const movementTypeField = form.querySelector('[name="movementType"]');
+  const supplierField = form.querySelector("[data-stock-supplier-field]");
+  const driverField = form.querySelector("[data-stock-driver-field]");
+  const noteEl = form.querySelector("[data-stock-movement-note]");
+
+  if (
+    !(movementTypeField instanceof HTMLSelectElement)
+    || !(supplierField instanceof HTMLElement)
+    || !(driverField instanceof HTMLElement)
+    || !(noteEl instanceof HTMLElement)
+  ) {
+    return;
+  }
+
+  const supplierInput = supplierField.querySelector('[name="supplierName"]');
+  const driverSelect = driverField.querySelector('[name="driverUserId"]');
+  const isInbound = movementTypeField.value === "in";
+
+  supplierField.classList.toggle("hidden", !isInbound);
+  driverField.classList.toggle("hidden", isInbound);
+
+  if (supplierInput instanceof HTMLInputElement) {
+    supplierInput.required = isInbound;
+    if (!isInbound) {
+      supplierInput.value = "";
+    }
+  }
+
+  if (driverSelect instanceof HTMLSelectElement) {
+    driverSelect.required = !isInbound;
+    if (isInbound) {
+      driverSelect.value = "";
+    }
+  }
+
+  noteEl.textContent = isInbound
+    ? "Record which supplier the stock arrived from."
+    : "Record which driver the stock went out with.";
 }
 
 function escapeCsvValue(value) {

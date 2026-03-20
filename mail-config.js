@@ -5,4 +5,5 @@ module.exports = {
   clientSecret: process.env.MAIL_CLIENT_SECRET || "bd7c3d11-0723-4e8e-b00f-303398186e99",
   from: "artwork3@giftwrap.co.za",
   to: "admin3@giftwrap.co.za",
+  artworkTo: process.env.MAIL_ARTWORK_TO || "artwork3@giftwrap.co.za",
 };

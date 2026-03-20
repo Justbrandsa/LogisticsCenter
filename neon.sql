@@ -8,7 +8,7 @@ revoke all on schema private from public;
 create table if not exists private.app_users (
   id uuid primary key default public.gen_random_uuid(),
   name text not null,
-  role text not null check (role in ('admin', 'sales', 'driver')),
+  role text not null,
   password_hash text not null,
   active boolean not null default true,
   phone text,
@@ -19,6 +19,13 @@ create table if not exists private.app_users (
 
 create unique index if not exists app_users_name_unique
   on private.app_users ((lower(btrim(name))));
+
+alter table private.app_users
+  drop constraint if exists app_users_role_check;
+
+alter table private.app_users
+  add constraint app_users_role_check
+  check (role in ('admin', 'sales', 'driver', 'logistics'));
 
 create table if not exists private.suppliers (
   id uuid primary key default public.gen_random_uuid(),
@@ -219,6 +226,55 @@ create index if not exists orders_driver_scheduled_idx
 create index if not exists orders_status_scheduled_idx
   on private.orders (status, scheduled_for);
 
+create table if not exists private.stock_items (
+  id uuid primary key default public.gen_random_uuid(),
+  name text not null,
+  sku text not null default '',
+  unit text not null default 'units',
+  notes text not null default '',
+  created_by_user_id uuid not null references private.app_users(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists stock_items_name_unique
+  on private.stock_items ((lower(btrim(name))));
+
+create unique index if not exists stock_items_sku_unique
+  on private.stock_items ((lower(btrim(sku))))
+  where nullif(btrim(sku), '') is not null;
+
+create table if not exists private.stock_movements (
+  id uuid primary key default public.gen_random_uuid(),
+  stock_item_id uuid not null references private.stock_items(id) on delete restrict,
+  movement_type text not null check (movement_type in ('in', 'out')),
+  quantity integer not null check (quantity > 0),
+  supplier_name text not null default '',
+  driver_user_id uuid references private.app_users(id) on delete restrict,
+  notes text not null default '',
+  created_by_user_id uuid not null references private.app_users(id) on delete restrict,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists stock_movements_item_created_idx
+  on private.stock_movements (stock_item_id, created_at desc);
+
+create index if not exists stock_movements_driver_created_idx
+  on private.stock_movements (driver_user_id, created_at desc);
+
+create table if not exists private.artwork_requests (
+  id uuid primary key default public.gen_random_uuid(),
+  stock_item_id uuid not null references private.stock_items(id) on delete restrict,
+  requested_quantity integer not null check (requested_quantity > 0),
+  notes text not null default '',
+  sent_to text not null default '',
+  requested_by_user_id uuid not null references private.app_users(id) on delete restrict,
+  sent_at timestamptz not null default now()
+);
+
+create index if not exists artwork_requests_item_sent_idx
+  on private.artwork_requests (stock_item_id, sent_at desc);
+
 create table if not exists private.app_sessions (
   token uuid primary key default public.gen_random_uuid(),
   user_id uuid not null references private.app_users(id) on delete cascade,
@@ -234,6 +290,9 @@ alter table private.app_users enable row level security;
 alter table private.suppliers enable row level security;
 alter table private.locations enable row level security;
 alter table private.orders enable row level security;
+alter table private.stock_items enable row level security;
+alter table private.stock_movements enable row level security;
+alter table private.artwork_requests enable row level security;
 alter table private.app_sessions enable row level security;
 
 create or replace function private.touch_updated_at()
@@ -271,6 +330,12 @@ before update on private.orders
 for each row
 execute procedure private.touch_updated_at();
 
+drop trigger if exists trg_stock_items_touch on private.stock_items;
+create trigger trg_stock_items_touch
+before update on private.stock_items
+for each row
+execute procedure private.touch_updated_at();
+
 create or replace function private.today_local()
 returns date
 language sql
@@ -305,6 +370,20 @@ strict
 set search_path = ''
 as $$
   select p_hash = public.crypt(p_password, p_hash);
+$$;
+
+create or replace function private.stock_on_hand(p_stock_item_id uuid)
+returns integer
+language sql
+stable
+set search_path = ''
+as $$
+  select coalesce(
+    sum(case when movement_type = 'in' then quantity else -quantity end),
+    0
+  )::integer
+  from private.stock_movements
+  where stock_item_id = p_stock_item_id;
 $$;
 
 create or replace function private.build_user_json(p_user private.app_users)
@@ -538,6 +617,9 @@ declare
   v_suppliers jsonb := '[]'::jsonb;
   v_locations jsonb := '[]'::jsonb;
   v_orders jsonb := '[]'::jsonb;
+  v_stock_items jsonb := '[]'::jsonb;
+  v_stock_movements jsonb := '[]'::jsonb;
+  v_artwork_requests jsonb := '[]'::jsonb;
 begin
   v_actor := private.require_user(p_token);
 
@@ -548,7 +630,7 @@ begin
     )
     into v_users
     from private.app_users u;
-  elsif v_actor.role = 'sales' then
+  elsif v_actor.role in ('sales', 'logistics') then
     select coalesce(
       jsonb_agg(private.build_user_json(u) order by lower(u.name)),
       '[]'::jsonb
@@ -740,13 +822,88 @@ begin
     ;
   end if;
 
+  if v_actor.role in ('admin', 'logistics') then
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', s.id,
+          'name', s.name,
+          'sku', s.sku,
+          'unit', s.unit,
+          'notes', s.notes,
+          'onHandQuantity', private.stock_on_hand(s.id),
+          'createdAt', s.created_at,
+          'updatedAt', s.updated_at
+        )
+        order by lower(s.name)
+      ),
+      '[]'::jsonb
+    )
+    into v_stock_items
+    from private.stock_items s;
+
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', m.id,
+          'stockItemId', m.stock_item_id,
+          'itemName', s.name,
+          'sku', s.sku,
+          'unit', s.unit,
+          'movementType', m.movement_type,
+          'quantity', m.quantity,
+          'supplierName', m.supplier_name,
+          'driverUserId', m.driver_user_id,
+          'driverName', coalesce(d.name, ''),
+          'notes', m.notes,
+          'createdByUserId', m.created_by_user_id,
+          'createdByName', c.name,
+          'createdAt', m.created_at
+        )
+        order by m.created_at desc
+      ),
+      '[]'::jsonb
+    )
+    into v_stock_movements
+    from private.stock_movements m
+    join private.stock_items s on s.id = m.stock_item_id
+    left join private.app_users d on d.id = m.driver_user_id
+    join private.app_users c on c.id = m.created_by_user_id;
+
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', r.id,
+          'stockItemId', r.stock_item_id,
+          'itemName', s.name,
+          'sku', s.sku,
+          'requestedQuantity', r.requested_quantity,
+          'notes', r.notes,
+          'sentTo', r.sent_to,
+          'requestedByUserId', r.requested_by_user_id,
+          'requestedByName', u.name,
+          'sentAt', r.sent_at
+        )
+        order by r.sent_at desc
+      ),
+      '[]'::jsonb
+    )
+    into v_artwork_requests
+    from private.artwork_requests r
+    join private.stock_items s on s.id = r.stock_item_id
+    join private.app_users u on u.id = r.requested_by_user_id;
+  end if;
+
   return jsonb_build_object(
     'today', v_today,
     'user', private.build_user_json(v_actor),
     'users', v_users,
     'suppliers', v_suppliers,
     'locations', v_locations,
-    'orders', v_orders
+    'orders', v_orders,
+    'stockItems', v_stock_items,
+    'stockMovements', v_stock_movements,
+    'artworkRequests', v_artwork_requests
   );
 end;
 $$;
@@ -780,7 +937,7 @@ begin
     raise exception 'Password must be at least 4 characters long.';
   end if;
 
-  if v_role not in ('admin', 'sales', 'driver') then
+  if v_role not in ('admin', 'sales', 'driver', 'logistics') then
     raise exception 'Invalid role.';
   end if;
 
@@ -1116,6 +1273,225 @@ begin
   where id = p_location_id;
 
   return jsonb_build_object('ok', true, 'deletedBy', v_actor.id);
+end;
+$$;
+
+drop function if exists public.create_stock_item(uuid, text, text, text, text);
+
+create or replace function public.create_stock_item(
+  p_token uuid,
+  p_name text,
+  p_sku text default null,
+  p_unit text default null,
+  p_notes text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_name text := nullif(btrim(p_name), '');
+  v_sku text := coalesce(nullif(btrim(p_sku), ''), '');
+  v_unit text := coalesce(nullif(btrim(p_unit), ''), 'units');
+  v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'logistics') then
+    raise exception 'Permission denied';
+  end if;
+
+  if v_name is null then
+    raise exception 'Stock item name is required.';
+  end if;
+
+  if exists (
+    select 1
+    from private.stock_items
+    where lower(btrim(name)) = lower(v_name)
+  ) then
+    raise exception 'That stock item already exists.';
+  end if;
+
+  if v_sku <> '' and exists (
+    select 1
+    from private.stock_items
+    where lower(btrim(sku)) = lower(v_sku)
+  ) then
+    raise exception 'That stock code is already in use.';
+  end if;
+
+  insert into private.stock_items (
+    name,
+    sku,
+    unit,
+    notes,
+    created_by_user_id
+  )
+  values (
+    v_name,
+    v_sku,
+    v_unit,
+    v_notes,
+    v_actor.id
+  );
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+drop function if exists public.record_stock_movement(uuid, uuid, text, integer, text, uuid, text);
+
+create or replace function public.record_stock_movement(
+  p_token uuid,
+  p_stock_item_id uuid,
+  p_movement_type text,
+  p_quantity integer,
+  p_supplier_name text default null,
+  p_driver_user_id uuid default null,
+  p_notes text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_stock_item private.stock_items;
+  v_driver private.app_users;
+  v_movement_type text := lower(nullif(btrim(p_movement_type), ''));
+  v_quantity integer := coalesce(p_quantity, 0);
+  v_supplier_name text := coalesce(nullif(btrim(p_supplier_name), ''), '');
+  v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+  v_on_hand integer := 0;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'logistics') then
+    raise exception 'Permission denied';
+  end if;
+
+  if v_movement_type not in ('in', 'out') then
+    raise exception 'Movement type must be in or out.';
+  end if;
+
+  if v_quantity <= 0 then
+    raise exception 'Quantity must be greater than zero.';
+  end if;
+
+  select *
+  into v_stock_item
+  from private.stock_items
+  where id = p_stock_item_id;
+
+  if v_stock_item.id is null then
+    raise exception 'Stock item not found.';
+  end if;
+
+  if v_movement_type = 'in' and v_supplier_name = '' then
+    raise exception 'Supplier is required for stock coming in.';
+  end if;
+
+  if v_movement_type = 'out' then
+    select *
+    into v_driver
+    from private.app_users
+    where id = p_driver_user_id
+      and role = 'driver'
+      and active;
+
+    if v_driver.id is null then
+      raise exception 'Driver is required for stock going out.';
+    end if;
+
+    v_on_hand := private.stock_on_hand(p_stock_item_id);
+    if v_on_hand < v_quantity then
+      raise exception 'Not enough stock on hand for that movement.';
+    end if;
+  end if;
+
+  insert into private.stock_movements (
+    stock_item_id,
+    movement_type,
+    quantity,
+    supplier_name,
+    driver_user_id,
+    notes,
+    created_by_user_id
+  )
+  values (
+    p_stock_item_id,
+    v_movement_type,
+    v_quantity,
+    case when v_movement_type = 'in' then v_supplier_name else '' end,
+    case when v_movement_type = 'out' then p_driver_user_id else null end,
+    v_notes,
+    v_actor.id
+  );
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+drop function if exists public.create_artwork_request(uuid, uuid, integer, text, text);
+
+create or replace function public.create_artwork_request(
+  p_token uuid,
+  p_stock_item_id uuid,
+  p_requested_quantity integer,
+  p_notes text default null,
+  p_sent_to text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_stock_item private.stock_items;
+  v_requested_quantity integer := coalesce(p_requested_quantity, 0);
+  v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+  v_sent_to text := coalesce(nullif(btrim(p_sent_to), ''), '');
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'logistics') then
+    raise exception 'Permission denied';
+  end if;
+
+  if v_requested_quantity <= 0 then
+    raise exception 'Requested quantity must be greater than zero.';
+  end if;
+
+  select *
+  into v_stock_item
+  from private.stock_items
+  where id = p_stock_item_id;
+
+  if v_stock_item.id is null then
+    raise exception 'Stock item not found.';
+  end if;
+
+  insert into private.artwork_requests (
+    stock_item_id,
+    requested_quantity,
+    notes,
+    sent_to,
+    requested_by_user_id
+  )
+  values (
+    p_stock_item_id,
+    v_requested_quantity,
+    v_notes,
+    v_sent_to,
+    v_actor.id
+  );
+
+  return jsonb_build_object('ok', true);
 end;
 $$;
 

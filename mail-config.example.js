@@ -5,4 +5,5 @@ module.exports = {
   clientSecret: "YOUR_MICROSOFT_APP_CLIENT_SECRET",
   from: "artwork3@giftwrap.co.za",
   to: "admin3@giftwrap.co.za",
+  artworkTo: "artwork3@giftwrap.co.za",
 };

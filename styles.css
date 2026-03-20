@@ -276,6 +276,11 @@ button:disabled,
   color: var(--brand-strong);
 }
 
+.chip-role-logistics {
+  background: rgba(31, 122, 87, 0.14);
+  color: var(--success);
+}
+
 .chip-success {
   background: rgba(31, 122, 87, 0.14);
   color: var(--success);

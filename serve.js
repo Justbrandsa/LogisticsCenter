@@ -49,6 +49,11 @@ const RPC_DEFINITIONS = Object.freeze({
     params: ["p_token", "p_location_type", "p_name", "p_address", "p_lat", "p_lng", "p_contact_person", "p_contact_number"],
   },
   delete_location: { params: ["p_token", "p_location_id"] },
+  create_stock_item: { params: ["p_token", "p_name", "p_sku", "p_unit", "p_notes"] },
+  record_stock_movement: {
+    params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
+  },
+  create_artwork_request: { params: ["p_token", "p_stock_item_id", "p_requested_quantity", "p_notes", "p_sent_to"] },
   create_order: {
     params: [
       "p_token",
@@ -126,6 +131,7 @@ async function routeRequest(request, response) {
         mailProvider: mailer.getStatus().provider,
         mailFrom: mailer.getStatus().from,
         mailTo: mailer.getStatus().to,
+        artworkTo: mailer.getStatus().artworkTo,
       });
       return;
     }
@@ -135,6 +141,13 @@ async function routeRequest(request, response) {
       const payload = await readJsonBody(request);
       const data = await database.call(functionName, payload?.parameters || {});
       sendJson(response, 200, { data });
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/artwork/request") {
+      const payload = await readJsonBody(request);
+      const result = await mailer.sendArtworkRequest(payload?.token, payload || {});
+      sendJson(response, 200, result);
       return;
     }
 
@@ -239,6 +252,7 @@ function createMailer() {
     reason: "",
     from: config.from,
     to: config.to,
+    artworkTo: config.artworkTo,
     provider: config.provider,
   };
 
@@ -266,7 +280,7 @@ function createMailer() {
     ? nodemailer.createTransport(config.transport)
     : null;
 
-  async function getAuthorizedMailContext(token) {
+  async function getAuthorizedMailContext(token, allowedRoles, deniedMessage) {
     if (!status.configured) {
       throw createHttpError(503, status.reason || "Email delivery is not configured.");
     }
@@ -282,8 +296,8 @@ function createMailer() {
       throw createHttpError(403, "You must be signed in to send email.");
     }
 
-    if (!["admin", "sales"].includes(currentUser.role)) {
-      throw createHttpError(403, "Only admin or sales users can send email.");
+    if (!Array.isArray(allowedRoles) || !allowedRoles.includes(currentUser.role)) {
+      throw createHttpError(403, deniedMessage || "You do not have permission to send email.");
     }
 
     return {
@@ -312,7 +326,11 @@ function createMailer() {
       return { ...status };
     },
     async sendSnapshotCsv(token) {
-      const { currentUser, snapshot } = await getAuthorizedMailContext(token);
+      const { currentUser, snapshot } = await getAuthorizedMailContext(
+        token,
+        ["admin", "sales"],
+        "Only admin or sales users can send email.",
+      );
 
       const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : [];
       const dateStamp = new Date().toISOString().slice(0, 10);
@@ -349,7 +367,11 @@ function createMailer() {
       };
     },
     async sendTestEmail(token) {
-      const { currentUser } = await getAuthorizedMailContext(token);
+      const { currentUser } = await getAuthorizedMailContext(
+        token,
+        ["admin", "sales"],
+        "Only admin or sales users can send email.",
+      );
       const timestamp = new Date().toISOString();
       const subject = `Route Ledger test email ${timestamp}`;
       const text = [
@@ -372,6 +394,63 @@ function createMailer() {
       return {
         ok: true,
         sentTo: status.to,
+        sentFrom: status.from,
+        subject,
+      };
+    },
+    async sendArtworkRequest(token, payload) {
+      const { currentUser, snapshot } = await getAuthorizedMailContext(
+        token,
+        ["admin", "logistics"],
+        "Only admin or logistics users can send artwork requests.",
+      );
+
+      const stockItemId = String(payload?.stockItemId || "").trim();
+      const requestedQuantity = Number(payload?.requestedQuantity || 0);
+      const notes = String(payload?.notes || "").trim();
+      const stockItems = Array.isArray(snapshot?.stockItems) ? snapshot.stockItems : [];
+      const stockItem = stockItems.find((item) => item.id === stockItemId) || null;
+
+      if (!stockItem) {
+        throw createHttpError(400, "Stock item not found.");
+      }
+
+      if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+        throw createHttpError(400, "Requested quantity must be greater than zero.");
+      }
+
+      const destination = status.artworkTo || status.from;
+      const subject = `Artwork request: ${stockItem.name}${stockItem.sku ? ` (${stockItem.sku})` : ""}`;
+      const text = [
+        "Artwork has been requested for stock preparation.",
+        "",
+        `Requested by: ${currentUser.name}`,
+        `Item: ${stockItem.name}`,
+        `SKU: ${stockItem.sku || "Not set"}`,
+        `Requested quantity: ${requestedQuantity}`,
+        `Unit: ${stockItem.unit || "units"}`,
+        `Current on hand: ${Number(stockItem.onHandQuantity || 0)}`,
+        `Notes: ${notes || "None"}`,
+      ].join("\n");
+
+      await sendMessage({
+        from: status.from,
+        to: destination,
+        subject,
+        text,
+      });
+
+      await database.call("create_artwork_request", {
+        p_token: token,
+        p_stock_item_id: stockItem.id,
+        p_requested_quantity: requestedQuantity,
+        p_notes: notes,
+        p_sent_to: destination,
+      });
+
+      return {
+        ok: true,
+        sentTo: destination,
         sentFrom: status.from,
         subject,
       };
@@ -440,6 +519,11 @@ function loadMailConfig() {
     fileConfig.to,
     "admin3@giftwrap.co.za",
   ]);
+  const artworkTo = firstNonEmpty([
+    process.env.MAIL_ARTWORK_TO,
+    fileConfig.artworkTo,
+    from,
+  ]);
   if (provider === "smtp") {
     const service = firstNonEmpty([
       process.env.SMTP_SERVICE,
@@ -486,6 +570,7 @@ function loadMailConfig() {
       transport,
       from,
       to,
+      artworkTo,
     };
   }
 
@@ -493,6 +578,7 @@ function loadMailConfig() {
     provider,
     from,
     to,
+    artworkTo,
     tenantId: firstNonEmpty([
       process.env.MAIL_TENANT_ID,
       fileConfig.tenantId,
