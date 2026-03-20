@@ -1972,6 +1972,7 @@ function renderUsersSection() {
     <section class="table-card">
       <p class="eyebrow">Users</p>
       <h3 class="panel-title">Team account management</h3>
+      <p class="panel-subtitle">Admin, sales, driver, and logistics accounts all appear in this list.</p>
       <div class="table-scroll">
         <table>
           <thead>
