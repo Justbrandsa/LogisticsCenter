@@ -27,6 +27,7 @@ const state = {
   mailConfigReason: "",
   mailTo: "admin3@giftwrap.co.za",
   currentPage: "",
+  editingSupplierId: "",
   pagination: {
     globalEntries: 1,
     driverLists: 1,
@@ -119,6 +120,7 @@ function saveSessionToken(token) {
 
 async function refreshPublicState() {
   state.booting = true;
+  state.editingSupplierId = "";
   render();
 
   const data = await callRpc("get_login_state");
@@ -138,6 +140,9 @@ async function refreshSnapshot() {
   try {
     const data = await callRpc("get_app_snapshot", { p_token: sessionToken });
     state.snapshot = normalizeSnapshot(data);
+    if (state.editingSupplierId && !state.snapshot.suppliers.some((supplier) => supplier.id === state.editingSupplierId)) {
+      state.editingSupplierId = "";
+    }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
     syncCurrentPage();
@@ -332,6 +337,18 @@ async function handleClick(event) {
     );
   }
 
+  if (action === "edit-supplier" && currentUser.role === "admin") {
+    state.editingSupplierId = String(button.dataset.supplierId || "");
+    render();
+    return;
+  }
+
+  if (action === "cancel-edit-supplier" && currentUser.role === "admin") {
+    state.editingSupplierId = "";
+    render();
+    return;
+  }
+
   if (action === "delete-supplier" && currentUser.role === "admin") {
     await runMutation(
       "delete_supplier",
@@ -376,6 +393,14 @@ function handleChange(event) {
     if (driverFields) {
       driverFields.classList.toggle("hidden", target.value !== "driver");
     }
+  }
+
+  const orderForm = target.closest('form[data-form="add-order"]');
+  if (
+    orderForm instanceof HTMLFormElement
+    && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]'))
+  ) {
+    syncMoveToFactoryField(orderForm);
   }
 }
 
@@ -467,10 +492,12 @@ async function runMutation(functionName, parameters, successMessage) {
     await callRpc(functionName, parameters);
     showFlash(successMessage, "success");
     await refreshSnapshot();
+    return true;
   } catch (error) {
     state.busy = false;
     showFlash(normalizeError(error), "error");
     render();
+    return false;
   }
 }
 
@@ -500,33 +527,56 @@ async function createAccount(formData) {
 }
 
 async function createSupplier(formData) {
+  const supplierId = String(formData.get("supplierId") || "").trim();
   const name = String(formData.get("name") || "").trim();
-  if (!name) {
-    showFlash("Supplier name is required.", "error");
+  const contactPerson = String(formData.get("contactPerson") || "").trim();
+  const contactNumber = String(formData.get("contactNumber") || "").trim();
+  const factory = formData.get("factory") === "on";
+
+  if (!name || !contactNumber) {
+    showFlash("Supplier name and contact number are required.", "error");
     render();
     return;
   }
 
-  await runMutation(
-    "create_supplier",
-    {
-      p_token: sessionToken,
-      p_name: name,
-    },
-    `Supplier added: ${name}.`,
+  const ok = await runMutation(
+    supplierId ? "update_supplier" : "create_supplier",
+    supplierId
+      ? {
+          p_token: sessionToken,
+          p_supplier_id: supplierId,
+          p_name: name,
+          p_contact_person: contactPerson,
+          p_contact_number: contactNumber,
+          p_factory: factory,
+        }
+      : {
+          p_token: sessionToken,
+          p_name: name,
+          p_contact_person: contactPerson,
+          p_contact_number: contactNumber,
+          p_factory: factory,
+        },
+    supplierId ? `Supplier updated: ${name}.` : `Supplier added: ${name}.`,
   );
+
+  if (ok) {
+    state.editingSupplierId = "";
+    render();
+  }
 }
 
 async function createLocation(formData) {
-  const supplierId = String(formData.get("supplierId") || "").trim();
+  const locationType = String(formData.get("locationType") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const address = String(formData.get("address") || "").trim();
   const lat = Number(formData.get("lat"));
   const lng = Number(formData.get("lng"));
-  const notes = String(formData.get("notes") || "").trim();
+  const contactPerson = String(formData.get("contactPerson") || "").trim();
+  const contactNumber = String(formData.get("contactNumber") || "").trim();
 
-  if (!supplierId || !name || !address || Number.isNaN(lat) || Number.isNaN(lng)) {
-    showFlash("Supplier, location name, address, and coordinates are required.", "error");
+  if (!locationType || !name || !address || !contactNumber || Number.isNaN(lat) || Number.isNaN(lng)) {
+    showFlash("Location name, type, address, coordinates, and contact number are required.", "error");
     render();
     return;
   }
@@ -535,12 +585,13 @@ async function createLocation(formData) {
     "create_location",
     {
       p_token: sessionToken,
-      p_supplier_id: supplierId,
+      p_location_type: locationType,
       p_name: name,
       p_address: address,
       p_lat: lat,
       p_lng: lng,
-      p_notes: notes,
+      p_contact_person: contactPerson,
+      p_contact_number: contactNumber,
     },
     `Location added: ${name}.`,
   );
@@ -553,6 +604,7 @@ async function createOrder(formData, currentUser) {
   const factoryOrderNumber = String(formData.get("factoryOrderNumber") || "").trim();
   const inhouseOrderNumber = String(formData.get("inhouseOrderNumber") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
+  const moveToFactory = formData.get("moveToFactory") === "on";
   const allowDuplicate = formData.get("allowDuplicate") === "on";
 
   if (!driverUserId || !locationId || !entryType || !factoryOrderNumber || !inhouseOrderNumber) {
@@ -571,6 +623,7 @@ async function createOrder(formData, currentUser) {
       p_factory_order_number: factoryOrderNumber,
       p_inhouse_order_number: inhouseOrderNumber,
       p_notice: notice,
+      p_move_to_factory: moveToFactory,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
     },
     "Entry added to the driver list.",
@@ -914,11 +967,10 @@ function renderAdminScreen() {
           <p class="eyebrow">Admin scope</p>
           <h3>Full control</h3>
           <p class="muted">
-            Manage users, suppliers, locations, driver entries, and CSV delivery from one live database.
+            Manage users, pickup locations, driver entries, and CSV delivery from one live database.
           </p>
           <div class="chip-row">
             <span class="chip chip-role-admin">Admin</span>
-            <span class="chip">${state.snapshot.suppliers.length} suppliers</span>
             <span class="chip">${state.snapshot.locations.length} locations</span>
           </div>
         </div>
@@ -1025,8 +1077,8 @@ function renderAdminPageContent() {
     return `
       <section class="hero-card">
         <p class="eyebrow">Network</p>
-        <h2>Suppliers and pickup locations</h2>
-        <p>Maintain the supplier directory and the physical pickup points used by the route lists.</p>
+        <h2>Pickup locations</h2>
+        <p>Maintain the physical pickup points used by the route lists.</p>
       </section>
       ${renderFlash()}
       ${renderSupplierNetworkSection()}
@@ -1074,7 +1126,7 @@ function renderAdminPageContent() {
     </section>
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
-      ${renderPageSummaryCard("Network", "Maintain suppliers and pickup locations.", "network")}
+      ${renderPageSummaryCard("Network", "Maintain pickup locations.", "network")}
       ${renderPageSummaryCard("Users", "Manage admin, sales, and driver accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
@@ -1252,108 +1304,80 @@ function renderAccountPanel() {
 function renderSupplierNetworkSection() {
   return `
     <section class="table-card">
-      <p class="eyebrow">Supplier network</p>
-      <h3 class="panel-title">Suppliers and locations</h3>
-      <p class="panel-subtitle">Both parts of the delivery network are managed together here.</p>
-      <div class="panel-grid">
-        <article class="panel">
-          <p class="eyebrow">Suppliers</p>
-          <h3 class="panel-title">Add supplier</h3>
-          <form data-form="add-supplier">
+      <p class="eyebrow">Location network</p>
+      <h3 class="panel-title">Pickup locations</h3>
+      <p class="panel-subtitle">Each location now stores its own type and contact details.</p>
+      <article class="panel">
+        <p class="eyebrow">Locations</p>
+        <h3 class="panel-title">Add location</h3>
+        <form data-form="add-location">
+          <div class="form-grid">
             <label>
-              Supplier name
+              Location Name
               <input name="name" type="text" required>
             </label>
-            <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-              Add supplier
-            </button>
-          </form>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Supplier</th>
-                  <th>Locations</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  state.snapshot.suppliers.length
-                    ? state.snapshot.suppliers.map((supplier) => renderSupplierRow(supplier)).join("")
-                    : `
-                      <tr>
-                        <td colspan="3">No suppliers added yet.</td>
-                      </tr>
-                    `
-                }
-              </tbody>
-            </table>
-          </div>
-        </article>
-        <article class="panel">
-          <p class="eyebrow">Locations</p>
-          <h3 class="panel-title">Add location</h3>
-          <form data-form="add-location">
-            <div class="form-grid">
-              <label>
-                Supplier
-                <select name="supplierId" required>
-                  ${renderSupplierOptions()}
-                </select>
-              </label>
-              <label>
-                Location name
-                <input name="name" type="text" required>
-              </label>
-            </div>
             <label>
-              Address
-              <input name="address" type="text" required>
+              Supplier or factory
+              <select name="locationType" required>
+                <option value="supplier">Supplier</option>
+                <option value="factory">Factory</option>
+                <option value="both">Both</option>
+              </select>
             </label>
-            <div class="form-grid">
-              <label>
-                Latitude
-                <input name="lat" type="number" step="0.0001" required>
-              </label>
-              <label>
-                Longitude
-                <input name="lng" type="number" step="0.0001" required>
-              </label>
-            </div>
-            <label>
-              Notes
-              <textarea name="notes" placeholder="Dock, gate, or access notes"></textarea>
-            </label>
-            <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-              Add location
-            </button>
-          </form>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Location</th>
-                  <th>Supplier</th>
-                  <th>Address</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  state.snapshot.locations.length
-                    ? state.snapshot.locations.map((location) => renderLocationRow(location)).join("")
-                    : `
-                      <tr>
-                        <td colspan="4">No locations added yet.</td>
-                      </tr>
-                    `
-                }
-              </tbody>
-            </table>
           </div>
-        </article>
-      </div>
+          <label>
+            Physical address
+            <input name="address" type="text" required>
+          </label>
+          <div class="form-grid">
+            <label>
+              Latitude
+              <input name="lat" type="number" step="0.000001" required>
+            </label>
+            <label>
+              Longitude
+              <input name="lng" type="number" step="0.000001" required>
+            </label>
+          </div>
+          <div class="form-grid">
+            <label>
+              Contact person
+              <input name="contactPerson" type="text">
+            </label>
+            <label>
+              Contact number
+              <input name="contactNumber" type="tel" required>
+            </label>
+          </div>
+          <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+            Add location
+          </button>
+        </form>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Supplier or factory</th>
+                <th>Physical address</th>
+                <th>Contact</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                state.snapshot.locations.length
+                  ? state.snapshot.locations.map((location) => renderLocationRow(location)).join("")
+                  : `
+                    <tr>
+                      <td colspan="5">No locations added yet.</td>
+                    </tr>
+                  `
+              }
+            </tbody>
+          </table>
+        </div>
+      </article>
     </section>
   `;
 }
@@ -1439,6 +1463,13 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           <input name="inhouseOrderNumber" type="text" required>
         </label>
       </div>
+      <label class="inline-check">
+        <input type="checkbox" name="moveToFactory" disabled>
+        Move collected stock to a factory
+      </label>
+      <p class="field-note" data-move-to-factory-note>
+        Switch the entry type to Collection to enable factory transfer.
+      </p>
       <label>
         Notice
         <textarea name="notice" placeholder="Special instruction, handover note, or anything dispatch should keep on the order"></textarea>
@@ -1515,6 +1546,7 @@ function renderGlobalOrdersSection(viewerRole) {
               <th>In-house</th>
               <th>Factory</th>
               <th>Type</th>
+              <th>Move to factory</th>
               <th>Driver</th>
               <th>Pickup location</th>
               <th>Created by</th>
@@ -1529,7 +1561,7 @@ function renderGlobalOrdersSection(viewerRole) {
                 ? page.items.map((order) => renderGlobalOrderRow(order)).join("")
                 : `
                   <tr>
-                    <td colspan="10">No entries available yet.</td>
+                    <td colspan="11">No entries available yet.</td>
                   </tr>
                 `
             }
@@ -1649,6 +1681,7 @@ function renderGlobalOrderRow(order) {
       <td>${escapeHtml(order.inhouseOrderNumber || "")}</td>
       <td>${escapeHtml(order.factoryOrderNumber || "")}</td>
       <td>${renderTypeChip(order.entryType)}</td>
+      <td>${renderMoveToFactoryValue(order)}</td>
       <td>${escapeHtml(order.driverName || "Unknown")}</td>
       <td>
         <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
@@ -1702,11 +1735,19 @@ function renderSupplierRow(supplier) {
   return `
     <tr>
       <td>${escapeHtml(supplier.name)}</td>
+      <td>${escapeHtml(supplier.contactPerson || "Not set")}</td>
+      <td>${escapeHtml(supplier.contactNumber || "Not set")}</td>
+      <td>${supplier.factory ? "Yes" : "No"}</td>
       <td>${locationCount}</td>
       <td>
-        <button class="button button-danger" data-action="delete-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
-          Delete
-        </button>
+        <div class="action-row">
+          <button class="button button-secondary" data-action="edit-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
+            Edit
+          </button>
+          <button class="button button-danger" data-action="delete-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
+            Delete
+          </button>
+        </div>
       </td>
     </tr>
   `;
@@ -1716,11 +1757,11 @@ function renderLocationRow(location) {
   return `
     <tr>
       <td>
-        <strong>${escapeHtml(location.name)}</strong><br>
-        <span class="muted">${escapeHtml(location.notes || "No notes")}</span>
+        <strong>${escapeHtml(location.name)}</strong>
       </td>
-      <td>${escapeHtml(location.supplierName || "Unknown")}</td>
+      <td>${escapeHtml(capitalize(location.locationType || ""))}</td>
       <td>${escapeHtml(location.address)}</td>
+      <td>${escapeHtml(location.contactPerson || "Not set")}<br><span class="muted">${escapeHtml(location.contactNumber || "Not set")}</span></td>
       <td>
         <button class="button button-danger" data-action="delete-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
           Delete
@@ -1759,6 +1800,7 @@ function renderStopCard(stop, index, viewerRole) {
                 </div>
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
+                  ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
                   <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
                   ${renderStatusChip(order.status)}
                 </div>
@@ -1808,6 +1850,15 @@ function renderStatusChip(status) {
   return `<span class="chip ${statusClass}">${capitalize(status || "active")}</span>`;
 }
 
+function renderMoveToFactoryValue(order) {
+  const label = getMoveToFactoryLabel(order);
+  if (!label) {
+    return '<span class="muted">No</span>';
+  }
+
+  return escapeHtml(label);
+}
+
 function renderFlash() {
   if (!flash) {
     return "";
@@ -1844,8 +1895,8 @@ function renderLocationOptions() {
 
   return state.snapshot.locations
     .map((location) => {
-      const supplierName = location.supplierName ? ` - ${escapeHtml(location.supplierName)}` : "";
-      return `<option value="${location.id}">${escapeHtml(location.name)}${supplierName}</option>`;
+      const typeLabel = location.locationType ? ` - ${escapeHtml(capitalize(location.locationType))}` : "";
+      return `<option value="${location.id}">${escapeHtml(location.name)}${typeLabel}</option>`;
     })
     .join("");
 }
@@ -1863,6 +1914,14 @@ function getDriverUsers() {
 
 function getLocation(locationId) {
   return state.snapshot.locations.find((location) => location.id === locationId) || null;
+}
+
+function getSupplier(supplierId) {
+  return state.snapshot.suppliers.find((supplier) => supplier.id === supplierId) || null;
+}
+
+function getEditingSupplier() {
+  return state.editingSupplierId ? getSupplier(state.editingSupplierId) : null;
 }
 
 function getOrdersForDriver(driverUserId) {
@@ -2221,6 +2280,7 @@ function exportOrdersCsv() {
     order.driverName,
     order.locationName,
     order.entryType,
+    getMoveToFactoryLabel(order) || "No",
     order.factoryOrderNumber,
     order.inhouseOrderNumber,
     order.createdByName,
@@ -2235,6 +2295,7 @@ function exportOrdersCsv() {
       "Driver",
       "Pickup location",
       "Collection or delivery",
+      "Move to factory",
       "Factory order number",
       "In-house order number",
       "Created by",
@@ -2334,10 +2395,15 @@ function renderOrderNotice(order, emptyLabel = "") {
 function getOrderNoticeLines(order) {
   const lines = [];
   const notice = String(order?.notes || "").trim();
+  const moveToFactory = getMoveToFactoryText(order);
   const rolloverNotice = getRolloverNoticeText(order);
 
   if (notice) {
     lines.push(notice);
+  }
+
+  if (moveToFactory) {
+    lines.push(moveToFactory);
   }
 
   if (rolloverNotice) {
@@ -2349,6 +2415,19 @@ function getOrderNoticeLines(order) {
 
 function getOrderNoticeText(order) {
   return getOrderNoticeLines(order).join(" | ");
+}
+
+function getMoveToFactoryLabel(order) {
+  return order?.moveToFactory ? "Yes" : "";
+}
+
+function getMoveToFactoryText(order) {
+  const label = getMoveToFactoryLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  return "Move collected stock to a factory.";
 }
 
 function getRolloverNoticeText(order) {
@@ -2366,6 +2445,33 @@ function getRolloverNoticeText(order) {
   }
 
   return `Rolled to the next day (${carryOverCount} ${dayLabel}).`;
+}
+
+function syncMoveToFactoryField(form) {
+  const entryTypeField = form.querySelector('[name="entryType"]');
+  const moveToFactoryField = form.querySelector('[name="moveToFactory"]');
+  const noteEl = form.querySelector("[data-move-to-factory-note]");
+
+  if (
+    !(entryTypeField instanceof HTMLSelectElement)
+    || !(moveToFactoryField instanceof HTMLInputElement)
+    || !(noteEl instanceof HTMLElement)
+  ) {
+    return;
+  }
+
+  const isCollection = entryTypeField.value === "collection";
+  moveToFactoryField.disabled = !isCollection;
+  if (!isCollection) {
+    moveToFactoryField.checked = false;
+  }
+
+  if (!isCollection) {
+    noteEl.textContent = "Switch the entry type to Collection to enable factory transfer.";
+    return;
+  }
+
+  noteEl.textContent = "Check this when the collected stock must be moved to a factory.";
 }
 
 function escapeCsvValue(value) {

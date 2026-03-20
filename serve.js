@@ -42,10 +42,11 @@ const RPC_DEFINITIONS = Object.freeze({
   },
   toggle_user_active: { params: ["p_token", "p_user_id"] },
   delete_user_account: { params: ["p_token", "p_user_id"] },
-  create_supplier: { params: ["p_token", "p_name"] },
+  create_supplier: { params: ["p_token", "p_name", "p_contact_person", "p_contact_number", "p_factory"] },
+  update_supplier: { params: ["p_token", "p_supplier_id", "p_name", "p_contact_person", "p_contact_number", "p_factory"] },
   delete_supplier: { params: ["p_token", "p_supplier_id"] },
   create_location: {
-    params: ["p_token", "p_supplier_id", "p_name", "p_address", "p_lat", "p_lng", "p_notes"],
+    params: ["p_token", "p_location_type", "p_name", "p_address", "p_lat", "p_lng", "p_contact_person", "p_contact_number"],
   },
   delete_location: { params: ["p_token", "p_location_id"] },
   create_order: {
@@ -58,6 +59,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_inhouse_order_number",
       "p_allow_duplicate",
       "p_notice",
+      "p_move_to_factory",
     ],
   },
   complete_order: { params: ["p_token", "p_order_id"] },
@@ -540,6 +542,7 @@ function buildOrdersCsv(orders) {
       "Driver",
       "Pickup location",
       "Collection or delivery",
+      "Move to factory",
       "Factory order number",
       "In-house order number",
       "Created by",
@@ -553,6 +556,7 @@ function buildOrdersCsv(orders) {
       order.driverName || "",
       order.locationName || "",
       order.entryType || "",
+      getMoveToFactoryLabel(order) || "No",
       order.factoryOrderNumber || "",
       order.inhouseOrderNumber || "",
       order.createdByName || "",
@@ -569,10 +573,15 @@ function buildOrdersCsv(orders) {
 function buildOrderNoticeText(order) {
   const lines = [];
   const notice = String(order?.notes || "").trim();
+  const moveToFactory = getMoveToFactoryText(order);
   const carryOverCount = Number(order?.carryOverCount || 0);
 
   if (notice) {
     lines.push(notice);
+  }
+
+  if (moveToFactory) {
+    lines.push(moveToFactory);
   }
 
   if (carryOverCount > 0) {
@@ -588,6 +597,19 @@ function buildOrderNoticeText(order) {
   }
 
   return lines.join(" | ");
+}
+
+function getMoveToFactoryLabel(order) {
+  return order?.moveToFactory ? "Yes" : "";
+}
+
+function getMoveToFactoryText(order) {
+  const label = getMoveToFactoryLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  return "Move collected stock to a factory.";
 }
 
 async function sendViaMicrosoftGraph(config, message) {

@@ -23,6 +23,9 @@ create unique index if not exists app_users_name_unique
 create table if not exists private.suppliers (
   id uuid primary key default public.gen_random_uuid(),
   name text not null,
+  contact_person text not null default '',
+  contact_number text not null default '',
+  factory boolean not null default false,
   created_by uuid not null references private.app_users(id) on delete restrict,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -31,13 +34,72 @@ create table if not exists private.suppliers (
 create unique index if not exists suppliers_name_unique
   on private.suppliers ((lower(btrim(name))));
 
+alter table private.suppliers add column if not exists contact_person text;
+alter table private.suppliers add column if not exists contact_number text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'private'
+      and table_name = 'suppliers'
+      and column_name = 'factory'
+  ) then
+    alter table private.suppliers add column factory boolean;
+  elsif exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'private'
+      and table_name = 'suppliers'
+      and column_name = 'factory'
+      and data_type <> 'boolean'
+  ) then
+    alter table private.suppliers drop column if exists factory_flag;
+    alter table private.suppliers add column factory_flag boolean;
+
+    update private.suppliers
+    set factory_flag = case
+      when factory is null then false
+      when lower(btrim(factory)) in ('', 'false', 'f', '0', 'no', 'n') then false
+      else true
+    end;
+
+    alter table private.suppliers drop column factory;
+    alter table private.suppliers rename column factory_flag to factory;
+  end if;
+end;
+$$;
+
+update private.suppliers
+set contact_person = ''
+where contact_person is null;
+
+update private.suppliers
+set contact_number = ''
+where contact_number is null;
+
+update private.suppliers
+set factory = false
+where factory is null;
+
+alter table private.suppliers alter column contact_person set default '';
+alter table private.suppliers alter column contact_number set default '';
+alter table private.suppliers alter column factory set default false;
+alter table private.suppliers alter column contact_person set not null;
+alter table private.suppliers alter column contact_number set not null;
+alter table private.suppliers alter column factory set not null;
+
 create table if not exists private.locations (
   id uuid primary key default public.gen_random_uuid(),
-  supplier_id uuid not null references private.suppliers(id) on delete restrict,
+  supplier_id uuid references private.suppliers(id) on delete restrict,
+  location_type text not null default 'supplier',
   name text not null,
   address text not null,
   lat numeric(9, 6) not null,
   lng numeric(9, 6) not null,
+  contact_person text not null default '',
+  contact_number text not null default '',
   notes text not null default '',
   created_by uuid not null references private.app_users(id) on delete restrict,
   created_at timestamptz not null default now(),
@@ -46,6 +108,54 @@ create table if not exists private.locations (
 
 create unique index if not exists locations_supplier_name_unique
   on private.locations (supplier_id, lower(btrim(name)));
+
+alter table private.locations add column if not exists location_type text;
+alter table private.locations add column if not exists contact_person text;
+alter table private.locations add column if not exists contact_number text;
+
+update private.locations l
+set location_type = case when s.factory then 'factory' else 'supplier' end,
+    contact_person = coalesce(nullif(btrim(l.contact_person), ''), s.contact_person, ''),
+    contact_number = coalesce(nullif(btrim(l.contact_number), ''), s.contact_number, '')
+from private.suppliers s
+where l.supplier_id = s.id
+  and (
+    l.location_type is null
+    or nullif(btrim(l.location_type), '') is null
+    or l.contact_person is null
+    or l.contact_number is null
+  );
+
+update private.locations
+set location_type = 'supplier'
+where location_type is null
+   or nullif(btrim(location_type), '') is null;
+
+update private.locations
+set contact_person = ''
+where contact_person is null;
+
+update private.locations
+set contact_number = ''
+where contact_number is null;
+
+alter table private.locations alter column supplier_id drop not null;
+alter table private.locations alter column location_type set default 'supplier';
+alter table private.locations alter column contact_person set default '';
+alter table private.locations alter column contact_number set default '';
+alter table private.locations alter column location_type set not null;
+alter table private.locations alter column contact_person set not null;
+alter table private.locations alter column contact_number set not null;
+
+alter table private.locations
+  drop constraint if exists locations_location_type_check;
+
+alter table private.locations
+  drop constraint if exists locations_type_check;
+
+alter table private.locations
+  add constraint locations_type_check
+  check (location_type in ('supplier', 'factory', 'both'));
 
 create table if not exists private.orders (
   id uuid primary key default public.gen_random_uuid(),
@@ -58,6 +168,7 @@ create table if not exists private.orders (
   customer_name text not null,
   priority text not null check (priority in ('high', 'medium', 'low')),
   notes text not null default '',
+  move_to_factory boolean not null default false,
   status text not null default 'active' check (status in ('active', 'completed')),
   scheduled_for date not null,
   original_scheduled_for date not null,
@@ -71,6 +182,7 @@ create table if not exists private.orders (
 alter table private.orders add column if not exists entry_type text;
 alter table private.orders add column if not exists factory_order_number text;
 alter table private.orders add column if not exists inhouse_order_number text;
+alter table private.orders add column if not exists move_to_factory boolean;
 
 update private.orders
 set entry_type = 'delivery'
@@ -87,12 +199,18 @@ set inhouse_order_number = concat('ORD-', order_number)
 where inhouse_order_number is null
    or nullif(btrim(inhouse_order_number), '') is null;
 
+update private.orders
+set move_to_factory = false
+where move_to_factory is null;
+
 alter table private.orders alter column entry_type set default 'delivery';
 alter table private.orders alter column factory_order_number set default '';
 alter table private.orders alter column inhouse_order_number set default '';
+alter table private.orders alter column move_to_factory set default false;
 alter table private.orders alter column entry_type set not null;
 alter table private.orders alter column factory_order_number set not null;
 alter table private.orders alter column inhouse_order_number set not null;
+alter table private.orders alter column move_to_factory set not null;
 
 create index if not exists orders_driver_scheduled_idx
   on private.orders (driver_user_id, scheduled_for);
@@ -446,6 +564,9 @@ begin
         jsonb_build_object(
           'id', s.id,
           'name', s.name,
+          'contactPerson', s.contact_person,
+          'contactNumber', s.contact_number,
+          'factory', s.factory,
           'createdAt', s.created_at
         )
         order by lower(s.name)
@@ -459,22 +580,22 @@ begin
       jsonb_agg(
         jsonb_build_object(
           'id', l.id,
-          'supplierId', l.supplier_id,
-          'supplierName', s.name,
+          'locationType', l.location_type,
           'name', l.name,
           'address', l.address,
           'lat', l.lat,
           'lng', l.lng,
+          'contactPerson', l.contact_person,
+          'contactNumber', l.contact_number,
           'notes', l.notes,
           'createdAt', l.created_at
         )
-        order by lower(s.name), lower(l.name)
+        order by lower(l.name)
       ),
       '[]'::jsonb
     )
     into v_locations
-    from private.locations l
-    join private.suppliers s on s.id = l.supplier_id;
+    from private.locations l;
 
     select coalesce(
       jsonb_agg(
@@ -483,6 +604,7 @@ begin
           'reference', concat('ORD-', o.order_number),
           'orderNumber', o.order_number,
           'entryType', o.entry_type,
+          'moveToFactory', o.move_to_factory,
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
           'customerName', o.customer_name,
@@ -491,6 +613,9 @@ begin
           'locationId', o.location_id,
           'locationName', l.name,
           'locationAddress', l.address,
+          'locationType', l.location_type,
+          'locationContactPerson', l.contact_person,
+          'locationContactNumber', l.contact_number,
           'priority', o.priority,
           'notes', o.notes,
           'status', o.status,
@@ -522,6 +647,9 @@ begin
         jsonb_build_object(
           'id', s.id,
           'name', s.name,
+          'contactPerson', s.contact_person,
+          'contactNumber', s.contact_number,
+          'factory', s.factory,
           'createdAt', s.created_at
         )
         order by lower(s.name)
@@ -542,22 +670,22 @@ begin
       jsonb_agg(
         jsonb_build_object(
           'id', l.id,
-          'supplierId', l.supplier_id,
-          'supplierName', s.name,
+          'locationType', l.location_type,
           'name', l.name,
           'address', l.address,
           'lat', l.lat,
           'lng', l.lng,
+          'contactPerson', l.contact_person,
+          'contactNumber', l.contact_number,
           'notes', l.notes,
           'createdAt', l.created_at
         )
-        order by lower(s.name), lower(l.name)
+        order by lower(l.name)
       ),
       '[]'::jsonb
     )
     into v_locations
     from private.locations l
-    join private.suppliers s on s.id = l.supplier_id
     where exists (
       select 1
       from private.orders o
@@ -572,6 +700,7 @@ begin
           'reference', concat('ORD-', o.order_number),
           'orderNumber', o.order_number,
           'entryType', o.entry_type,
+          'moveToFactory', o.move_to_factory,
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
           'customerName', o.customer_name,
@@ -580,6 +709,9 @@ begin
           'locationId', o.location_id,
           'locationName', l.name,
           'locationAddress', l.address,
+          'locationType', l.location_type,
+          'locationContactPerson', l.contact_person,
+          'locationContactNumber', l.contact_number,
           'priority', o.priority,
           'notes', o.notes,
           'status', o.status,
@@ -760,9 +892,17 @@ begin
 end;
 $$;
 
+drop function if exists public.create_supplier(uuid, text);
+drop function if exists public.create_supplier(uuid, text, text, text);
+drop function if exists public.create_supplier(uuid, text, text, boolean);
+drop function if exists public.create_supplier(uuid, text, text, text, boolean);
+
 create or replace function public.create_supplier(
   p_token uuid,
-  p_name text
+  p_name text,
+  p_contact_person text,
+  p_contact_number text,
+  p_factory boolean
 )
 returns jsonb
 language plpgsql
@@ -772,11 +912,14 @@ as $$
 declare
   v_actor private.app_users;
   v_name text := nullif(btrim(p_name), '');
+  v_contact_person text := coalesce(nullif(btrim(p_contact_person), ''), '');
+  v_contact_number text := nullif(btrim(p_contact_number), '');
+  v_factory boolean := coalesce(p_factory, false);
 begin
   v_actor := private.require_user(p_token, array['admin']);
 
-  if v_name is null then
-    raise exception 'Supplier name is required.';
+  if v_name is null or v_contact_number is null then
+    raise exception 'Supplier name and contact number are required.';
   end if;
 
   if exists (
@@ -787,8 +930,66 @@ begin
     raise exception 'That supplier already exists.';
   end if;
 
-  insert into private.suppliers (name, created_by)
-  values (v_name, v_actor.id);
+  insert into private.suppliers (name, contact_person, contact_number, factory, created_by)
+  values (v_name, v_contact_person, v_contact_number, v_factory, v_actor.id);
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+drop function if exists public.update_supplier(uuid, uuid, text, text, text);
+drop function if exists public.update_supplier(uuid, uuid, text, text, boolean);
+drop function if exists public.update_supplier(uuid, uuid, text, text, text, boolean);
+
+create or replace function public.update_supplier(
+  p_token uuid,
+  p_supplier_id uuid,
+  p_name text,
+  p_contact_person text,
+  p_contact_number text,
+  p_factory boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_name text := nullif(btrim(p_name), '');
+  v_contact_person text := coalesce(nullif(btrim(p_contact_person), ''), '');
+  v_contact_number text := nullif(btrim(p_contact_number), '');
+  v_factory boolean := coalesce(p_factory, false);
+begin
+  v_actor := private.require_user(p_token, array['admin']);
+
+  if v_name is null or v_contact_number is null then
+    raise exception 'Supplier name and contact number are required.';
+  end if;
+
+  if not exists (
+    select 1
+    from private.suppliers
+    where id = p_supplier_id
+  ) then
+    raise exception 'Supplier not found.';
+  end if;
+
+  if exists (
+    select 1
+    from private.suppliers
+    where id <> p_supplier_id
+      and lower(btrim(name)) = lower(v_name)
+  ) then
+    raise exception 'That supplier already exists.';
+  end if;
+
+  update private.suppliers
+  set name = v_name,
+      contact_person = v_contact_person,
+      contact_number = v_contact_number,
+      factory = v_factory
+  where id = p_supplier_id;
 
   return jsonb_build_object('ok', true);
 end;
@@ -823,14 +1024,18 @@ begin
 end;
 $$;
 
+drop function if exists public.create_location(uuid, uuid, text, text, numeric, numeric, text);
+drop function if exists public.create_location(uuid, text, text, text, numeric, numeric, text, text);
+
 create or replace function public.create_location(
   p_token uuid,
-  p_supplier_id uuid,
+  p_location_type text,
   p_name text,
   p_address text,
   p_lat numeric,
   p_lng numeric,
-  p_notes text default null
+  p_contact_person text,
+  p_contact_number text
 )
 returns jsonb
 language plpgsql
@@ -839,39 +1044,44 @@ set search_path = ''
 as $$
 declare
   v_actor private.app_users;
+  v_location_type text := lower(nullif(btrim(p_location_type), ''));
   v_name text := nullif(btrim(p_name), '');
   v_address text := nullif(btrim(p_address), '');
+  v_contact_person text := coalesce(nullif(btrim(p_contact_person), ''), '');
+  v_contact_number text := nullif(btrim(p_contact_number), '');
 begin
   v_actor := private.require_user(p_token, array['admin']);
 
-  if v_name is null or v_address is null then
-    raise exception 'Location name and address are required.';
+  if v_location_type not in ('supplier', 'factory', 'both') then
+    raise exception 'Location type must be supplier, factory, or both.';
   end if;
 
-  if not exists (
-    select 1
-    from private.suppliers
-    where id = p_supplier_id
-  ) then
-    raise exception 'Supplier not found.';
+  if v_name is null or v_address is null or v_contact_number is null then
+    raise exception 'Location name, address, and contact number are required.';
   end if;
 
   insert into private.locations (
     supplier_id,
+    location_type,
     name,
     address,
     lat,
     lng,
+    contact_person,
+    contact_number,
     notes,
     created_by
   )
   values (
-    p_supplier_id,
+    null,
+    v_location_type,
     v_name,
     v_address,
     p_lat,
     p_lng,
-    coalesce(nullif(btrim(p_notes), ''), ''),
+    v_contact_person,
+    v_contact_number,
+    '',
     v_actor.id
   );
 
@@ -911,6 +1121,7 @@ $$;
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text, boolean);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -920,7 +1131,8 @@ create or replace function public.create_order(
   p_factory_order_number text,
   p_inhouse_order_number text,
   p_allow_duplicate boolean default false,
-  p_notice text default null
+  p_notice text default null,
+  p_move_to_factory boolean default false
 )
 returns jsonb
 language plpgsql
@@ -930,11 +1142,13 @@ as $$
 declare
   v_actor private.app_users;
   v_driver private.app_users;
+  v_location private.locations;
   v_today date := private.today_local();
   v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
   v_factory_order_number text := nullif(btrim(p_factory_order_number), '');
   v_inhouse_order_number text := nullif(btrim(p_inhouse_order_number), '');
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
+  v_move_to_factory boolean := coalesce(p_move_to_factory, false);
 begin
   v_actor := private.require_user(p_token);
 
@@ -961,12 +1175,17 @@ begin
     raise exception 'Driver not found.';
   end if;
 
-  if not exists (
-    select 1
-    from private.locations
-    where id = p_location_id
-  ) then
+  select *
+  into v_location
+  from private.locations
+  where id = p_location_id;
+
+  if v_location.id is null then
     raise exception 'Location not found.';
+  end if;
+
+  if v_move_to_factory and v_entry_type <> 'collection' then
+    raise exception 'Only collection entries can be marked to move stock to a factory.';
   end if;
 
   if exists (
@@ -989,6 +1208,7 @@ begin
     inhouse_order_number,
     priority,
     notes,
+    move_to_factory,
     scheduled_for,
     original_scheduled_for,
     created_by_user_id
@@ -1002,6 +1222,7 @@ begin
     v_inhouse_order_number,
     'medium',
     v_notice,
+    v_move_to_factory,
     v_today,
     v_today,
     v_actor.id
