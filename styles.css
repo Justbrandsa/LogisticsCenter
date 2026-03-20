@@ -420,6 +420,16 @@ textarea {
   width: auto;
 }
 
+.assignment-control {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 220px;
+}
+
+.assignment-inline {
+  font-size: 0.82rem;
+}
+
 .field-note {
   margin: -0.35rem 0 0;
   color: var(--muted);

@@ -4,6 +4,7 @@ const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
 const PAGE_SIZES = {
   globalEntries: 12,
+  assignments: 12,
   driverLists: 3,
   completedEntries: 10,
 };
@@ -30,6 +31,7 @@ const state = {
   editingSupplierId: "",
   pagination: {
     globalEntries: 1,
+    assignments: 1,
     driverLists: 1,
     completedEntries: 1,
   },
@@ -365,6 +367,11 @@ async function handleClick(event) {
     );
   }
 
+  if (action === "save-order-assignment" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    await saveOrderAssignment(button, currentUser);
+    return;
+  }
+
   if (action === "complete-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
     await runMutation(
       "complete_order",
@@ -607,8 +614,8 @@ async function createOrder(formData, currentUser) {
   const moveToFactory = formData.get("moveToFactory") === "on";
   const allowDuplicate = formData.get("allowDuplicate") === "on";
 
-  if (!driverUserId || !locationId || !entryType || !factoryOrderNumber || !inhouseOrderNumber) {
-    showFlash("Driver, pickup location, entry type, factory order number, and in-house order number are required.", "error");
+  if (!locationId || !entryType || !factoryOrderNumber || !inhouseOrderNumber) {
+    showFlash("Pickup location, entry type, factory order number, and in-house order number are required.", "error");
     render();
     return;
   }
@@ -617,7 +624,7 @@ async function createOrder(formData, currentUser) {
     "create_order",
     {
       p_token: sessionToken,
-      p_driver_user_id: driverUserId,
+      p_driver_user_id: driverUserId || null,
       p_location_id: locationId,
       p_entry_type: entryType,
       p_factory_order_number: factoryOrderNumber,
@@ -626,7 +633,39 @@ async function createOrder(formData, currentUser) {
       p_move_to_factory: moveToFactory,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
     },
-    "Entry added to the driver list.",
+    driverUserId ? "Entry added to the driver list." : "Entry created in the unassigned queue.",
+  );
+}
+
+async function saveOrderAssignment(button, currentUser) {
+  const orderId = String(button.dataset.orderId || "").trim();
+  if (!orderId) {
+    return;
+  }
+
+  const driverField = document.querySelector(`[data-assignment-driver][data-order-id="${orderId}"]`);
+  if (!(driverField instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const allowDuplicateField = document.querySelector(`[data-assignment-allow-duplicate][data-order-id="${orderId}"]`);
+  const driverUserId = String(driverField.value || "").trim();
+  const selectedLabel = driverField.selectedOptions[0]?.textContent?.trim() || "Unassigned";
+
+  await runMutation(
+    "assign_order",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_driver_user_id: driverUserId || null,
+      p_allow_duplicate:
+        currentUser.role === "admin" && allowDuplicateField instanceof HTMLInputElement
+          ? allowDuplicateField.checked
+          : false,
+    },
+    driverUserId
+      ? `Entry assigned to ${selectedLabel}.`
+      : "Entry moved to the unassigned queue.",
   );
 }
 
@@ -724,6 +763,7 @@ function getNavigationItems(role) {
     return [
       { id: "dashboard", label: "Dashboard" },
       { id: "entries", label: "Global List" },
+      { id: "assignments", label: "Assignments" },
       { id: "network", label: "Network" },
       { id: "users", label: "Users" },
       { id: "drivers", label: "Driver Lists" },
@@ -734,6 +774,7 @@ function getNavigationItems(role) {
     return [
       { id: "dashboard", label: "Dashboard" },
       { id: "entries", label: "Global List" },
+      { id: "assignments", label: "Assignments" },
       { id: "drivers", label: "Driver Lists" },
     ];
   }
@@ -1053,6 +1094,7 @@ function renderDriverScreen() {
 
 function renderAdminPageContent() {
   const activeOrders = getActiveOrders();
+  const unassignedOrders = getUnassignedActiveOrders();
   const completedOrders = getCompletedOrders();
 
   if (state.currentPage === "entries") {
@@ -1060,16 +1102,33 @@ function renderAdminPageContent() {
       <section class="hero-card">
         <p class="eyebrow">Global List</p>
         <h2>Create work and distribute the global list</h2>
-        <p>Use this page to add live work, download the CSV, or mail the CSV straight to the admin inbox.</p>
+        <p>Use this page to add live work with an optional driver assignment, then download or email the shared CSV.</p>
       </section>
       ${renderFlash()}
       <section class="panel">
         <p class="eyebrow">Global List</p>
-        <h3 class="panel-title">Create a new driver entry</h3>
-        <p class="panel-subtitle">Admins can override the duplicate-order rule when there is a real exception.</p>
+        <h3 class="panel-title">Create a new entry</h3>
+        <p class="panel-subtitle">Leave the driver unassigned to queue work for later dispatch. Admins can still override the duplicate rule when assigning to a driver.</p>
         ${renderEntryForm(state.snapshot.user, true)}
       </section>
       ${renderGlobalOrdersSection("admin")}
+    `;
+  }
+
+  if (state.currentPage === "assignments") {
+    return `
+      <section class="hero-card">
+        <p class="eyebrow">Assignments</p>
+        <h2>Assign queued work to drivers</h2>
+        <p>Review active entries, keep new work unassigned when needed, and move it onto driver lists once dispatch is ready.</p>
+      </section>
+      ${renderFlash()}
+      <section class="metrics">
+        ${renderMetric("Unassigned", unassignedOrders.length)}
+        ${renderMetric("Assigned", activeOrders.length - unassignedOrders.length)}
+        ${renderMetric("Active drivers", getActiveDriverUsers().length)}
+      </section>
+      ${renderAssignmentManager("admin")}
     `;
   }
 
@@ -1121,11 +1180,13 @@ function renderAdminPageContent() {
     ${renderFlash()}
     <section class="metrics">
       ${renderMetric("Open entries", activeOrders.length)}
+      ${renderMetric("Unassigned", unassignedOrders.length)}
       ${renderMetric("Drivers", getDriverUsers().length)}
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
+      ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
       ${renderPageSummaryCard("Network", "Maintain pickup locations.", "network")}
       ${renderPageSummaryCard("Users", "Manage admin, sales, and driver accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
@@ -1136,22 +1197,40 @@ function renderAdminPageContent() {
 function renderSalesPageContent() {
   const ordersCreated = countOrdersCreatedByCurrentUser();
   const activeOrders = getActiveOrders();
+  const unassignedOrders = getUnassignedActiveOrders();
 
   if (state.currentPage === "entries") {
     return `
       <section class="hero-card">
         <p class="eyebrow">Global List</p>
         <h2>Create work and manage the global list</h2>
-        <p>Sales can add work, download the CSV, or email the latest global list to the admin inbox.</p>
+        <p>Sales can add work with an optional driver assignment, then download or email the latest global list.</p>
       </section>
       ${renderFlash()}
       <section class="panel">
         <p class="eyebrow">Global List</p>
-        <h3 class="panel-title">Append work to a driver list</h3>
-        <p class="panel-subtitle">The duplicate-order rule is enforced by the database.</p>
+        <h3 class="panel-title">Create a new entry</h3>
+        <p class="panel-subtitle">Leave the driver unassigned to hold the work for later dispatch. Duplicate protection still applies when a driver is selected.</p>
         ${renderEntryForm(state.snapshot.user, false)}
       </section>
       ${renderGlobalOrdersSection("sales")}
+    `;
+  }
+
+  if (state.currentPage === "assignments") {
+    return `
+      <section class="hero-card">
+        <p class="eyebrow">Assignments</p>
+        <h2>Allocate active work to drivers</h2>
+        <p>Use this page to work through the unassigned queue and reassign active entries when the route plan changes.</p>
+      </section>
+      ${renderFlash()}
+      <section class="metrics">
+        ${renderMetric("Unassigned", unassignedOrders.length)}
+        ${renderMetric("Assigned", activeOrders.length - unassignedOrders.length)}
+        ${renderMetric("Active drivers", getActiveDriverUsers().length)}
+      </section>
+      ${renderAssignmentManager("sales")}
     `;
   }
 
@@ -1178,9 +1257,11 @@ function renderSalesPageContent() {
       ${renderMetric("Drivers visible", getDriverUsers().length)}
       ${renderMetric("Entries created", ordersCreated)}
       ${renderMetric("Open entries", activeOrders.length)}
+      ${renderMetric("Unassigned", unassignedOrders.length)}
     </section>
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Create new work and email, test, or download the CSV register.", "entries")}
+      ${renderPageSummaryCard("Assignments", "Assign queued work to drivers and rebalance active entries.", "assignments")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
@@ -1429,8 +1510,8 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
       <div class="form-grid">
         <label>
           Driver
-          <select name="driverUserId" required>
-            ${renderDriverOptions()}
+          <select name="driverUserId">
+            ${renderDriverOptions("", true)}
           </select>
         </label>
         <label>
@@ -1440,6 +1521,9 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           </select>
         </label>
       </div>
+      <p class="field-note">
+        Leave the driver as Unassigned if dispatch will allocate it later.
+      </p>
       <div class="form-grid">
         <label>
           Collection or delivery
@@ -1491,6 +1575,49 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
         Create entry
       </button>
     </form>
+  `;
+}
+
+function renderAssignmentManager(viewerRole) {
+  const activeOrders = [...getActiveOrders()].sort(orderAssignmentSort);
+  const page = getPaginationData(activeOrders, "assignments", PAGE_SIZES.assignments);
+
+  return `
+    <section class="table-card">
+      <div class="table-toolbar">
+        <div>
+          <p class="eyebrow">Assignments</p>
+          <h3 class="panel-title">Active entry allocation</h3>
+          <p class="panel-subtitle">Unassigned entries appear first. Move work onto a driver list when the route is ready, or return it to the queue.</p>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Entry</th>
+              <th>Current driver</th>
+              <th>Pickup location</th>
+              <th>Created by</th>
+              <th>Assign to</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              page.items.length
+                ? page.items.map((order) => renderAssignmentRow(order, viewerRole)).join("")
+                : `
+                  <tr>
+                    <td colspan="6">No active entries available for assignment.</td>
+                  </tr>
+                `
+            }
+          </tbody>
+        </table>
+      </div>
+      ${renderPaginationControls("assignments", page)}
+    </section>
   `;
 }
 
@@ -1682,7 +1809,7 @@ function renderGlobalOrderRow(order) {
       <td>${escapeHtml(order.factoryOrderNumber || "")}</td>
       <td>${renderTypeChip(order.entryType)}</td>
       <td>${renderMoveToFactoryValue(order)}</td>
-      <td>${escapeHtml(order.driverName || "Unknown")}</td>
+      <td>${renderDriverAssignmentValue(order)}</td>
       <td>
         <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
         <span class="muted">${escapeHtml(order.locationAddress || "")}</span>
@@ -1691,6 +1818,54 @@ function renderGlobalOrderRow(order) {
       <td>${renderStatusChip(order.status)}</td>
       <td>${renderOrderNotice(order, "None")}</td>
       <td>${escapeHtml(formatDateTime(order.createdAt))}</td>
+    </tr>
+  `;
+}
+
+function renderAssignmentRow(order, viewerRole) {
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(order.reference)}</strong><br>
+        <span class="muted">In-house ${escapeHtml(order.inhouseOrderNumber || "")}</span><br>
+        <span class="muted">Factory ${escapeHtml(order.factoryOrderNumber || "")}</span>
+        <div class="chip-row">
+          ${renderTypeChip(order.entryType)}
+          ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
+        </div>
+        ${renderOrderNotice(order)}
+      </td>
+      <td>${renderDriverAssignmentValue(order)}</td>
+      <td>
+        <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
+        <span class="muted">${escapeHtml(order.locationAddress || "")}</span>
+      </td>
+      <td>
+        ${escapeHtml(order.createdByName || "Unknown")}<br>
+        <span class="muted">${escapeHtml(formatDateTime(order.createdAt))}</span>
+      </td>
+      <td>
+        <div class="assignment-control">
+          <select data-assignment-driver data-order-id="${order.id}">
+            ${renderDriverOptions(order.driverUserId || "", true)}
+          </select>
+          ${
+            viewerRole === "admin"
+              ? `
+                <label class="inline-check assignment-inline">
+                  <input type="checkbox" data-assignment-allow-duplicate data-order-id="${order.id}">
+                  Allow duplicate
+                </label>
+              `
+              : ""
+          }
+        </div>
+      </td>
+      <td>
+        <button class="button button-primary" data-action="save-order-assignment" data-order-id="${order.id}"${state.busy ? " disabled" : ""}>
+          ${order.driverUserId ? "Save" : "Assign"}
+        </button>
+      </td>
     </tr>
   `;
 }
@@ -1877,14 +2052,24 @@ function renderSupplierOptions() {
     .join("");
 }
 
-function renderDriverOptions() {
-  const drivers = getDriverUsers().filter((user) => user.active);
-  if (!drivers.length) {
-    return '<option value="">Create a driver first</option>';
+function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
+  const drivers = getActiveDriverUsers();
+  const options = [];
+
+  if (includeUnassigned) {
+    options.push(`<option value=""${selectedDriverId ? "" : " selected"}>Unassigned</option>`);
   }
 
-  return drivers
-    .map((driver) => `<option value="${driver.id}">${escapeHtml(driver.name)}</option>`)
+  if (!drivers.length) {
+    return options.length ? options.join("") : '<option value="">Create a driver first</option>';
+  }
+
+  return options
+    .concat(
+      drivers.map(
+        (driver) => `<option value="${driver.id}"${driver.id === selectedDriverId ? " selected" : ""}>${escapeHtml(driver.name)}</option>`,
+      ),
+    )
     .join("");
 }
 
@@ -1912,6 +2097,10 @@ function getDriverUsers() {
   return state.snapshot.users.filter((user) => user.role === "driver");
 }
 
+function getActiveDriverUsers() {
+  return getDriverUsers().filter((user) => user.active);
+}
+
 function getLocation(locationId) {
   return state.snapshot.locations.find((location) => location.id === locationId) || null;
 }
@@ -1932,6 +2121,10 @@ function getActiveOrders() {
   return state.snapshot.orders.filter((order) => order.status === "active");
 }
 
+function getUnassignedActiveOrders() {
+  return getActiveOrders().filter((order) => !order.driverUserId);
+}
+
 function getCompletedOrders(driverUserId = "") {
   return state.snapshot.orders.filter((order) => {
     if (order.status !== "completed") {
@@ -1948,7 +2141,9 @@ function getCompletedOrders(driverUserId = "") {
 
 function countActiveStops() {
   const activeStopKeys = new Set(
-    getActiveOrders().map((order) => `${order.driverUserId}:${order.locationId}`),
+    getActiveOrders()
+      .filter((order) => order.driverUserId)
+      .map((order) => `${order.driverUserId}:${order.locationId}`),
   );
   return activeStopKeys.size;
 }
@@ -2196,6 +2391,16 @@ function orderDisplaySort(left, right) {
   return right.createdAt.localeCompare(left.createdAt);
 }
 
+function orderAssignmentSort(left, right) {
+  const leftAssigned = Boolean(left.driverUserId);
+  const rightAssigned = Boolean(right.driverUserId);
+  if (leftAssigned !== rightAssigned) {
+    return leftAssigned ? 1 : -1;
+  }
+
+  return orderDisplaySort(left, right);
+}
+
 function getPaginationData(items, pageKey, pageSize) {
   const totalItems = items.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
@@ -2277,7 +2482,7 @@ function exportOrdersCsv() {
 
   const rows = sortedOrders.map((order) => [
     order.reference,
-    order.driverName,
+    getDriverDisplayName(order),
     order.locationName,
     order.entryType,
     getMoveToFactoryLabel(order) || "No",
@@ -2428,6 +2633,18 @@ function getMoveToFactoryText(order) {
   }
 
   return "Move collected stock to a factory.";
+}
+
+function getDriverDisplayName(order) {
+  return String(order?.driverName || "").trim() || "Unassigned";
+}
+
+function renderDriverAssignmentValue(order) {
+  if (order?.driverUserId) {
+    return escapeHtml(getDriverDisplayName(order));
+  }
+
+  return '<span class="chip chip-warning">Unassigned</span>';
 }
 
 function getRolloverNoticeText(order) {

@@ -62,6 +62,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_move_to_factory",
     ],
   },
+  assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
   complete_order: { params: ["p_token", "p_order_id"] },
   delete_order: { params: ["p_token", "p_order_id"] },
 });
@@ -553,7 +554,7 @@ function buildOrdersCsv(orders) {
     ],
     ...orders.map((order) => [
       order.reference || "",
-      order.driverName || "",
+      order.driverName || "Unassigned",
       order.locationName || "",
       order.entryType || "",
       getMoveToFactoryLabel(order) || "No",
