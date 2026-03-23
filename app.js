@@ -29,6 +29,7 @@ const state = {
   mailTo: "admin3@giftwrap.co.za",
   artworkTo: "artwork3@giftwrap.co.za",
   currentPage: "",
+  editingUserId: "",
   editingSupplierId: "",
   pagination: {
     globalEntries: 1,
@@ -128,6 +129,7 @@ function saveSessionToken(token) {
 
 async function refreshPublicState() {
   state.booting = true;
+  state.editingUserId = "";
   state.editingSupplierId = "";
   render();
 
@@ -148,6 +150,9 @@ async function refreshSnapshot() {
   try {
     const data = await callRpc("get_app_snapshot", { p_token: sessionToken });
     state.snapshot = normalizeSnapshot(data);
+    if (state.editingUserId && !state.snapshot.users.some((user) => user.id === state.editingUserId)) {
+      state.editingUserId = "";
+    }
     if (state.editingSupplierId && !state.snapshot.suppliers.some((supplier) => supplier.id === state.editingSupplierId)) {
       state.editingSupplierId = "";
     }
@@ -355,6 +360,18 @@ async function handleClick(event) {
     );
   }
 
+  if (action === "edit-user" && currentUser.role === "admin") {
+    state.editingUserId = String(button.dataset.userId || "");
+    render();
+    return;
+  }
+
+  if (action === "cancel-edit-user" && currentUser.role === "admin") {
+    state.editingUserId = "";
+    render();
+    return;
+  }
+
   if (action === "delete-user" && currentUser.role === "admin") {
     await runMutation(
       "delete_user_account",
@@ -538,28 +555,43 @@ async function runMutation(functionName, parameters, successMessage) {
 }
 
 async function createAccount(formData) {
+  const userId = String(formData.get("userId") || "").trim();
   const role = String(formData.get("role") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const password = String(formData.get("password") || "").trim();
   const phone = String(formData.get("phone") || "").trim();
 
-  if (!name || !password || !role) {
-    showFlash("Name, password, and role are required.", "error");
+  if (!name || !role || (!userId && !password)) {
+    showFlash(userId ? "Name and role are required." : "Name, password, and role are required.", "error");
     render();
     return;
   }
 
-  await runMutation(
-    "create_user_account",
-    {
-      p_token: sessionToken,
-      p_name: name,
-      p_password: password,
-      p_role: role,
-      p_phone: phone,
-    },
-    `${capitalize(role)} account created for ${name}.`,
+  const ok = await runMutation(
+    userId ? "update_user_account" : "create_user_account",
+    userId
+      ? {
+          p_token: sessionToken,
+          p_user_id: userId,
+          p_name: name,
+          p_role: role,
+          p_phone: phone,
+          p_password: password || null,
+        }
+      : {
+          p_token: sessionToken,
+          p_name: name,
+          p_password: password,
+          p_role: role,
+          p_phone: phone,
+        },
+    userId ? `Account updated: ${name}.` : `${capitalize(role)} account created for ${name}.`,
   );
+
+  if (ok) {
+    state.editingUserId = "";
+    render();
+  }
 }
 
 async function createSupplier(formData) {
@@ -1839,48 +1871,71 @@ function renderPageSummaryCard(title, description, pageId) {
 }
 
 function renderAccountPanel() {
+  const editingUser = getEditingUser();
+  const isEditing = Boolean(editingUser);
+  const selectedRole = editingUser?.role || "sales";
+  const selectedPhone = editingUser?.phone || "";
+
   return `
     <article class="panel">
       <p class="eyebrow">Accounts</p>
-      <h3 class="panel-title">Add team member</h3>
-      <p class="panel-subtitle">Create admin, sales, driver, or logistics accounts with name-based login.</p>
+      <h3 class="panel-title">${isEditing ? "Edit team member" : "Add team member"}</h3>
+      <p class="panel-subtitle">
+        ${
+          isEditing
+            ? "Update the selected account details. Leave the password blank to keep the current password."
+            : "Create admin, sales, driver, or logistics accounts with name-based login."
+        }
+      </p>
       <form data-form="add-account">
+        <input name="userId" type="hidden" value="${escapeHtml(editingUser?.id || "")}">
         <div class="form-grid">
           <label>
             Name
-            <input name="name" type="text" required>
+            <input name="name" type="text" value="${escapeHtml(editingUser?.name || "")}" required>
           </label>
           <label>
             Role
             <select name="role" data-driver-role-select required>
-              <option value="sales">Sales</option>
-              <option value="driver">Driver</option>
-              <option value="logistics">Logistics</option>
-              <option value="admin">Admin</option>
+              <option value="sales"${selectedRole === "sales" ? " selected" : ""}>Sales</option>
+              <option value="driver"${selectedRole === "driver" ? " selected" : ""}>Driver</option>
+              <option value="logistics"${selectedRole === "logistics" ? " selected" : ""}>Logistics</option>
+              <option value="admin"${selectedRole === "admin" ? " selected" : ""}>Admin</option>
             </select>
           </label>
         </div>
         <div class="form-grid">
           <label>
-            Password
-            <input name="password" type="password" required>
+            ${isEditing ? "Password reset" : "Password"}
+            <input name="password" type="password"${isEditing ? "" : " required"}>
           </label>
           <label>
             Note
-            <input type="text" value="Name is also the login field" readonly>
+            <input type="text" value="${escapeHtml(isEditing ? "Leave password blank to keep it unchanged" : "Name is also the login field")}" readonly>
           </label>
         </div>
-        <div id="driver-role-fields" class="hidden">
+        <div id="driver-role-fields"${selectedRole === "driver" ? "" : ' class="hidden"'}>
           <div class="form-grid">
             <label>
               Driver phone
-              <input name="phone" type="text" placeholder="071 555 0100">
+              <input name="phone" type="text" value="${escapeHtml(selectedPhone)}" placeholder="071 555 0100">
             </label>
           </div>
         </div>
-        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-          Create account
-        </button>
+        <div class="action-row">
+          <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+            ${isEditing ? "Save account" : "Create account"}
+          </button>
+          ${
+            isEditing
+              ? `
+                <button type="button" class="button button-ghost" data-action="cancel-edit-user"${state.busy ? " disabled" : ""}>
+                  Cancel
+                </button>
+              `
+              : ""
+          }
+        </div>
       </form>
     </article>
   `;
@@ -2398,6 +2453,9 @@ function renderUserRow(user) {
       <td>${detailParts.length ? detailParts.join("<br>") : "n/a"}</td>
       <td>
         <div class="action-row">
+          <button class="button button-secondary" data-action="edit-user" data-user-id="${user.id}"${state.busy ? " disabled" : ""}>
+            Edit
+          </button>
           <button class="button button-secondary" data-action="toggle-user" data-user-id="${user.id}"${state.busy ? " disabled" : ""}>
             ${user.active ? "Disable" : "Enable"}
           </button>
@@ -2652,6 +2710,14 @@ function renderLocationOptions() {
 
 function getUsersByRole(role) {
   return state.snapshot.users.filter((user) => user.role === role);
+}
+
+function getUser(userId) {
+  return state.snapshot.users.find((user) => user.id === userId) || null;
+}
+
+function getEditingUser() {
+  return state.editingUserId ? getUser(state.editingUserId) : null;
 }
 
 function getDriverUsers() {

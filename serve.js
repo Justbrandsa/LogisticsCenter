@@ -40,6 +40,9 @@ const RPC_DEFINITIONS = Object.freeze({
   create_user_account: {
     params: ["p_token", "p_name", "p_password", "p_role", "p_phone"],
   },
+  update_user_account: {
+    params: ["p_token", "p_user_id", "p_name", "p_role", "p_phone", "p_password"],
+  },
   toggle_user_active: { params: ["p_token", "p_user_id"] },
   delete_user_account: { params: ["p_token", "p_user_id"] },
   create_supplier: { params: ["p_token", "p_name", "p_contact_person", "p_contact_number", "p_factory"] },
@@ -173,7 +176,7 @@ async function routeRequest(request, response) {
     await serveStaticFile(cleanPath, request.method === "HEAD", response);
   } catch (error) {
     const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
-    const message = statusCode >= 500 ? "Server error." : normalizeErrorMessage(error);
+    const message = statusCode === 500 ? "Server error." : normalizeErrorMessage(error);
 
     if (statusCode >= 500) {
       console.error(error);
@@ -763,6 +766,12 @@ async function getMicrosoftGraphAccessToken(config) {
 
   const payload = await safeReadJson(response);
   if (!response.ok) {
+    if (String(payload?.error || "").trim().toLowerCase() === "invalid_client") {
+      throw createHttpError(
+        502,
+        "Microsoft Graph rejected the configured client secret. Update MAIL_CLIENT_SECRET or mail-config.js.",
+      );
+    }
     throw createHttpError(502, payload?.error_description || "Failed to acquire a Microsoft Graph access token.");
   }
 

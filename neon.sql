@@ -972,6 +972,84 @@ begin
 end;
 $$;
 
+drop function if exists public.update_user_account(uuid, uuid, text, text, text);
+drop function if exists public.update_user_account(uuid, uuid, text, text, text, text);
+
+create or replace function public.update_user_account(
+  p_token uuid,
+  p_user_id uuid,
+  p_name text,
+  p_role text,
+  p_phone text default null,
+  p_password text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_target private.app_users;
+  v_name text := nullif(btrim(p_name), '');
+  v_role text := lower(nullif(btrim(p_role), ''));
+  v_phone text := nullif(btrim(p_phone), '');
+  v_password text := nullif(btrim(p_password), '');
+begin
+  v_actor := private.require_user(p_token, array['admin']);
+
+  select *
+  into v_target
+  from private.app_users
+  where id = p_user_id;
+
+  if v_target.id is null then
+    raise exception 'User not found.';
+  end if;
+
+  if v_name is null then
+    raise exception 'Name is required.';
+  end if;
+
+  if v_role not in ('admin', 'sales', 'driver', 'logistics') then
+    raise exception 'Invalid role.';
+  end if;
+
+  if v_password is not null and length(v_password) < 4 then
+    raise exception 'Password must be at least 4 characters long.';
+  end if;
+
+  if exists (
+    select 1
+    from private.app_users
+    where id <> p_user_id
+      and lower(btrim(name)) = lower(v_name)
+  ) then
+    raise exception 'That name is already in use.';
+  end if;
+
+  if v_role = 'driver' and v_phone is null then
+    raise exception 'Driver accounts require a phone number.';
+  end if;
+
+  if v_target.id = v_actor.id and v_role <> v_actor.role then
+    raise exception 'You cannot change your own role.';
+  end if;
+
+  update private.app_users
+  set name = v_name,
+      role = v_role,
+      phone = case when v_role = 'driver' then v_phone else null end,
+      password_hash = case
+        when v_password is null then password_hash
+        else private.hash_password(v_password)
+      end
+  where id = p_user_id;
+
+  return jsonb_build_object('ok', true, 'updatedBy', v_actor.id);
+end;
+$$;
+
 create or replace function public.toggle_user_active(
   p_token uuid,
   p_user_id uuid
