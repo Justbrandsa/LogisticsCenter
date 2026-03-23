@@ -664,13 +664,25 @@ async function createLocation(formData) {
   const locationType = String(formData.get("locationType") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const address = String(formData.get("address") || "").trim();
-  const lat = Number(formData.get("lat"));
-  const lng = Number(formData.get("lng"));
+  const lat = parseOptionalNumber(formData.get("lat"));
+  const lng = parseOptionalNumber(formData.get("lng"));
   const contactPerson = String(formData.get("contactPerson") || "").trim();
   const contactNumber = String(formData.get("contactNumber") || "").trim();
 
-  if (!locationType || !name || !address || Number.isNaN(lat) || Number.isNaN(lng)) {
-    showFlash("Location name, type, address, and coordinates are required.", "error");
+  if (!locationType || !name || !address) {
+    showFlash("Location name, type, and address are required.", "error");
+    render();
+    return;
+  }
+
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    showFlash("Latitude and longitude must be valid numbers.", "error");
+    render();
+    return;
+  }
+
+  if ((lat === null) !== (lng === null)) {
+    showFlash("Enter both latitude and longitude, or leave both blank.", "error");
     render();
     return;
   }
@@ -1752,7 +1764,7 @@ function renderStockItemsSection(viewerRole) {
       <p class="panel-subtitle">
         ${
           allowDelete
-            ? "Admins can delete stock items only while they have no movement or artwork history."
+            ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
             : "Each item stays linked to its movement and artwork history for traceability."
         }
       </p>
@@ -2002,15 +2014,15 @@ function renderSupplierNetworkSection() {
     <section class="table-card">
       <p class="eyebrow">Location network</p>
       <h3 class="panel-title">Pickup locations</h3>
-      <p class="panel-subtitle">Each location stores its own type, address, and optional contact details.</p>
+      <p class="panel-subtitle">Each location stores its own type, address, optional coordinates, and optional contact details.</p>
       <article class="panel">
         <p class="eyebrow">Locations</p>
         <h3 class="panel-title">${isEditingLocation ? "Edit location" : "Add location"}</h3>
         <p class="panel-subtitle">
           ${
             isEditingLocation
-              ? "Update the selected location details. Contact person and contact number can still be left blank."
-              : "Contact person and contact number can be left blank when they are not available."
+              ? "Update the selected location details. Contact details and coordinates can be left blank when unavailable."
+              : "Contact details and coordinates can be left blank when they are not available."
           }
         </p>
         <form data-form="add-location">
@@ -2036,11 +2048,11 @@ function renderSupplierNetworkSection() {
           <div class="form-grid">
             <label>
               Latitude
-              <input name="lat" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lat ?? "")}" required>
+              <input name="lat" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lat ?? "")}" placeholder="Optional">
             </label>
             <label>
               Longitude
-              <input name="lng" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lng ?? "")}" required>
+              <input name="lng" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lng ?? "")}" placeholder="Optional">
             </label>
           </div>
           <div class="form-grid">
@@ -2591,7 +2603,6 @@ function renderLocationRow(location) {
 
 function renderStockItemRow(item, viewerRole) {
   const allowDelete = viewerRole === "admin";
-  const hasHistory = stockItemHasHistory(item.id);
 
   return `
     <tr>
@@ -2605,15 +2616,9 @@ function renderStockItemRow(item, viewerRole) {
         allowDelete
           ? `
             <td>
-              ${
-                hasHistory
-                  ? '<span class="muted">History locked</span>'
-                  : `
-                    <button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>
-                      Delete
-                    </button>
-                  `
-              }
+              <button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>
+                Delete
+              </button>
             </td>
           `
           : ""
@@ -2658,6 +2663,9 @@ function renderArtworkRequestRow(request) {
 function renderStopCard(stop, index, viewerRole) {
   const allowComplete = viewerRole === "admin" || viewerRole === "driver";
   const allowDelete = viewerRole === "admin";
+  const legLabel = stop.hasCoordinates && stop.legKm !== null
+    ? `${stop.legKm.toFixed(1)} km leg`
+    : "Coordinates pending";
 
   return `
     <article class="stop-card">
@@ -2668,7 +2676,7 @@ function renderStopCard(stop, index, viewerRole) {
           <p class="stop-address">${escapeHtml(stop.location.address)}</p>
         </div>
         <div class="chip-row">
-          <span class="chip">${stop.legKm.toFixed(1)} km leg</span>
+          <span class="chip">${legLabel}</span>
           <span class="chip">${stop.orders.length} entr${stop.orders.length === 1 ? "y" : "ies"}</span>
         </div>
       </div>
@@ -2863,11 +2871,6 @@ function getStockOnHandTotal() {
   return state.snapshot.stockItems.reduce((sum, item) => sum + Number(item.onHandQuantity || 0), 0);
 }
 
-function stockItemHasHistory(stockItemId) {
-  return state.snapshot.stockMovements.some((movement) => movement.stockItemId === stockItemId)
-    || state.snapshot.artworkRequests.some((request) => request.stockItemId === stockItemId);
-}
-
 function getStockMovementPartyLabel(movement) {
   if (movement?.movementType === "in") {
     return movement?.supplierName || "Supplier not set";
@@ -2924,23 +2927,28 @@ function getRoutePlan(driverUserId) {
       return;
     }
 
+    const coordinates = getCoordinates(location);
+
     if (!grouped.has(location.id)) {
       grouped.set(location.id, {
         id: location.id,
         location,
         orders: [],
-        lat: Number(location.lat),
-        lng: Number(location.lng),
+        lat: coordinates?.lat ?? null,
+        lng: coordinates?.lng ?? null,
+        hasCoordinates: Boolean(coordinates),
       });
     }
 
     grouped.get(location.id).orders.push(order);
   });
 
-  const orderedStops = optimizeRoute(Array.from(grouped.values()), {
+  const stops = Array.from(grouped.values());
+  const orderedStops = optimizeRoute(stops.filter((stop) => stop.hasCoordinates), {
     lat: HUB.lat,
     lng: HUB.lng,
   });
+  const unroutedStops = stops.filter((stop) => !stop.hasCoordinates);
 
   const enrichedStops = [];
   let currentPoint = { lat: HUB.lat, lng: HUB.lng };
@@ -2951,10 +2959,16 @@ function getRoutePlan(driverUserId) {
     });
     currentPoint = stop;
   });
+  unroutedStops.forEach((stop) => {
+    enrichedStops.push({
+      ...stop,
+      legKm: null,
+    });
+  });
 
   return {
     totalOrders: activeOrders.length,
-    totalKm: totalRouteDistance(enrichedStops, { lat: HUB.lat, lng: HUB.lng }),
+    totalKm: totalRouteDistance(orderedStops, { lat: HUB.lat, lng: HUB.lng }),
     stops: enrichedStops,
   };
 }
@@ -3056,12 +3070,13 @@ function drawDriverRoute(driverUserId) {
   }
 
   const plan = getRoutePlan(driverUserId);
+  const routeableStops = plan.stops.filter((stop) => stop.hasCoordinates);
   const points = [
     { label: HUB.label, lat: HUB.lat, lng: HUB.lng, isHub: true },
-    ...plan.stops.map((stop, index) => ({
+    ...routeableStops.map((stop, index) => ({
       label: `${index + 1}. ${stop.location.name}`,
-      lat: Number(stop.location.lat),
-      lng: Number(stop.location.lng),
+      lat: stop.lat,
+      lng: stop.lng,
       isHub: false,
     })),
   ];
@@ -3073,7 +3088,7 @@ function drawDriverRoute(driverUserId) {
   if (points.length === 1) {
     context.fillStyle = "#5b665e";
     context.font = "16px Trebuchet MS";
-    context.fillText("No active route to draw yet.", 32, 40);
+    context.fillText("No mapped route to draw yet.", 32, 40);
     return;
   }
 
@@ -3126,6 +3141,12 @@ function drawDriverRoute(driverUserId) {
     context.font = "13px Trebuchet MS";
     context.fillText(point.label, point.x + 14, point.y - 10);
   });
+
+  if (routeableStops.length < plan.stops.length) {
+    context.fillStyle = "#5b665e";
+    context.font = "14px Trebuchet MS";
+    context.fillText("Stops without coordinates are excluded from the map.", 32, canvas.height - 24);
+  }
 }
 
 function orderDisplaySort(left, right) {
@@ -3516,6 +3537,27 @@ function capitalize(value) {
     return "";
   }
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function parseOptionalNumber(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function getCoordinates(value) {
+  const lat = Number(value?.lat);
+  const lng = Number(value?.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+
+  return { lat, lng };
 }
 
 function formatDateOnly(value) {

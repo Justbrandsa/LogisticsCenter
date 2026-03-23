@@ -103,8 +103,8 @@ create table if not exists private.locations (
   location_type text not null default 'supplier',
   name text not null,
   address text not null,
-  lat numeric(9, 6) not null,
-  lng numeric(9, 6) not null,
+  lat numeric(9, 6),
+  lng numeric(9, 6),
   contact_person text not null default '',
   contact_number text not null default '',
   notes text not null default '',
@@ -147,6 +147,8 @@ set contact_number = ''
 where contact_number is null;
 
 alter table private.locations alter column supplier_id drop not null;
+alter table private.locations alter column lat drop not null;
+alter table private.locations alter column lng drop not null;
 alter table private.locations alter column location_type set default 'supplier';
 alter table private.locations alter column contact_person set default '';
 alter table private.locations alter column contact_number set default '';
@@ -1297,6 +1299,10 @@ begin
     raise exception 'Location name and address are required.';
   end if;
 
+  if (p_lat is null) <> (p_lng is null) then
+    raise exception 'Latitude and longitude must both be provided, or both left blank.';
+  end if;
+
   insert into private.locations (
     supplier_id,
     location_type,
@@ -1358,6 +1364,10 @@ begin
 
   if v_name is null or v_address is null then
     raise exception 'Location name and address are required.';
+  end if;
+
+  if (p_lat is null) <> (p_lng is null) then
+    raise exception 'Latitude and longitude must both be provided, or both left blank.';
   end if;
 
   if not exists (
@@ -1499,17 +1509,11 @@ begin
     raise exception 'Stock item not found.';
   end if;
 
-  if exists (
-    select 1
-    from private.stock_movements
-    where stock_item_id = p_stock_item_id
-  ) or exists (
-    select 1
-    from private.artwork_requests
-    where stock_item_id = p_stock_item_id
-  ) then
-    raise exception 'This stock item has movement or artwork history and cannot be deleted.';
-  end if;
+  delete from private.stock_movements
+  where stock_item_id = p_stock_item_id;
+
+  delete from private.artwork_requests
+  where stock_item_id = p_stock_item_id;
 
   delete from private.stock_items
   where id = p_stock_item_id;
