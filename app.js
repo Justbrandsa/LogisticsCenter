@@ -31,6 +31,7 @@ const state = {
   currentPage: "",
   editingUserId: "",
   editingSupplierId: "",
+  editingLocationId: "",
   pagination: {
     globalEntries: 1,
     assignments: 1,
@@ -131,6 +132,7 @@ async function refreshPublicState() {
   state.booting = true;
   state.editingUserId = "";
   state.editingSupplierId = "";
+  state.editingLocationId = "";
   render();
 
   const data = await callRpc("get_login_state");
@@ -155,6 +157,9 @@ async function refreshSnapshot() {
     }
     if (state.editingSupplierId && !state.snapshot.suppliers.some((supplier) => supplier.id === state.editingSupplierId)) {
       state.editingSupplierId = "";
+    }
+    if (state.editingLocationId && !state.snapshot.locations.some((location) => location.id === state.editingLocationId)) {
+      state.editingLocationId = "";
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -408,6 +413,18 @@ async function handleClick(event) {
     );
   }
 
+  if (action === "edit-location" && currentUser.role === "admin") {
+    state.editingLocationId = String(button.dataset.locationId || "");
+    render();
+    return;
+  }
+
+  if (action === "cancel-edit-location" && currentUser.role === "admin") {
+    state.editingLocationId = "";
+    render();
+    return;
+  }
+
   if (action === "delete-stock-item" && currentUser.role === "admin") {
     await runMutation(
       "delete_stock_item",
@@ -643,6 +660,7 @@ async function createSupplier(formData) {
 }
 
 async function createLocation(formData) {
+  const locationId = String(formData.get("locationId") || "").trim();
   const locationType = String(formData.get("locationType") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const address = String(formData.get("address") || "").trim();
@@ -657,20 +675,37 @@ async function createLocation(formData) {
     return;
   }
 
-  await runMutation(
-    "create_location",
-    {
-      p_token: sessionToken,
-      p_location_type: locationType,
-      p_name: name,
-      p_address: address,
-      p_lat: lat,
-      p_lng: lng,
-      p_contact_person: contactPerson,
-      p_contact_number: contactNumber,
-    },
-    `Location added: ${name}.`,
+  const ok = await runMutation(
+    locationId ? "update_location" : "create_location",
+    locationId
+      ? {
+          p_token: sessionToken,
+          p_location_id: locationId,
+          p_location_type: locationType,
+          p_name: name,
+          p_address: address,
+          p_lat: lat,
+          p_lng: lng,
+          p_contact_person: contactPerson,
+          p_contact_number: contactNumber,
+        }
+      : {
+          p_token: sessionToken,
+          p_location_type: locationType,
+          p_name: name,
+          p_address: address,
+          p_lat: lat,
+          p_lng: lng,
+          p_contact_person: contactPerson,
+          p_contact_number: contactNumber,
+        },
+    locationId ? `Location updated: ${name}.` : `Location added: ${name}.`,
   );
+
+  if (ok) {
+    state.editingLocationId = "";
+    render();
+  }
 }
 
 async function createOrder(formData, currentUser) {
@@ -1960,6 +1995,9 @@ function renderAccountPanel() {
 }
 
 function renderSupplierNetworkSection() {
+  const editingLocation = getEditingLocation();
+  const isEditingLocation = Boolean(editingLocation);
+
   return `
     <section class="table-card">
       <p class="eyebrow">Location network</p>
@@ -1967,50 +2005,68 @@ function renderSupplierNetworkSection() {
       <p class="panel-subtitle">Each location stores its own type, address, and optional contact details.</p>
       <article class="panel">
         <p class="eyebrow">Locations</p>
-        <h3 class="panel-title">Add location</h3>
-        <p class="panel-subtitle">Contact person and contact number can be left blank when they are not available.</p>
+        <h3 class="panel-title">${isEditingLocation ? "Edit location" : "Add location"}</h3>
+        <p class="panel-subtitle">
+          ${
+            isEditingLocation
+              ? "Update the selected location details. Contact person and contact number can still be left blank."
+              : "Contact person and contact number can be left blank when they are not available."
+          }
+        </p>
         <form data-form="add-location">
+          <input name="locationId" type="hidden" value="${escapeHtml(editingLocation?.id || "")}">
           <div class="form-grid">
             <label>
               Location name
-              <input name="name" type="text" required>
+              <input name="name" type="text" value="${escapeHtml(editingLocation?.name || "")}" required>
             </label>
             <label>
               Location type
               <select name="locationType" required>
-                <option value="supplier">Supplier</option>
-                <option value="factory">Factory</option>
-                <option value="both">Both</option>
+                <option value="supplier"${editingLocation?.locationType === "supplier" ? " selected" : ""}>Supplier</option>
+                <option value="factory"${editingLocation?.locationType === "factory" ? " selected" : ""}>Factory</option>
+                <option value="both"${editingLocation?.locationType === "both" ? " selected" : ""}>Both</option>
               </select>
             </label>
           </div>
           <label>
             Physical address
-            <input name="address" type="text" required>
+            <input name="address" type="text" value="${escapeHtml(editingLocation?.address || "")}" required>
           </label>
           <div class="form-grid">
             <label>
               Latitude
-              <input name="lat" type="number" step="0.000001" required>
+              <input name="lat" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lat ?? "")}" required>
             </label>
             <label>
               Longitude
-              <input name="lng" type="number" step="0.000001" required>
+              <input name="lng" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lng ?? "")}" required>
             </label>
           </div>
           <div class="form-grid">
             <label>
               Contact person
-              <input name="contactPerson" type="text" placeholder="Optional">
+              <input name="contactPerson" type="text" value="${escapeHtml(editingLocation?.contactPerson || "")}" placeholder="Optional">
             </label>
             <label>
               Contact number
-              <input name="contactNumber" type="tel" placeholder="Optional">
+              <input name="contactNumber" type="tel" value="${escapeHtml(editingLocation?.contactNumber || "")}" placeholder="Optional">
             </label>
           </div>
-          <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-            Add location
-          </button>
+          <div class="action-row">
+            <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+              ${isEditingLocation ? "Save location" : "Add location"}
+            </button>
+            ${
+              isEditingLocation
+                ? `
+                  <button type="button" class="button button-ghost" data-action="cancel-edit-location"${state.busy ? " disabled" : ""}>
+                    Cancel
+                  </button>
+                `
+                : ""
+            }
+          </div>
         </form>
         <div class="table-scroll">
           <table>
@@ -2520,9 +2576,14 @@ function renderLocationRow(location) {
       <td>${escapeHtml(location.address)}</td>
       <td>${escapeHtml(location.contactPerson || "Not set")}<br><span class="muted">${escapeHtml(location.contactNumber || "Not set")}</span></td>
       <td>
-        <button class="button button-danger" data-action="delete-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
-          Delete
-        </button>
+        <div class="action-row">
+          <button class="button button-secondary" data-action="edit-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
+            Edit
+          </button>
+          <button class="button button-danger" data-action="delete-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
+            Delete
+          </button>
+        </div>
       </td>
     </tr>
   `;
@@ -2780,6 +2841,10 @@ function getSupplier(supplierId) {
 
 function getEditingSupplier() {
   return state.editingSupplierId ? getSupplier(state.editingSupplierId) : null;
+}
+
+function getEditingLocation() {
+  return state.editingLocationId ? getLocation(state.editingLocationId) : null;
 }
 
 function getOrdersForDriver(driverUserId) {

@@ -1262,6 +1262,7 @@ $$;
 
 drop function if exists public.create_location(uuid, uuid, text, text, numeric, numeric, text);
 drop function if exists public.create_location(uuid, text, text, text, numeric, numeric, text, text);
+drop function if exists public.update_location(uuid, uuid, text, text, text, numeric, numeric, text, text);
 
 create or replace function public.create_location(
   p_token uuid,
@@ -1320,6 +1321,62 @@ begin
     '',
     v_actor.id
   );
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.update_location(
+  p_token uuid,
+  p_location_id uuid,
+  p_location_type text,
+  p_name text,
+  p_address text,
+  p_lat numeric,
+  p_lng numeric,
+  p_contact_person text,
+  p_contact_number text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_location_type text := lower(nullif(btrim(p_location_type), ''));
+  v_name text := nullif(btrim(p_name), '');
+  v_address text := nullif(btrim(p_address), '');
+  v_contact_person text := coalesce(nullif(btrim(p_contact_person), ''), '');
+  v_contact_number text := coalesce(nullif(btrim(p_contact_number), ''), '');
+begin
+  v_actor := private.require_user(p_token, array['admin']);
+
+  if v_location_type not in ('supplier', 'factory', 'both') then
+    raise exception 'Location type must be supplier, factory, or both.';
+  end if;
+
+  if v_name is null or v_address is null then
+    raise exception 'Location name and address are required.';
+  end if;
+
+  if not exists (
+    select 1
+    from private.locations
+    where id = p_location_id
+  ) then
+    raise exception 'Location not found.';
+  end if;
+
+  update private.locations
+  set location_type = v_location_type,
+      name = v_name,
+      address = v_address,
+      lat = p_lat,
+      lng = p_lng,
+      contact_person = v_contact_person,
+      contact_number = v_contact_number
+  where id = p_location_id;
 
   return jsonb_build_object('ok', true);
 end;

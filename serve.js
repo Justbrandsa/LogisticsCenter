@@ -52,6 +52,9 @@ const RPC_DEFINITIONS = Object.freeze({
   create_location: {
     params: ["p_token", "p_location_type", "p_name", "p_address", "p_lat", "p_lng", "p_contact_person", "p_contact_number"],
   },
+  update_location: {
+    params: ["p_token", "p_location_id", "p_location_type", "p_name", "p_address", "p_lat", "p_lng", "p_contact_person", "p_contact_number"],
+  },
   delete_location: { params: ["p_token", "p_location_id"] },
   create_stock_item: { params: ["p_token", "p_name", "p_sku", "p_unit", "p_notes"] },
   delete_stock_item: { params: ["p_token", "p_stock_item_id"] },
