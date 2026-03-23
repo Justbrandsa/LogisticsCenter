@@ -408,6 +408,14 @@ async function handleClick(event) {
     );
   }
 
+  if (action === "delete-stock-item" && currentUser.role === "admin") {
+    await runMutation(
+      "delete_stock_item",
+      { p_token: sessionToken, p_stock_item_id: button.dataset.stockItemId },
+      "Stock item deleted.",
+    );
+  }
+
   if (action === "save-order-assignment" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     await saveOrderAssignment(button, currentUser);
     return;
@@ -643,8 +651,8 @@ async function createLocation(formData) {
   const contactPerson = String(formData.get("contactPerson") || "").trim();
   const contactNumber = String(formData.get("contactNumber") || "").trim();
 
-  if (!locationType || !name || !address || !contactNumber || Number.isNaN(lat) || Number.isNaN(lng)) {
-    showFlash("Location name, type, address, coordinates, and contact number are required.", "error");
+  if (!locationType || !name || !address || Number.isNaN(lat) || Number.isNaN(lng)) {
+    showFlash("Location name, type, address, and coordinates are required.", "error");
     render();
     return;
   }
@@ -1205,7 +1213,7 @@ function renderAdminScreen() {
           <p class="eyebrow">Admin scope</p>
           <h3>Full control</h3>
           <p class="muted">
-            Manage users, pickup locations, stock tracking, driver entries, and CSV delivery from one live database.
+            Manage users, pickup locations, stock records, driver entries, and email delivery from one live database.
           </p>
           <div class="chip-row">
             <span class="chip chip-role-admin">Admin</span>
@@ -1271,7 +1279,7 @@ function renderLogisticsScreen() {
           <p class="eyebrow">Logistics scope</p>
           <h3>Stock control</h3>
           <p class="muted">
-            Track incoming and outgoing stock, keep a live on-hand view, and request artwork from the artwork department.
+            Track incoming and outgoing stock, keep a live on-hand view, and send artwork requests from the same workspace.
           </p>
           <div class="chip-row">
             <span class="chip chip-role-logistics">Logistics</span>
@@ -1288,7 +1296,7 @@ function renderLogisticsScreen() {
                 : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")
             }
           </p>
-          <p class="muted">Use the Stock page to log movements and send artwork requests after the stock is queued.</p>
+          <p class="muted">Use the Stock page to log movements, review history, and send artwork requests once stock is queued.</p>
         </div>
       </aside>
       <div class="content">
@@ -1372,8 +1380,8 @@ function renderAdminPageContent() {
   if (state.currentPage === "stock") {
     return renderStockWorkspace({
       viewerRole: "admin",
-      title: "Stock tracking for logistics",
-      subtitle: "Record stock coming in, stock going out with drivers, and artwork requests from one live workspace.",
+      title: "Stock control and cleanup",
+      subtitle: "Record stock in and out, send artwork requests, and remove unused stock items before they build history.",
     });
   }
 
@@ -1432,8 +1440,8 @@ function renderAdminPageContent() {
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
-      ${renderPageSummaryCard("Stock", "Track stock in/out and send artwork requests.", "stock")}
-      ${renderPageSummaryCard("Network", "Maintain pickup locations.", "network")}
+      ${renderPageSummaryCard("Stock", "Track stock, send artwork requests, and remove unused items before history exists.", "stock")}
+      ${renderPageSummaryCard("Network", "Maintain pickup locations with optional contact details.", "network")}
       ${renderPageSummaryCard("Users", "Manage admin, sales, driver, and logistics accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
@@ -1530,7 +1538,7 @@ function renderLogisticsPageContent() {
     <section class="hero-card">
       <p class="eyebrow">Dashboard</p>
       <h2>Live stock tracking for logistics</h2>
-      <p>Keep a running ledger of stock receipts and issues, then request artwork from the artwork department when new work is needed.</p>
+      <p>Keep a running ledger of stock receipts and issues, review stock history, and request artwork when new work is needed.</p>
     </section>
     ${renderFlash()}
     <section class="metrics">
@@ -1540,7 +1548,7 @@ function renderLogisticsPageContent() {
       ${renderMetric("Artwork requests", artworkRequests.length)}
     </section>
     <section class="panel-grid">
-      ${renderPageSummaryCard("Stock", "Log stock in/out and send artwork requests.", "stock")}
+      ${renderPageSummaryCard("Stock", "Log stock in/out, review history, and send artwork requests.", "stock")}
     </section>
   `;
 }
@@ -1569,7 +1577,7 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
       ${renderStockMovementPanel()}
     </section>
     ${renderArtworkRequestPanel(viewerRole)}
-    ${renderStockItemsSection()}
+    ${renderStockItemsSection(viewerRole)}
     ${renderStockMovementsSection()}
     ${renderArtworkRequestsSection()}
   `;
@@ -1580,7 +1588,7 @@ function renderStockItemPanel() {
     <article class="panel">
       <p class="eyebrow">Stock master</p>
       <h3 class="panel-title">Add stock item</h3>
-      <p class="panel-subtitle">Create the item once, then log every stock movement against it.</p>
+      <p class="panel-subtitle">Create the item once, then log movements and artwork requests against it.</p>
       <form data-form="add-stock-item">
         <label>
           Item name
@@ -1699,11 +1707,20 @@ function renderArtworkRequestPanel(viewerRole) {
   `;
 }
 
-function renderStockItemsSection() {
+function renderStockItemsSection(viewerRole) {
+  const allowDelete = viewerRole === "admin";
+
   return `
     <section class="table-card">
-      <p class="eyebrow">Current stock</p>
+      <p class="eyebrow">Stock register</p>
       <h3 class="panel-title">On-hand summary</h3>
+      <p class="panel-subtitle">
+        ${
+          allowDelete
+            ? "Admins can delete stock items only while they have no movement or artwork history."
+            : "Each item stays linked to its movement and artwork history for traceability."
+        }
+      </p>
       <div class="table-scroll">
         <table>
           <thead>
@@ -1714,15 +1731,16 @@ function renderStockItemsSection() {
               <th>On hand</th>
               <th>Notes</th>
               <th>Updated</th>
+              ${allowDelete ? "<th>Actions</th>" : ""}
             </tr>
           </thead>
           <tbody>
             ${
               state.snapshot.stockItems.length
-                ? state.snapshot.stockItems.map((item) => renderStockItemRow(item)).join("")
+                ? state.snapshot.stockItems.map((item) => renderStockItemRow(item, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="6">No stock items added yet.</td>
+                    <td colspan="${allowDelete ? "7" : "6"}">No stock items added yet.</td>
                   </tr>
                 `
             }
@@ -1946,18 +1964,19 @@ function renderSupplierNetworkSection() {
     <section class="table-card">
       <p class="eyebrow">Location network</p>
       <h3 class="panel-title">Pickup locations</h3>
-      <p class="panel-subtitle">Each location now stores its own type and contact details.</p>
+      <p class="panel-subtitle">Each location stores its own type, address, and optional contact details.</p>
       <article class="panel">
         <p class="eyebrow">Locations</p>
         <h3 class="panel-title">Add location</h3>
+        <p class="panel-subtitle">Contact person and contact number can be left blank when they are not available.</p>
         <form data-form="add-location">
           <div class="form-grid">
             <label>
-              Location Name
+              Location name
               <input name="name" type="text" required>
             </label>
             <label>
-              Supplier or factory
+              Location type
               <select name="locationType" required>
                 <option value="supplier">Supplier</option>
                 <option value="factory">Factory</option>
@@ -1982,11 +2001,11 @@ function renderSupplierNetworkSection() {
           <div class="form-grid">
             <label>
               Contact person
-              <input name="contactPerson" type="text">
+              <input name="contactPerson" type="text" placeholder="Optional">
             </label>
             <label>
               Contact number
-              <input name="contactNumber" type="tel" required>
+              <input name="contactNumber" type="tel" placeholder="Optional">
             </label>
           </div>
           <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
@@ -1998,10 +2017,10 @@ function renderSupplierNetworkSection() {
             <thead>
               <tr>
                 <th>Location</th>
-                <th>Supplier or factory</th>
+                <th>Location type</th>
                 <th>Physical address</th>
                 <th>Contact</th>
-                <th>Action</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2509,7 +2528,10 @@ function renderLocationRow(location) {
   `;
 }
 
-function renderStockItemRow(item) {
+function renderStockItemRow(item, viewerRole) {
+  const allowDelete = viewerRole === "admin";
+  const hasHistory = stockItemHasHistory(item.id);
+
   return `
     <tr>
       <td>${escapeHtml(item.name)}</td>
@@ -2518,6 +2540,23 @@ function renderStockItemRow(item) {
       <td>${escapeHtml(String(item.onHandQuantity || 0))}</td>
       <td>${escapeHtml(item.notes || "None")}</td>
       <td>${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
+      ${
+        allowDelete
+          ? `
+            <td>
+              ${
+                hasHistory
+                  ? '<span class="muted">History locked</span>'
+                  : `
+                    <button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>
+                      Delete
+                    </button>
+                  `
+              }
+            </td>
+          `
+          : ""
+      }
     </tr>
   `;
 }
@@ -2757,6 +2796,11 @@ function getUnassignedActiveOrders() {
 
 function getStockOnHandTotal() {
   return state.snapshot.stockItems.reduce((sum, item) => sum + Number(item.onHandQuantity || 0), 0);
+}
+
+function stockItemHasHistory(stockItemId) {
+  return state.snapshot.stockMovements.some((movement) => movement.stockItemId === stockItemId)
+    || state.snapshot.artworkRequests.some((request) => request.stockItemId === stockItemId);
 }
 
 function getStockMovementPartyLabel(movement) {

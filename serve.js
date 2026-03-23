@@ -30,6 +30,7 @@ const MIME = {
   ".js": "application/javascript; charset=UTF-8",
   ".json": "application/json; charset=UTF-8",
 };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RPC_DEFINITIONS = Object.freeze({
   get_login_state: { params: [] },
   bootstrap_admin: { params: ["p_name", "p_password"] },
@@ -53,6 +54,7 @@ const RPC_DEFINITIONS = Object.freeze({
   },
   delete_location: { params: ["p_token", "p_location_id"] },
   create_stock_item: { params: ["p_token", "p_name", "p_sku", "p_unit", "p_notes"] },
+  delete_stock_item: { params: ["p_token", "p_stock_item_id"] },
   record_stock_movement: {
     params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
   },
@@ -260,8 +262,9 @@ function createMailer() {
   };
 
   if (config.provider === "microsoft-graph") {
-    if (!config.tenantId || !config.clientId || !config.clientSecret) {
-      status.reason = "Add Microsoft Graph mail settings in mail-config.js or MAIL_* environment variables.";
+    const graphConfigIssue = getMicrosoftGraphConfigIssue(config);
+    if (graphConfigIssue) {
+      status.reason = graphConfigIssue;
     } else {
       status.configured = true;
     }
@@ -459,6 +462,31 @@ function createMailer() {
       };
     },
   };
+}
+
+function getMicrosoftGraphConfigIssue(config) {
+  if (!config.tenantId || !config.clientId || !config.clientSecret) {
+    return "Add Microsoft Graph mail settings in mail-config.js or MAIL_* environment variables.";
+  }
+
+  if (
+    looksLikeTemplateValue(config.tenantId) ||
+    looksLikeTemplateValue(config.clientId) ||
+    looksLikeTemplateValue(config.clientSecret)
+  ) {
+    return "Replace the Microsoft Graph placeholder values in mail-config.js or the MAIL_* environment variables.";
+  }
+
+  if (UUID_PATTERN.test(String(config.clientSecret).trim())) {
+    return "MAIL_CLIENT_SECRET looks like an Azure secret ID, not the secret value. Replace it in mail-config.js or the MAIL_CLIENT_SECRET environment variable.";
+  }
+
+  return "";
+}
+
+function looksLikeTemplateValue(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return normalized.startsWith("YOUR_") || normalized.includes("MICROSOFT_APP_CLIENT_SECRET");
 }
 
 function loadDatabaseConfig() {
@@ -767,9 +795,12 @@ async function getMicrosoftGraphAccessToken(config) {
   const payload = await safeReadJson(response);
   if (!response.ok) {
     if (String(payload?.error || "").trim().toLowerCase() === "invalid_client") {
+      const looksLikeSecretId = UUID_PATTERN.test(String(config.clientSecret || "").trim());
       throw createHttpError(
         502,
-        "Microsoft Graph rejected the configured client secret. Update MAIL_CLIENT_SECRET or mail-config.js.",
+        looksLikeSecretId
+          ? "Microsoft Graph rejected the configured client secret. The configured value looks like the Azure secret ID, not the secret value. Update MAIL_CLIENT_SECRET or mail-config.js."
+          : "Microsoft Graph rejected the configured client secret. Update MAIL_CLIENT_SECRET or mail-config.js.",
       );
     }
     throw createHttpError(502, payload?.error_description || "Failed to acquire a Microsoft Graph access token.");

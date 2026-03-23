@@ -34,6 +34,7 @@ Route Ledger is a Neon-backed browser app for managing driver-separated pickup a
 
 - The default provider is `microsoft-graph`.
 - The app expects `MAIL_TENANT_ID`, `MAIL_CLIENT_ID`, and `MAIL_CLIENT_SECRET`, either in `mail-config.js` or environment variables.
+- `MAIL_CLIENT_SECRET` must be the Azure client secret value, not the secret ID shown alongside it.
 - The Azure app needs Microsoft Graph application permission to send mail as `artwork3@giftwrap.co.za`.
 - `smtp` is still available as a fallback provider if you explicitly set `provider: "smtp"`.
 

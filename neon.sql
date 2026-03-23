@@ -1284,7 +1284,7 @@ declare
   v_name text := nullif(btrim(p_name), '');
   v_address text := nullif(btrim(p_address), '');
   v_contact_person text := coalesce(nullif(btrim(p_contact_person), ''), '');
-  v_contact_number text := nullif(btrim(p_contact_number), '');
+  v_contact_number text := coalesce(nullif(btrim(p_contact_number), ''), '');
 begin
   v_actor := private.require_user(p_token, array['admin']);
 
@@ -1292,8 +1292,8 @@ begin
     raise exception 'Location type must be supplier, factory, or both.';
   end if;
 
-  if v_name is null or v_address is null or v_contact_number is null then
-    raise exception 'Location name, address, and contact number are required.';
+  if v_name is null or v_address is null then
+    raise exception 'Location name and address are required.';
   end if;
 
   insert into private.locations (
@@ -1417,6 +1417,47 @@ begin
   );
 
   return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.delete_stock_item(
+  p_token uuid,
+  p_stock_item_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+begin
+  v_actor := private.require_user(p_token, array['admin']);
+
+  if not exists (
+    select 1
+    from private.stock_items
+    where id = p_stock_item_id
+  ) then
+    raise exception 'Stock item not found.';
+  end if;
+
+  if exists (
+    select 1
+    from private.stock_movements
+    where stock_item_id = p_stock_item_id
+  ) or exists (
+    select 1
+    from private.artwork_requests
+    where stock_item_id = p_stock_item_id
+  ) then
+    raise exception 'This stock item has movement or artwork history and cannot be deleted.';
+  end if;
+
+  delete from private.stock_items
+  where id = p_stock_item_id;
+
+  return jsonb_build_object('ok', true, 'deletedBy', v_actor.id);
 end;
 $$;
 

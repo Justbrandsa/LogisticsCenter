@@ -1,18 +1,18 @@
 :root {
-  --bg: #f5efe4;
-  --surface: rgba(255, 251, 245, 0.78);
-  --surface-strong: #fffaf1;
-  --text: #16221d;
-  --muted: #5b665e;
-  --line: rgba(22, 34, 29, 0.12);
-  --brand: #155e52;
-  --brand-strong: #0f4138;
-  --accent: #d9703d;
-  --accent-soft: #f2d4c5;
-  --success: #1f7a57;
-  --danger: #9d3d2b;
-  --warning: #a16d1d;
-  --shadow: 0 18px 45px rgba(21, 41, 36, 0.12);
+  --bg: #edf2ea;
+  --surface: rgba(248, 251, 246, 0.82);
+  --surface-strong: #fbfdf9;
+  --text: #15231f;
+  --muted: #5f7068;
+  --line: rgba(21, 35, 31, 0.12);
+  --brand: #1b6a5a;
+  --brand-strong: #123f36;
+  --accent: #c96a37;
+  --accent-soft: #f2dfd3;
+  --success: #247658;
+  --danger: #9a4331;
+  --warning: #9a6b1c;
+  --shadow: 0 20px 48px rgba(18, 39, 33, 0.12);
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 12px;
@@ -28,8 +28,9 @@ body {
   min-height: 100%;
   font-family: "Trebuchet MS", "Gill Sans", sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(217, 112, 61, 0.14), transparent 32%),
-    linear-gradient(180deg, #f7f1e6 0%, #efe7da 100%);
+    radial-gradient(circle at top left, rgba(201, 106, 55, 0.12), transparent 32%),
+    radial-gradient(circle at top right, rgba(27, 106, 90, 0.12), transparent 28%),
+    linear-gradient(180deg, #f4f7f1 0%, #e7ede6 100%);
   color: var(--text);
 }
 
@@ -51,13 +52,13 @@ body {
 .orb-a {
   top: -8rem;
   right: -8rem;
-  background: radial-gradient(circle, rgba(21, 94, 82, 0.28) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(27, 106, 90, 0.26) 0%, transparent 70%);
 }
 
 .orb-b {
   bottom: -10rem;
   left: -6rem;
-  background: radial-gradient(circle, rgba(217, 112, 61, 0.3) 0%, transparent 68%);
+  background: radial-gradient(circle, rgba(201, 106, 55, 0.28) 0%, transparent 68%);
 }
 
 .page-shell {
@@ -75,8 +76,8 @@ body {
   align-items: flex-start;
   padding: 1.25rem 1.5rem;
   margin-bottom: 1.5rem;
-  background: rgba(255, 248, 240, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(249, 252, 247, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.52);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
@@ -116,23 +117,23 @@ body {
   gap: 0.75rem;
   padding: 0.9rem 1rem;
   margin-bottom: 1.5rem;
-  background: rgba(255, 248, 240, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(249, 252, 247, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.52);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
 }
 
 .page-nav-link {
-  border: 1px solid rgba(21, 94, 82, 0.14);
-  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(27, 106, 90, 0.14);
+  background: rgba(255, 255, 255, 0.58);
   color: var(--brand-strong);
 }
 
 .page-nav-link.is-active {
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
   color: #fff;
-  box-shadow: 0 10px 24px rgba(15, 65, 56, 0.22);
+  box-shadow: 0 12px 24px rgba(18, 63, 54, 0.22);
 }
 
 .auth-meta {
@@ -173,22 +174,23 @@ button:disabled,
 .button-primary {
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-strong) 100%);
   color: #fff;
-  box-shadow: 0 10px 24px rgba(15, 65, 56, 0.22);
+  box-shadow: 0 12px 24px rgba(18, 63, 54, 0.22);
 }
 
 .button-secondary {
-  background: var(--accent-soft);
-  color: var(--text);
+  background: linear-gradient(135deg, rgba(201, 106, 55, 0.18) 0%, rgba(255, 255, 255, 0.78) 100%);
+  color: var(--brand-strong);
+  border: 1px solid rgba(201, 106, 55, 0.16);
 }
 
 .button-ghost {
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.58);
   color: var(--brand-strong);
-  border: 1px solid rgba(21, 94, 82, 0.14);
+  border: 1px solid rgba(27, 106, 90, 0.14);
 }
 
 .button-danger {
-  background: rgba(157, 61, 43, 0.12);
+  background: rgba(154, 67, 49, 0.12);
   color: var(--danger);
 }
 
@@ -232,8 +234,8 @@ button:disabled,
 .sidebar-card {
   padding: 1rem;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.45);
-  border: 1px solid rgba(21, 94, 82, 0.08);
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(27, 106, 90, 0.08);
 }
 
 .sidebar-card h3 {
@@ -254,40 +256,40 @@ button:disabled,
   border-radius: 999px;
   font-size: 0.82rem;
   font-weight: 700;
-  background: rgba(21, 94, 82, 0.1);
+  background: rgba(27, 106, 90, 0.1);
   color: var(--brand-strong);
 }
 
 .chip-role-admin,
 .chip-priority-high {
-  background: rgba(157, 61, 43, 0.12);
+  background: rgba(154, 67, 49, 0.12);
   color: var(--danger);
 }
 
 .chip-role-sales,
 .chip-priority-medium {
-  background: rgba(217, 112, 61, 0.14);
-  color: #8f4d27;
+  background: rgba(201, 106, 55, 0.14);
+  color: #874722;
 }
 
 .chip-role-driver,
 .chip-priority-low {
-  background: rgba(21, 94, 82, 0.12);
+  background: rgba(27, 106, 90, 0.12);
   color: var(--brand-strong);
 }
 
 .chip-role-logistics {
-  background: rgba(31, 122, 87, 0.14);
+  background: rgba(36, 118, 88, 0.14);
   color: var(--success);
 }
 
 .chip-success {
-  background: rgba(31, 122, 87, 0.14);
+  background: rgba(36, 118, 88, 0.14);
   color: var(--success);
 }
 
 .chip-warning {
-  background: rgba(161, 109, 29, 0.14);
+  background: rgba(154, 107, 28, 0.14);
   color: var(--warning);
 }
 
@@ -312,7 +314,7 @@ button:disabled,
   width: 18rem;
   height: 18rem;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(217, 112, 61, 0.22) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(201, 106, 55, 0.2) 0%, transparent 70%);
 }
 
 .hero-card p {
@@ -395,13 +397,22 @@ textarea {
   width: 100%;
   padding: 0.8rem 0.95rem;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(21, 94, 82, 0.14);
-  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(27, 106, 90, 0.14);
+  background: rgba(255, 255, 255, 0.82);
   color: var(--text);
 }
 
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(27, 106, 90, 0.34);
+  box-shadow: 0 0 0 4px rgba(27, 106, 90, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+}
+
 input[readonly] {
-  background: rgba(242, 212, 197, 0.45);
+  background: rgba(242, 223, 211, 0.58);
 }
 
 code {
@@ -448,12 +459,12 @@ textarea {
 }
 
 .flash-success {
-  background: rgba(31, 122, 87, 0.1);
+  background: rgba(36, 118, 88, 0.1);
   color: var(--success);
 }
 
 .flash-error {
-  background: rgba(157, 61, 43, 0.11);
+  background: rgba(154, 67, 49, 0.11);
   color: var(--danger);
 }
 
@@ -490,6 +501,7 @@ td {
 }
 
 th {
+  background: rgba(255, 255, 255, 0.44);
   color: var(--muted);
   font-size: 0.88rem;
   text-transform: uppercase;
@@ -540,8 +552,8 @@ th {
 .order-card {
   padding: 0.85rem;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.58);
-  border: 1px solid rgba(21, 94, 82, 0.08);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(27, 106, 90, 0.08);
 }
 
 .order-meta {
@@ -568,7 +580,7 @@ th {
   display: block;
   padding: 0.4rem 0.55rem;
   border-radius: 8px;
-  background: rgba(217, 112, 61, 0.12);
+  background: rgba(201, 106, 55, 0.12);
   color: #7a3f1d;
   font-size: 0.88rem;
 }
@@ -581,9 +593,9 @@ th {
   border-radius: var(--radius-md);
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(21, 94, 82, 0.1) 0%, rgba(255, 255, 255, 0.4) 100%),
-    linear-gradient(90deg, rgba(22, 34, 29, 0.06) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(22, 34, 29, 0.06) 1px, transparent 1px);
+    linear-gradient(180deg, rgba(27, 106, 90, 0.1) 0%, rgba(255, 255, 255, 0.42) 100%),
+    linear-gradient(90deg, rgba(21, 35, 31, 0.06) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(21, 35, 31, 0.06) 1px, transparent 1px);
   background-size: auto, 32px 32px, 32px 32px;
 }
 
@@ -638,8 +650,8 @@ canvas {
 .credential-item {
   padding: 0.9rem;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(21, 94, 82, 0.08);
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(27, 106, 90, 0.08);
 }
 
 .credential-item strong {
@@ -652,7 +664,7 @@ canvas {
 }
 
 .readonly-field {
-  background: rgba(242, 212, 197, 0.45);
+  background: rgba(242, 223, 211, 0.58);
 }
 
 .pagination {
@@ -670,14 +682,14 @@ canvas {
 }
 
 .chip-type {
-  background: rgba(21, 94, 82, 0.12);
+  background: rgba(27, 106, 90, 0.12);
   color: var(--brand-strong);
 }
 
 .empty-state {
   padding: 1rem;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.58);
   color: var(--muted);
 }
 
