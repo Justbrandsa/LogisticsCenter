@@ -248,7 +248,7 @@ create unique index if not exists stock_items_sku_unique
 
 create table if not exists private.stock_movements (
   id uuid primary key default public.gen_random_uuid(),
-  stock_item_id uuid not null references private.stock_items(id) on delete restrict,
+  stock_item_id uuid not null references private.stock_items(id) on delete cascade,
   movement_type text not null check (movement_type in ('in', 'out')),
   quantity integer not null check (quantity > 0),
   supplier_name text not null default '',
@@ -266,7 +266,7 @@ create index if not exists stock_movements_driver_created_idx
 
 create table if not exists private.artwork_requests (
   id uuid primary key default public.gen_random_uuid(),
-  stock_item_id uuid not null references private.stock_items(id) on delete restrict,
+  stock_item_id uuid not null references private.stock_items(id) on delete cascade,
   requested_quantity integer not null check (requested_quantity > 0),
   notes text not null default '',
   sent_to text not null default '',
@@ -276,6 +276,20 @@ create table if not exists private.artwork_requests (
 
 create index if not exists artwork_requests_item_sent_idx
   on private.artwork_requests (stock_item_id, sent_at desc);
+
+alter table private.stock_movements
+  drop constraint if exists stock_movements_stock_item_id_fkey;
+
+alter table private.stock_movements
+  add constraint stock_movements_stock_item_id_fkey
+  foreign key (stock_item_id) references private.stock_items(id) on delete cascade;
+
+alter table private.artwork_requests
+  drop constraint if exists artwork_requests_stock_item_id_fkey;
+
+alter table private.artwork_requests
+  add constraint artwork_requests_stock_item_id_fkey
+  foreign key (stock_item_id) references private.stock_items(id) on delete cascade;
 
 create table if not exists private.app_sessions (
   token uuid primary key default public.gen_random_uuid(),
@@ -1508,12 +1522,6 @@ begin
   ) then
     raise exception 'Stock item not found.';
   end if;
-
-  delete from private.stock_movements
-  where stock_item_id = p_stock_item_id;
-
-  delete from private.artwork_requests
-  where stock_item_id = p_stock_item_id;
 
   delete from private.stock_items
   where id = p_stock_item_id;
