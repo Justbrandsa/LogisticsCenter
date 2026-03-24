@@ -174,6 +174,8 @@ create table if not exists private.orders (
   entry_type text not null default 'delivery' check (entry_type in ('collection', 'delivery')),
   factory_order_number text not null default '',
   inhouse_order_number text not null default '',
+  invoice_number text not null default '',
+  po_number text not null default '',
   customer_name text not null,
   priority text not null check (priority in ('high', 'medium', 'low')),
   notes text not null default '',
@@ -191,6 +193,8 @@ create table if not exists private.orders (
 alter table private.orders add column if not exists entry_type text;
 alter table private.orders add column if not exists factory_order_number text;
 alter table private.orders add column if not exists inhouse_order_number text;
+alter table private.orders add column if not exists invoice_number text;
+alter table private.orders add column if not exists po_number text;
 alter table private.orders add column if not exists move_to_factory boolean;
 
 update private.orders
@@ -212,14 +216,26 @@ update private.orders
 set move_to_factory = false
 where move_to_factory is null;
 
+update private.orders
+set invoice_number = ''
+where invoice_number is null;
+
+update private.orders
+set po_number = ''
+where po_number is null;
+
 alter table private.orders alter column driver_user_id drop not null;
 alter table private.orders alter column entry_type set default 'delivery';
 alter table private.orders alter column factory_order_number set default '';
 alter table private.orders alter column inhouse_order_number set default '';
+alter table private.orders alter column invoice_number set default '';
+alter table private.orders alter column po_number set default '';
 alter table private.orders alter column move_to_factory set default false;
 alter table private.orders alter column entry_type set not null;
 alter table private.orders alter column factory_order_number set not null;
 alter table private.orders alter column inhouse_order_number set not null;
+alter table private.orders alter column invoice_number set not null;
+alter table private.orders alter column po_number set not null;
 alter table private.orders alter column move_to_factory set not null;
 
 create index if not exists orders_driver_scheduled_idx
@@ -232,6 +248,10 @@ create table if not exists private.stock_items (
   id uuid primary key default public.gen_random_uuid(),
   name text not null,
   sku text not null default '',
+  quote_number text not null default '',
+  invoice_number text not null default '',
+  sales_order_number text not null default '',
+  po_number text not null default '',
   unit text not null default 'units',
   notes text not null default '',
   created_by_user_id uuid not null references private.app_users(id) on delete restrict,
@@ -239,8 +259,40 @@ create table if not exists private.stock_items (
   updated_at timestamptz not null default now()
 );
 
-create unique index if not exists stock_items_name_unique
-  on private.stock_items ((lower(btrim(name))));
+alter table private.stock_items add column if not exists quote_number text;
+alter table private.stock_items add column if not exists invoice_number text;
+alter table private.stock_items add column if not exists sales_order_number text;
+alter table private.stock_items add column if not exists po_number text;
+
+update private.stock_items
+set quote_number = ''
+where quote_number is null;
+
+update private.stock_items
+set invoice_number = ''
+where invoice_number is null;
+
+update private.stock_items
+set sales_order_number = ''
+where sales_order_number is null;
+
+update private.stock_items
+set po_number = ''
+where po_number is null;
+
+alter table private.stock_items alter column quote_number set default '';
+alter table private.stock_items alter column invoice_number set default '';
+alter table private.stock_items alter column sales_order_number set default '';
+alter table private.stock_items alter column po_number set default '';
+alter table private.stock_items alter column quote_number set not null;
+alter table private.stock_items alter column invoice_number set not null;
+alter table private.stock_items alter column sales_order_number set not null;
+alter table private.stock_items alter column po_number set not null;
+
+drop index if exists stock_items_name_unique;
+
+create unique index if not exists stock_items_quote_name_unique
+  on private.stock_items ((lower(btrim(quote_number))), (lower(btrim(name))));
 
 create unique index if not exists stock_items_sku_unique
   on private.stock_items ((lower(btrim(sku))))
@@ -706,6 +758,10 @@ begin
           'moveToFactory', o.move_to_factory,
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
+          'salesOrderNumber', o.factory_order_number,
+          'quoteNumber', o.inhouse_order_number,
+          'invoiceNumber', o.invoice_number,
+          'poNumber', o.po_number,
           'customerName', o.customer_name,
           'driverUserId', o.driver_user_id,
           'driverName', coalesce(d.name, ''),
@@ -802,6 +858,10 @@ begin
           'moveToFactory', o.move_to_factory,
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
+          'salesOrderNumber', o.factory_order_number,
+          'quoteNumber', o.inhouse_order_number,
+          'invoiceNumber', o.invoice_number,
+          'poNumber', o.po_number,
           'customerName', o.customer_name,
           'driverUserId', o.driver_user_id,
           'driverName', v_actor.name,
@@ -845,6 +905,10 @@ begin
           'id', s.id,
           'name', s.name,
           'sku', s.sku,
+          'quoteNumber', s.quote_number,
+          'invoiceNumber', s.invoice_number,
+          'salesOrderNumber', s.sales_order_number,
+          'poNumber', s.po_number,
           'unit', s.unit,
           'notes', s.notes,
           'onHandQuantity', private.stock_on_hand(s.id),
@@ -865,6 +929,10 @@ begin
           'stockItemId', m.stock_item_id,
           'itemName', s.name,
           'sku', s.sku,
+          'quoteNumber', s.quote_number,
+          'invoiceNumber', s.invoice_number,
+          'salesOrderNumber', s.sales_order_number,
+          'poNumber', s.po_number,
           'unit', s.unit,
           'movementType', m.movement_type,
           'quantity', m.quantity,
@@ -893,6 +961,10 @@ begin
           'stockItemId', r.stock_item_id,
           'itemName', s.name,
           'sku', s.sku,
+          'quoteNumber', s.quote_number,
+          'invoiceNumber', s.invoice_number,
+          'salesOrderNumber', s.sales_order_number,
+          'poNumber', s.po_number,
           'requestedQuantity', r.requested_quantity,
           'notes', r.notes,
           'sentTo', r.sent_to,
@@ -1436,11 +1508,16 @@ end;
 $$;
 
 drop function if exists public.create_stock_item(uuid, text, text, text, text);
+drop function if exists public.create_stock_item(uuid, text, text, text, text, text, text, text);
 
 create or replace function public.create_stock_item(
   p_token uuid,
   p_name text,
   p_sku text default null,
+  p_quote_number text default null,
+  p_invoice_number text default null,
+  p_sales_order_number text default null,
+  p_po_number text default null,
   p_unit text default null,
   p_notes text default null
 )
@@ -1453,6 +1530,10 @@ declare
   v_actor private.app_users;
   v_name text := nullif(btrim(p_name), '');
   v_sku text := coalesce(nullif(btrim(p_sku), ''), '');
+  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
+  v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
+  v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_unit text := coalesce(nullif(btrim(p_unit), ''), 'units');
   v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
 begin
@@ -1466,12 +1547,17 @@ begin
     raise exception 'Stock item name is required.';
   end if;
 
+  if v_quote_number is null then
+    raise exception 'Quote number is required.';
+  end if;
+
   if exists (
     select 1
     from private.stock_items
     where lower(btrim(name)) = lower(v_name)
+      and lower(btrim(quote_number)) = lower(v_quote_number)
   ) then
-    raise exception 'That stock item already exists.';
+    raise exception 'That stock item already exists for the same quote number.';
   end if;
 
   if v_sku <> '' and exists (
@@ -1485,6 +1571,10 @@ begin
   insert into private.stock_items (
     name,
     sku,
+    quote_number,
+    invoice_number,
+    sales_order_number,
+    po_number,
     unit,
     notes,
     created_by_user_id
@@ -1492,6 +1582,10 @@ begin
   values (
     v_name,
     v_sku,
+    v_quote_number,
+    v_invoice_number,
+    v_sales_order_number,
+    v_po_number,
     v_unit,
     v_notes,
     v_actor.id
@@ -1688,13 +1782,18 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text, boolean);
 
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text, boolean);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean);
+
 create or replace function public.create_order(
   p_token uuid,
   p_driver_user_id uuid,
   p_location_id uuid,
   p_entry_type text,
-  p_factory_order_number text,
-  p_inhouse_order_number text,
+  p_quote_number text,
+  p_sales_order_number text default null,
+  p_invoice_number text default null,
+  p_po_number text default null,
   p_allow_duplicate boolean default false,
   p_notice text default null,
   p_move_to_factory boolean default false
@@ -1710,8 +1809,10 @@ declare
   v_location private.locations;
   v_today date := private.today_local();
   v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
-  v_factory_order_number text := nullif(btrim(p_factory_order_number), '');
-  v_inhouse_order_number text := nullif(btrim(p_inhouse_order_number), '');
+  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
+  v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
+  v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
 begin
@@ -1725,8 +1826,8 @@ begin
     raise exception 'Entry type must be collection or delivery.';
   end if;
 
-  if v_factory_order_number is null or v_inhouse_order_number is null then
-    raise exception 'Factory order number and in-house order number are required.';
+  if v_quote_number is null then
+    raise exception 'Quote number is required.';
   end if;
 
   if p_driver_user_id is not null then
@@ -1760,12 +1861,11 @@ begin
        select 1
        from private.orders
        where driver_user_id = p_driver_user_id
-         and factory_order_number = v_factory_order_number
-         and inhouse_order_number = v_inhouse_order_number
+         and inhouse_order_number = v_quote_number
          and status = 'active'
      )
      and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
-    raise exception 'Duplicate blocked. This driver already has an active entry for those order numbers.';
+    raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
   end if;
 
   insert into private.orders (
@@ -1775,6 +1875,8 @@ begin
     entry_type,
     factory_order_number,
     inhouse_order_number,
+    invoice_number,
+    po_number,
     priority,
     notes,
     move_to_factory,
@@ -1783,12 +1885,14 @@ begin
     created_by_user_id
   )
   values (
-    v_inhouse_order_number,
+    v_quote_number,
     p_driver_user_id,
     p_location_id,
     v_entry_type,
-    v_factory_order_number,
-    v_inhouse_order_number,
+    v_sales_order_number,
+    v_quote_number,
+    v_invoice_number,
+    v_po_number,
     'medium',
     v_notice,
     v_move_to_factory,
@@ -1856,11 +1960,10 @@ begin
       from private.orders
       where id <> p_order_id
         and driver_user_id = p_driver_user_id
-        and factory_order_number = v_order.factory_order_number
         and inhouse_order_number = v_order.inhouse_order_number
         and status = 'active'
     ) and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
-      raise exception 'Duplicate blocked. This driver already has an active entry for those order numbers.';
+      raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
     end if;
   end if;
 

@@ -45,8 +45,10 @@ Each new entry now captures:
 - Driver
 - Pickup location
 - Collection or delivery
-- Factory order number
-- In-house order number
+- Quote number
+- Sales order number
+- Invoice number
+- PO number
 - Notice
 - Created by
 

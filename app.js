@@ -2,6 +2,9 @@ const SESSION_KEY = "route-ledger-session-token-v2";
 const FLASH_TIMEOUT_MS = 3200;
 const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
+const STOCK_QR_TYPE = "route-ledger-stock";
+const STOCK_QR_VERSION = 1;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZES = {
   globalEntries: 12,
   assignments: 12,
@@ -32,6 +35,12 @@ const state = {
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
+  stockMovementSelectedItemId: "",
+  stockQrItemId: "",
+  stockQrSvg: "",
+  stockQrBusy: false,
+  stockScannerOpen: false,
+  stockScannerStatus: "",
   pagination: {
     globalEntries: 1,
     assignments: 1,
@@ -60,11 +69,19 @@ const state = {
 let sessionToken = loadSessionToken();
 let flash = null;
 let flashTimer = null;
+let stockScannerStream = null;
+let stockScannerAnimationFrame = 0;
+let stockScannerStarting = false;
+let stockScannerStopRequested = false;
+let stockScannerDetector = null;
 
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleChange);
 window.addEventListener("hashchange", handleHashChange);
+window.addEventListener("beforeunload", () => {
+  void stopStockScanner();
+});
 
 void boot();
 
@@ -133,6 +150,13 @@ async function refreshPublicState() {
   state.editingUserId = "";
   state.editingSupplierId = "";
   state.editingLocationId = "";
+  state.stockMovementSelectedItemId = "";
+  state.stockQrItemId = "";
+  state.stockQrSvg = "";
+  state.stockQrBusy = false;
+  state.stockScannerOpen = false;
+  state.stockScannerStatus = "";
+  void stopStockScanner();
   render();
 
   const data = await callRpc("get_login_state");
@@ -160,6 +184,14 @@ async function refreshSnapshot() {
     }
     if (state.editingLocationId && !state.snapshot.locations.some((location) => location.id === state.editingLocationId)) {
       state.editingLocationId = "";
+    }
+    if (state.stockMovementSelectedItemId && !state.snapshot.stockItems.some((item) => item.id === state.stockMovementSelectedItemId)) {
+      state.stockMovementSelectedItemId = "";
+    }
+    if (state.stockQrItemId && !state.snapshot.stockItems.some((item) => item.id === state.stockQrItemId)) {
+      state.stockQrItemId = "";
+      state.stockQrSvg = "";
+      state.stockQrBusy = false;
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -207,6 +239,27 @@ async function requestJson(url, options = {}) {
 
   if (!response.ok) {
     throw new Error(payload?.error || `Request failed with status ${response.status}.`);
+  }
+
+  return payload;
+}
+
+async function requestText(url, options = {}) {
+  const response = await fetch(url, options);
+  const payload = await response.text();
+
+  if (!response.ok) {
+    const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
+    if (contentType.includes("application/json")) {
+      try {
+        const parsed = JSON.parse(payload);
+        throw new Error(parsed?.error || `Request failed with status ${response.status}.`);
+      } catch (error) {
+        throw new Error(normalizeError(error) || `Request failed with status ${response.status}.`);
+      }
+    }
+
+    throw new Error(payload || `Request failed with status ${response.status}.`);
   }
 
   return payload;
@@ -398,6 +451,12 @@ async function handleClick(event) {
   }
 
   if (action === "delete-supplier" && currentUser.role === "admin") {
+    const supplierName = String(button.dataset.supplierName || "this supplier").trim();
+    const confirmed = window.confirm(`Delete supplier "${supplierName}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
     await runMutation(
       "delete_supplier",
       { p_token: sessionToken, p_supplier_id: button.dataset.supplierId },
@@ -406,6 +465,12 @@ async function handleClick(event) {
   }
 
   if (action === "delete-location" && currentUser.role === "admin") {
+    const locationName = String(button.dataset.locationName || "this location").trim();
+    const confirmed = window.confirm(`Delete location "${locationName}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
     await runMutation(
       "delete_location",
       { p_token: sessionToken, p_location_id: button.dataset.locationId },
@@ -431,6 +496,52 @@ async function handleClick(event) {
       { p_token: sessionToken, p_stock_item_id: button.dataset.stockItemId },
       "Stock item deleted.",
     );
+    return;
+  }
+
+  if (action === "open-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await openStockQrPreview(String(button.dataset.stockItemId || ""));
+    return;
+  }
+
+  if (action === "close-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.stockQrItemId = "";
+    state.stockQrSvg = "";
+    state.stockQrBusy = false;
+    render();
+    return;
+  }
+
+  if (action === "print-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    printStockQrLabel(String(button.dataset.stockItemId || ""));
+    return;
+  }
+
+  if (action === "open-stock-scanner" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.stockScannerOpen = true;
+    state.stockScannerStatus = getStockScannerHint();
+    await stopStockScanner();
+    render();
+    return;
+  }
+
+  if (action === "start-stock-camera" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await startStockScanner();
+    return;
+  }
+
+  if (action === "close-stock-scanner" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.stockScannerOpen = false;
+    state.stockScannerStatus = "";
+    await stopStockScanner();
+    render();
+    return;
+  }
+
+  if (action === "clear-stock-selection" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.stockMovementSelectedItemId = "";
+    render();
+    return;
   }
 
   if (action === "save-order-assignment" && (currentUser.role === "admin" || currentUser.role === "sales")) {
@@ -479,6 +590,14 @@ function handleChange(event) {
   const stockMovementForm = target.closest('form[data-form="add-stock-movement"]');
   if (stockMovementForm instanceof HTMLFormElement && target.matches('[name="movementType"]')) {
     syncStockMovementFields(stockMovementForm);
+  }
+
+  if (stockMovementForm instanceof HTMLFormElement && target.matches('[name="stockItemId"]')) {
+    state.stockMovementSelectedItemId = target instanceof HTMLSelectElement ? target.value : "";
+  }
+
+  if (target.matches("[data-stock-scan-upload]") && target instanceof HTMLInputElement && target.files?.[0]) {
+    void handleStockScanUpload(target.files[0], target);
   }
 }
 
@@ -724,14 +843,16 @@ async function createOrder(formData, currentUser) {
   const driverUserId = String(formData.get("driverUserId") || "").trim();
   const locationId = String(formData.get("locationId") || "").trim();
   const entryType = String(formData.get("entryType") || "delivery").trim();
-  const factoryOrderNumber = String(formData.get("factoryOrderNumber") || "").trim();
-  const inhouseOrderNumber = String(formData.get("inhouseOrderNumber") || "").trim();
+  const quoteNumber = String(formData.get("quoteNumber") || "").trim();
+  const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
+  const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
+  const poNumber = String(formData.get("poNumber") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
   const allowDuplicate = formData.get("allowDuplicate") === "on";
 
-  if (!locationId || !entryType || !factoryOrderNumber || !inhouseOrderNumber) {
-    showFlash("Pickup location, entry type, factory order number, and in-house order number are required.", "error");
+  if (!locationId || !entryType || !quoteNumber) {
+    showFlash("Pickup location, entry type, and quote number are required.", "error");
     render();
     return;
   }
@@ -743,8 +864,10 @@ async function createOrder(formData, currentUser) {
       p_driver_user_id: driverUserId || null,
       p_location_id: locationId,
       p_entry_type: entryType,
-      p_factory_order_number: factoryOrderNumber,
-      p_inhouse_order_number: inhouseOrderNumber,
+      p_quote_number: quoteNumber,
+      p_sales_order_number: salesOrderNumber,
+      p_invoice_number: invoiceNumber,
+      p_po_number: poNumber,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
@@ -788,11 +911,21 @@ async function saveOrderAssignment(button, currentUser) {
 async function createStockItem(formData) {
   const name = String(formData.get("name") || "").trim();
   const sku = String(formData.get("sku") || "").trim();
+  const quoteNumber = String(formData.get("quoteNumber") || "").trim();
+  const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
+  const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
+  const poNumber = String(formData.get("poNumber") || "").trim();
   const unit = String(formData.get("unit") || "").trim();
   const notes = String(formData.get("notes") || "").trim();
 
   if (!name) {
-    showFlash("Stock item name is required.", "error");
+    showFlash("Stock description is required.", "error");
+    render();
+    return;
+  }
+
+  if (!quoteNumber) {
+    showFlash("Quote number is required for QR-managed stock.", "error");
     render();
     return;
   }
@@ -803,6 +936,10 @@ async function createStockItem(formData) {
       p_token: sessionToken,
       p_name: name,
       p_sku: sku,
+      p_quote_number: quoteNumber,
+      p_invoice_number: invoiceNumber,
+      p_sales_order_number: salesOrderNumber,
+      p_po_number: poNumber,
       p_unit: unit || "units",
       p_notes: notes,
     },
@@ -940,6 +1077,373 @@ function syncPostRenderUi() {
   if (stockMovementForm instanceof HTMLFormElement) {
     syncStockMovementFields(stockMovementForm);
   }
+
+  void syncStockScannerUi();
+}
+
+async function syncStockScannerUi() {
+  if (!state.stockScannerOpen || state.currentPage !== "stock") {
+    await stopStockScanner();
+    return;
+  }
+
+  const videoEl = document.querySelector("[data-stock-scanner-video]");
+  if (!(videoEl instanceof HTMLVideoElement)) {
+    await stopStockScanner();
+  }
+}
+
+function getStockItemById(stockItemId) {
+  return state.snapshot.stockItems.find((item) => item.id === stockItemId) || null;
+}
+
+function isLocalHost() {
+  const host = String(window.location.hostname || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1";
+}
+
+function supportsStockQrDetection() {
+  return typeof window.BarcodeDetector === "function";
+}
+
+function canUseLiveStockScanner() {
+  return supportsStockQrDetection() && Boolean(navigator.mediaDevices?.getUserMedia) && (window.isSecureContext || isLocalHost());
+}
+
+function getStockScannerHint() {
+  if (!supportsStockQrDetection()) {
+    return "This browser does not support QR detection. Use manual entry for stock selection.";
+  }
+
+  if (canUseLiveStockScanner()) {
+    return "Start the camera to scan a stock QR code, or upload a QR image from the phone camera.";
+  }
+
+  if (navigator.mediaDevices?.getUserMedia && !window.isSecureContext && !isLocalHost()) {
+    return "Live camera scan needs HTTPS or localhost. Upload a QR image here, or use manual entry.";
+  }
+
+  return "Upload a QR image here, or use manual entry.";
+}
+
+async function startStockScanner() {
+  const videoEl = document.querySelector("[data-stock-scanner-video]");
+  if (!(videoEl instanceof HTMLVideoElement)) {
+    return;
+  }
+
+  if (!supportsStockQrDetection()) {
+    state.stockScannerStatus = "This browser does not support QR detection.";
+    render();
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    state.stockScannerStatus = "This browser cannot open the device camera.";
+    render();
+    return;
+  }
+
+  if (!window.isSecureContext && !isLocalHost()) {
+    state.stockScannerStatus = "Live camera scan needs HTTPS or localhost. Upload a QR image instead.";
+    render();
+    return;
+  }
+
+  if (stockScannerStream || stockScannerStarting) {
+    return;
+  }
+
+  stockScannerStarting = true;
+  stockScannerStopRequested = false;
+
+  try {
+    stockScannerDetector = stockScannerDetector || new window.BarcodeDetector({ formats: ["qr_code"] });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+      },
+    });
+
+    if (stockScannerStopRequested) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+
+    stockScannerStream = stream;
+    videoEl.srcObject = stream;
+    videoEl.setAttribute("playsinline", "true");
+    await videoEl.play();
+    state.stockScannerStatus = "Scanning for a stock QR code.";
+    scanStockVideoFrame(videoEl);
+  } catch (error) {
+    state.stockScannerStatus = normalizeStockScannerError(error);
+    render();
+  } finally {
+    stockScannerStarting = false;
+  }
+}
+
+function scanStockVideoFrame(videoEl) {
+  if (!stockScannerStream || stockScannerStopRequested || !(videoEl instanceof HTMLVideoElement)) {
+    return;
+  }
+
+  const runDetection = async () => {
+    if (!stockScannerStream || stockScannerStopRequested) {
+      return;
+    }
+
+    try {
+      const detections = await stockScannerDetector.detect(videoEl);
+      const rawValue = detections.find((entry) => typeof entry?.rawValue === "string" && entry.rawValue.trim())?.rawValue?.trim();
+
+      if (rawValue) {
+        await applyStockScanResult(rawValue);
+        return;
+      }
+    } catch (error) {
+      if (!isIgnorableStockScannerError(error)) {
+        state.stockScannerStatus = normalizeStockScannerError(error);
+        await stopStockScanner();
+        render();
+        return;
+      }
+    }
+
+    stockScannerAnimationFrame = window.requestAnimationFrame(() => {
+      void runDetection();
+    });
+  };
+
+  void runDetection();
+}
+
+async function stopStockScanner() {
+  stockScannerStopRequested = true;
+
+  if (stockScannerAnimationFrame) {
+    window.cancelAnimationFrame(stockScannerAnimationFrame);
+    stockScannerAnimationFrame = 0;
+  }
+
+  if (stockScannerStream) {
+    stockScannerStream.getTracks().forEach((track) => track.stop());
+    stockScannerStream = null;
+  }
+
+  const videoEl = document.querySelector("[data-stock-scanner-video]");
+  if (videoEl instanceof HTMLVideoElement) {
+    videoEl.pause();
+    videoEl.srcObject = null;
+  }
+}
+
+async function handleStockScanUpload(file, inputEl) {
+  if (!supportsStockQrDetection()) {
+    showFlash("This browser does not support QR detection from images.", "error");
+    render();
+    return;
+  }
+
+  try {
+    state.stockScannerStatus = "Reading QR image.";
+    render();
+
+    const image = await loadImageFromFile(file);
+    stockScannerDetector = stockScannerDetector || new window.BarcodeDetector({ formats: ["qr_code"] });
+    const detections = await stockScannerDetector.detect(image);
+    const rawValue = detections.find((entry) => typeof entry?.rawValue === "string" && entry.rawValue.trim())?.rawValue?.trim();
+
+    if (!rawValue) {
+      throw new Error("No stock QR code was found in that image.");
+    }
+
+    await applyStockScanResult(rawValue);
+  } catch (error) {
+    showFlash(normalizeStockScannerError(error), "error");
+    state.stockScannerStatus = normalizeStockScannerError(error);
+    render();
+  } finally {
+    if (inputEl instanceof HTMLInputElement) {
+      inputEl.value = "";
+    }
+  }
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("That image could not be read."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+async function applyStockScanResult(rawValue) {
+  const parsed = parseStockQrPayload(rawValue);
+  if (!parsed?.stockItemId) {
+    throw new Error("That QR code is not a Route Ledger stock label.");
+  }
+
+  const item = getStockItemById(parsed.stockItemId);
+  if (!item) {
+    throw new Error("That QR code does not match a stock item in this snapshot.");
+  }
+
+  state.stockMovementSelectedItemId = item.id;
+  state.stockScannerOpen = false;
+  state.stockScannerStatus = "";
+  await stopStockScanner();
+  showFlash(`Stock item selected: ${item.name}.`, "success");
+  render();
+}
+
+function buildStockQrPayload(item) {
+  return JSON.stringify({
+    type: STOCK_QR_TYPE,
+    version: STOCK_QR_VERSION,
+    stockItemId: item.id,
+    description: item.name || "",
+    quoteNumber: item.quoteNumber || "",
+    salesOrderNumber: item.salesOrderNumber || "",
+    invoiceNumber: item.invoiceNumber || "",
+    poNumber: item.poNumber || "",
+  });
+}
+
+function parseStockQrPayload(rawValue) {
+  const value = String(rawValue || "").trim();
+  if (!value) {
+    return null;
+  }
+
+  if (UUID_PATTERN.test(value)) {
+    return { stockItemId: value };
+  }
+
+  try {
+    const payload = JSON.parse(value);
+    if (
+      payload
+      && payload.type === STOCK_QR_TYPE
+      && Number(payload.version) === STOCK_QR_VERSION
+      && UUID_PATTERN.test(String(payload.stockItemId || ""))
+    ) {
+      return payload;
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+}
+
+function normalizeStockScannerError(error) {
+  const message = normalizeError(error);
+  const lowerMessage = message.toLowerCase();
+
+  if (lowerMessage.includes("permission") || lowerMessage.includes("denied")) {
+    return "Camera access was blocked. Allow camera access, or upload a QR image instead.";
+  }
+
+  if (lowerMessage.includes("not found")) {
+    return "No camera was found. Upload a QR image instead.";
+  }
+
+  return message;
+}
+
+function isIgnorableStockScannerError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("source is unavailable") || message.includes("service unavailable");
+}
+
+async function openStockQrPreview(stockItemId) {
+  const item = getStockItemById(stockItemId);
+  if (!item) {
+    showFlash("Stock item not found.", "error");
+    render();
+    return;
+  }
+
+  state.stockQrItemId = item.id;
+  state.stockQrSvg = "";
+  state.stockQrBusy = true;
+  render();
+
+  try {
+    state.stockQrSvg = await requestText(`${API_ROOT}/qr/svg`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text: buildStockQrPayload(item),
+      }),
+    });
+  } catch (error) {
+    state.stockQrItemId = "";
+    state.stockQrSvg = "";
+    showFlash(normalizeError(error), "error");
+  } finally {
+    state.stockQrBusy = false;
+    render();
+  }
+}
+
+function printStockQrLabel(stockItemId) {
+  const item = getStockItemById(stockItemId);
+  if (!item || !state.stockQrSvg || state.stockQrItemId !== stockItemId) {
+    showFlash("Open the QR preview before printing.", "error");
+    render();
+    return;
+  }
+
+  const printWindow = window.open("", "_blank", "noopener,noreferrer");
+  if (!printWindow) {
+    showFlash("The browser blocked the print window.", "error");
+    render();
+    return;
+  }
+
+  const details = getReferenceLines(item)
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
+    .join("");
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <title>${escapeHtml(item.name)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #173c34; }
+          .label { max-width: 420px; padding: 24px; border: 1px solid #cddcd7; border-radius: 16px; }
+          .qr { margin: 16px 0; width: 240px; height: 240px; }
+          .qr svg { width: 100%; height: 100%; }
+          p { margin: 6px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="label">
+          <h1>${escapeHtml(item.name)}</h1>
+          ${details}
+          <div class="qr">${state.stockQrSvg}</div>
+        </div>
+        <script>window.print();</script>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
 }
 
 function renderHeader() {
@@ -1623,6 +2127,7 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
       ${renderStockItemPanel()}
       ${renderStockMovementPanel()}
     </section>
+    ${renderStockQrPreviewPanel()}
     ${renderArtworkRequestPanel(viewerRole)}
     ${renderStockItemsSection(viewerRole)}
     ${renderStockMovementsSection()}
@@ -1635,12 +2140,32 @@ function renderStockItemPanel() {
     <article class="panel">
       <p class="eyebrow">Stock master</p>
       <h3 class="panel-title">Add stock item</h3>
-      <p class="panel-subtitle">Create the item once, then log movements and artwork requests against it.</p>
+      <p class="panel-subtitle">Create the item once with its order references, then log movements and artwork requests against it.</p>
       <form data-form="add-stock-item">
         <label>
-          Item name
+          Stock description
           <input name="name" type="text" required>
         </label>
+        <div class="form-grid">
+          <label>
+            Quote number
+            <input name="quoteNumber" type="text" required>
+          </label>
+          <label>
+            Sales order number
+            <input name="salesOrderNumber" type="text" placeholder="Optional">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Invoice number
+            <input name="invoiceNumber" type="text" placeholder="Optional">
+          </label>
+          <label>
+            PO number
+            <input name="poNumber" type="text" placeholder="Optional">
+          </label>
+        </div>
         <div class="form-grid">
           <label>
             Stock code
@@ -1669,12 +2194,21 @@ function renderStockMovementPanel() {
       <p class="eyebrow">Stock ledger</p>
       <h3 class="panel-title">Log stock in or out</h3>
       <p class="panel-subtitle">Every stock movement is timestamped and linked to the staff member who recorded it.</p>
+      <div class="action-row">
+        <button type="button" class="button button-secondary" data-action="open-stock-scanner"${state.busy ? " disabled" : ""}>
+          Scan QR
+        </button>
+        <button type="button" class="button button-ghost" data-action="clear-stock-selection"${state.busy || !state.stockMovementSelectedItemId ? " disabled" : ""}>
+          Clear selection
+        </button>
+      </div>
+      ${renderStockScannerPanel()}
       <form data-form="add-stock-movement">
         <div class="form-grid">
           <label>
             Stock item
             <select name="stockItemId" required>
-              ${renderStockItemOptions()}
+              ${renderStockItemOptions(state.stockMovementSelectedItemId)}
             </select>
           </label>
           <label>
@@ -1773,12 +2307,13 @@ function renderStockItemsSection(viewerRole) {
           <thead>
             <tr>
               <th>Item</th>
+              <th>References</th>
               <th>Stock code</th>
               <th>Unit</th>
               <th>On hand</th>
               <th>Notes</th>
               <th>Updated</th>
-              ${allowDelete ? "<th>Actions</th>" : ""}
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1787,7 +2322,7 @@ function renderStockItemsSection(viewerRole) {
                 ? state.snapshot.stockItems.map((item) => renderStockItemRow(item, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="${allowDelete ? "7" : "6"}">No stock items added yet.</td>
+                    <td colspan="8">No stock items added yet.</td>
                   </tr>
                 `
             }
@@ -1828,6 +2363,75 @@ function renderStockMovementsSection() {
             }
           </tbody>
         </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderStockQrPreviewPanel() {
+  const item = getStockItemById(state.stockQrItemId);
+  if (!item) {
+    return "";
+  }
+
+  return `
+    <section class="table-card qr-preview-card">
+      <div class="table-toolbar">
+        <div>
+          <p class="eyebrow">QR Label</p>
+          <h3 class="panel-title">${escapeHtml(item.name)}</h3>
+          <p class="panel-subtitle">${escapeHtml(getReferenceLines(item).join(" | ") || "No order references set.")}</p>
+        </div>
+        <div class="action-row">
+          <button class="button button-secondary" data-action="print-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || !state.stockQrSvg ? " disabled" : ""}>
+            Print label
+          </button>
+          <button class="button button-ghost" data-action="close-stock-qr"${state.stockQrBusy ? " disabled" : ""}>
+            Close
+          </button>
+        </div>
+      </div>
+      ${
+        state.stockQrBusy
+          ? '<p class="field-note">Generating QR label...</p>'
+          : `
+            <div class="qr-preview-body">
+              <div class="qr-preview-code">${state.stockQrSvg}</div>
+              <div class="qr-preview-meta">
+                ${getReferenceLines(item).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+                <span>Stock code: ${escapeHtml(item.sku || "Not set")}</span>
+              </div>
+            </div>
+          `
+      }
+    </section>
+  `;
+}
+
+function renderStockScannerPanel() {
+  if (!state.stockScannerOpen) {
+    return "";
+  }
+
+  return `
+    <section class="scanner-panel">
+      <p class="field-note">${escapeHtml(state.stockScannerStatus || getStockScannerHint())}</p>
+      <div class="scanner-grid">
+        <div class="scanner-video-wrap">
+          <video data-stock-scanner-video class="scanner-video" muted autoplay playsinline></video>
+        </div>
+        <div class="scanner-actions">
+          <button type="button" class="button button-primary" data-action="start-stock-camera"${state.busy || !canUseLiveStockScanner() ? " disabled" : ""}>
+            Start camera
+          </button>
+          <label class="scanner-upload">
+            Upload QR image
+            <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
+          </label>
+          <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
+            Close scanner
+          </button>
+        </div>
       </div>
     </section>
   `;
@@ -2186,12 +2790,22 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
       </div>
       <div class="form-grid">
         <label>
-          Factory order number
-          <input name="factoryOrderNumber" type="text" required>
+          Quote number
+          <input name="quoteNumber" type="text" required>
         </label>
         <label>
-          In-house order number
-          <input name="inhouseOrderNumber" type="text" required>
+          Sales order number
+          <input name="salesOrderNumber" type="text" placeholder="Optional">
+        </label>
+      </div>
+      <div class="form-grid">
+        <label>
+          Invoice number
+          <input name="invoiceNumber" type="text" placeholder="Optional">
+        </label>
+        <label>
+          PO number
+          <input name="poNumber" type="text" placeholder="Optional">
         </label>
       </div>
       <label class="inline-check">
@@ -2213,7 +2827,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
               Allow a duplicate active order for this driver
             </label>
             <p class="field-note">
-              This only bypasses the block when the same driver already has another active entry with the same order numbers.
+              This only bypasses the block when the same driver already has another active entry with the same quote number.
             </p>
           `
           : ""
@@ -2317,8 +2931,7 @@ function renderGlobalOrdersSection(viewerRole) {
           <thead>
             <tr>
               <th>Reference</th>
-              <th>In-house</th>
-              <th>Factory</th>
+              <th>Order references</th>
               <th>Type</th>
               <th>Move to factory</th>
               <th>Driver</th>
@@ -2335,7 +2948,7 @@ function renderGlobalOrdersSection(viewerRole) {
                 ? page.items.map((order) => renderGlobalOrderRow(order)).join("")
                 : `
                   <tr>
-                    <td colspan="11">No entries available yet.</td>
+                    <td colspan="10">No entries available yet.</td>
                   </tr>
                 `
             }
@@ -2412,8 +3025,7 @@ function renderCompletedOrders(driverUserId) {
           <thead>
             <tr>
               <th>Reference</th>
-              <th>In-house</th>
-              <th>Factory</th>
+              <th>Order references</th>
               <th>Type</th>
               <th>Completed</th>
             </tr>
@@ -2426,8 +3038,7 @@ function renderCompletedOrders(driverUserId) {
                       (order) => `
                         <tr>
                           <td>${escapeHtml(order.reference)}</td>
-                          <td>${escapeHtml(order.inhouseOrderNumber || "")}</td>
-                          <td>${escapeHtml(order.factoryOrderNumber || "")}</td>
+                          <td>${renderReferenceSummary(order)}</td>
                           <td>${renderTypeChip(order.entryType)}</td>
                           <td>${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}</td>
                         </tr>
@@ -2436,7 +3047,7 @@ function renderCompletedOrders(driverUserId) {
                     .join("")
                 : `
                   <tr>
-                    <td colspan="5">No completed entries yet.</td>
+                    <td colspan="4">No completed entries yet.</td>
                   </tr>
                 `
             }
@@ -2452,8 +3063,7 @@ function renderGlobalOrderRow(order) {
   return `
     <tr>
       <td>${escapeHtml(order.reference)}</td>
-      <td>${escapeHtml(order.inhouseOrderNumber || "")}</td>
-      <td>${escapeHtml(order.factoryOrderNumber || "")}</td>
+      <td>${renderReferenceSummary(order)}</td>
       <td>${renderTypeChip(order.entryType)}</td>
       <td>${renderMoveToFactoryValue(order)}</td>
       <td>${renderDriverAssignmentValue(order)}</td>
@@ -2474,8 +3084,7 @@ function renderAssignmentRow(order, viewerRole) {
     <tr>
       <td>
         <strong>${escapeHtml(order.reference)}</strong><br>
-        <span class="muted">In-house ${escapeHtml(order.inhouseOrderNumber || "")}</span><br>
-        <span class="muted">Factory ${escapeHtml(order.factoryOrderNumber || "")}</span>
+        ${renderReferenceSummary(order)}
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
@@ -2569,7 +3178,7 @@ function renderSupplierRow(supplier) {
           <button class="button button-secondary" data-action="edit-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
             Edit
           </button>
-          <button class="button button-danger" data-action="delete-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
+          <button class="button button-danger" data-action="delete-supplier" data-supplier-id="${supplier.id}" data-supplier-name="${escapeHtml(supplier.name)}"${state.busy ? " disabled" : ""}>
             Delete
           </button>
         </div>
@@ -2592,7 +3201,7 @@ function renderLocationRow(location) {
           <button class="button button-secondary" data-action="edit-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
             Edit
           </button>
-          <button class="button button-danger" data-action="delete-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
+          <button class="button button-danger" data-action="delete-location" data-location-id="${location.id}" data-location-name="${escapeHtml(location.name)}"${state.busy ? " disabled" : ""}>
             Delete
           </button>
         </div>
@@ -2601,28 +3210,69 @@ function renderLocationRow(location) {
   `;
 }
 
+function getReferenceLines(record) {
+  const quoteNumber = String(record?.quoteNumber || record?.inhouseOrderNumber || "").trim();
+  const salesOrderNumber = String(record?.salesOrderNumber || record?.factoryOrderNumber || "").trim();
+  const invoiceNumber = String(record?.invoiceNumber || "").trim();
+  const poNumber = String(record?.poNumber || "").trim();
+  const lines = [];
+
+  if (quoteNumber) {
+    lines.push(`Quote ${quoteNumber}`);
+  }
+
+  if (salesOrderNumber) {
+    lines.push(`SO ${salesOrderNumber}`);
+  }
+
+  if (invoiceNumber) {
+    lines.push(`Invoice ${invoiceNumber}`);
+  }
+
+  if (poNumber) {
+    lines.push(`PO ${poNumber}`);
+  }
+
+  return lines;
+}
+
+function renderReferenceSummary(record, emptyLabel = "No order references") {
+  const lines = getReferenceLines(record);
+  if (!lines.length) {
+    return `<span class="muted">${escapeHtml(emptyLabel)}</span>`;
+  }
+
+  return lines.map((line) => `<span class="muted">${escapeHtml(line)}</span>`).join("<br>");
+}
+
 function renderStockItemRow(item, viewerRole) {
   const allowDelete = viewerRole === "admin";
+  const actions = [
+    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
+  ];
+
+  if (allowDelete) {
+    actions.push(
+      `<button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>Delete</button>`,
+    );
+  }
 
   return `
     <tr>
-      <td>${escapeHtml(item.name)}</td>
+      <td>
+        <strong>${escapeHtml(item.name)}</strong>
+      </td>
+      <td>${renderReferenceSummary(item)}</td>
       <td>${escapeHtml(item.sku || "Not set")}</td>
       <td>${escapeHtml(item.unit || "units")}</td>
       <td>${escapeHtml(String(item.onHandQuantity || 0))}</td>
       <td>${escapeHtml(item.notes || "None")}</td>
       <td>${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
-      ${
-        allowDelete
-          ? `
-            <td>
-              <button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>
-                Delete
-              </button>
-            </td>
-          `
-          : ""
-      }
+      <td>
+        <div class="action-row">
+          ${actions.join("")}
+        </div>
+      </td>
     </tr>
   `;
 }
@@ -2633,7 +3283,8 @@ function renderStockMovementRow(movement) {
       <td>${escapeHtml(formatDateTime(movement.createdAt) || "")}</td>
       <td>
         <strong>${escapeHtml(movement.itemName || "Unknown")}</strong><br>
-        <span class="muted">${escapeHtml(movement.sku || "No stock code")}</span>
+        <span class="muted">${escapeHtml(movement.sku || "No stock code")}</span><br>
+        ${renderReferenceSummary(movement)}
       </td>
       <td>${movement.movementType === "in" ? '<span class="chip chip-success">Stock in</span>' : '<span class="chip chip-warning">Stock out</span>'}</td>
       <td>${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}</td>
@@ -2650,7 +3301,8 @@ function renderArtworkRequestRow(request) {
       <td>${escapeHtml(formatDateTime(request.sentAt) || "")}</td>
       <td>
         <strong>${escapeHtml(request.itemName || "Unknown")}</strong><br>
-        <span class="muted">${escapeHtml(request.sku || "No stock code")}</span>
+        <span class="muted">${escapeHtml(request.sku || "No stock code")}</span><br>
+        ${renderReferenceSummary(request)}
       </td>
       <td>${escapeHtml(String(request.requestedQuantity || 0))}</td>
       <td>${escapeHtml(request.requestedByName || "Unknown")}</td>
@@ -2687,8 +3339,7 @@ function renderStopCard(stop, index, viewerRole) {
               <div class="order-card">
                 <strong>${escapeHtml(order.reference)}</strong>
                 <div class="order-meta">
-                  <span>In-house ${escapeHtml(order.inhouseOrderNumber || "")}</span>
-                  <span>Factory ${escapeHtml(order.factoryOrderNumber || "")}</span>
+                  ${getReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
                 </div>
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
@@ -2797,7 +3448,15 @@ function renderStockItemOptions(selectedStockItemId = "") {
 
   return state.snapshot.stockItems
     .map((item) => {
-      const label = item.sku ? `${item.name} (${item.sku})` : item.name;
+      const labelParts = [item.name];
+      const quoteNumber = String(item.quoteNumber || "").trim();
+      if (quoteNumber) {
+        labelParts.push(`Quote ${quoteNumber}`);
+      }
+      if (item.sku) {
+        labelParts.push(item.sku);
+      }
+      const label = labelParts.join(" | ");
       return `<option value="${item.id}"${item.id === selectedStockItemId ? " selected" : ""}>${escapeHtml(label)}</option>`;
     })
     .join("");
@@ -2907,7 +3566,7 @@ function countDuplicateOrders(driverUserId) {
   getActiveOrders()
     .filter((order) => order.driverUserId === driverUserId)
     .forEach((order) => {
-      const key = `${String(order.factoryOrderNumber || "").toLowerCase()}::${String(order.inhouseOrderNumber || "").toLowerCase()}`;
+      const key = String(order.quoteNumber || order.inhouseOrderNumber || "").toLowerCase();
       counts[key] = (counts[key] || 0) + 1;
     });
 
@@ -3258,8 +3917,10 @@ function exportOrdersCsv() {
     order.locationName,
     order.entryType,
     getMoveToFactoryLabel(order) || "No",
-    order.factoryOrderNumber,
-    order.inhouseOrderNumber,
+    order.quoteNumber || order.inhouseOrderNumber,
+    order.salesOrderNumber || order.factoryOrderNumber,
+    order.invoiceNumber || "",
+    order.poNumber || "",
     order.createdByName,
     order.status,
     getOrderNoticeText(order),
@@ -3273,8 +3934,10 @@ function exportOrdersCsv() {
       "Pickup location",
       "Collection or delivery",
       "Move to factory",
-      "Factory order number",
-      "In-house order number",
+      "Quote number",
+      "Sales order number",
+      "Invoice number",
+      "PO number",
       "Created by",
       "Status",
       "Notice",

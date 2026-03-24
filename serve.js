@@ -7,6 +7,8 @@ let Pool = null;
 let driverLoadError = null;
 let nodemailer = null;
 let mailerLoadError = null;
+let QRCode = null;
+let qrLoadError = null;
 
 try {
   ({ Pool } = require("pg"));
@@ -18,6 +20,12 @@ try {
   nodemailer = require("nodemailer");
 } catch (error) {
   mailerLoadError = error;
+}
+
+try {
+  QRCode = require("qrcode");
+} catch (error) {
+  qrLoadError = error;
 }
 
 const HOST = "0.0.0.0";
@@ -56,7 +64,9 @@ const RPC_DEFINITIONS = Object.freeze({
     params: ["p_token", "p_location_id", "p_location_type", "p_name", "p_address", "p_lat", "p_lng", "p_contact_person", "p_contact_number"],
   },
   delete_location: { params: ["p_token", "p_location_id"] },
-  create_stock_item: { params: ["p_token", "p_name", "p_sku", "p_unit", "p_notes"] },
+  create_stock_item: {
+    params: ["p_token", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
+  },
   delete_stock_item: { params: ["p_token", "p_stock_item_id"] },
   record_stock_movement: {
     params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
@@ -68,8 +78,10 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_driver_user_id",
       "p_location_id",
       "p_entry_type",
-      "p_factory_order_number",
-      "p_inhouse_order_number",
+      "p_quote_number",
+      "p_sales_order_number",
+      "p_invoice_number",
+      "p_po_number",
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
@@ -156,6 +168,14 @@ async function routeRequest(request, response) {
       const payload = await readJsonBody(request);
       const result = await mailer.sendArtworkRequest(payload?.token, payload || {});
       sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/qr/svg") {
+      const payload = await readJsonBody(request);
+      const text = String(payload?.text || "").trim();
+      const svg = await createQrSvg(text);
+      sendSvg(response, 200, svg);
       return;
     }
 
@@ -664,8 +684,10 @@ function buildOrdersCsv(orders) {
       "Pickup location",
       "Collection or delivery",
       "Move to factory",
-      "Factory order number",
-      "In-house order number",
+      "Quote number",
+      "Sales order number",
+      "Invoice number",
+      "PO number",
       "Created by",
       "Status",
       "Notice",
@@ -678,8 +700,10 @@ function buildOrdersCsv(orders) {
       order.locationName || "",
       order.entryType || "",
       getMoveToFactoryLabel(order) || "No",
-      order.factoryOrderNumber || "",
-      order.inhouseOrderNumber || "",
+      order.quoteNumber || order.inhouseOrderNumber || "",
+      order.salesOrderNumber || order.factoryOrderNumber || "",
+      order.invoiceNumber || "",
+      order.poNumber || "",
       order.createdByName || "",
       order.status || "",
       buildOrderNoticeText(order),
@@ -875,6 +899,31 @@ function escapeCsvValue(value) {
   return `"${String(value || "").replaceAll('"', '""')}"`;
 }
 
+async function createQrSvg(text) {
+  if (!QRCode || qrLoadError) {
+    throw createHttpError(503, "QR generation is not configured.");
+  }
+
+  if (!text) {
+    throw createHttpError(400, "QR text is required.");
+  }
+
+  if (text.length > 1600) {
+    throw createHttpError(400, "QR text is too long.");
+  }
+
+  return QRCode.toString(text, {
+    type: "svg",
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 320,
+    color: {
+      dark: "#173c34",
+      light: "#0000",
+    },
+  });
+}
+
 async function serveStaticFile(cleanPath, headOnly, response) {
   const relativePath = cleanPath === "/" ? "index.html" : cleanPath.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT, relativePath);
@@ -911,6 +960,14 @@ function sendJson(response, statusCode, payload) {
 function sendText(response, statusCode, body) {
   response.writeHead(statusCode, {
     "Content-Type": "text/plain; charset=UTF-8",
+  });
+  response.end(body);
+}
+
+function sendSvg(response, statusCode, body) {
+  response.writeHead(statusCode, {
+    "Cache-Control": "no-store",
+    "Content-Type": "image/svg+xml; charset=UTF-8",
   });
   response.end(body);
 }
