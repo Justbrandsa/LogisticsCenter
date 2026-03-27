@@ -576,6 +576,33 @@ th {
   background: transparent;
 }
 
+.scan-confirm-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(27, 106, 90, 0.12);
+}
+
+.scan-confirm-card .panel-title {
+  font-size: 1.2rem;
+}
+
+.scan-confirm-meta {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.scan-confirm-meta span {
+  display: block;
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted);
+  border: 1px solid rgba(27, 106, 90, 0.08);
+}
+
 .qr-preview-body {
   display: grid;
   grid-template-columns: minmax(340px, 2fr) minmax(220px, 1fr);

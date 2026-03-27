@@ -5,6 +5,8 @@ const API_ROOT = "/api";
 const STOCK_QR_TYPE = "route-ledger-stock";
 const STOCK_QR_VERSION = 1;
 const STOCK_SCANNER_FORMATS = ["code_128", "qr_code"];
+const STOCK_LABEL_SKU_MAX_LENGTH = 10;
+const STOCK_LABEL_CODE_LENGTH = 8;
 const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZES = {
@@ -44,6 +46,8 @@ const state = {
   stockQrSharing: false,
   stockScannerOpen: false,
   stockScannerStatus: "",
+  stockScannerPendingItemId: "",
+  stockScannerPendingCode: "",
   pagination: {
     globalEntries: 1,
     assignments: 1,
@@ -160,6 +164,8 @@ async function refreshPublicState() {
   state.stockQrSharing = false;
   state.stockScannerOpen = false;
   state.stockScannerStatus = "";
+  state.stockScannerPendingItemId = "";
+  state.stockScannerPendingCode = "";
   void stopStockScanner();
   render();
 
@@ -197,6 +203,10 @@ async function refreshSnapshot() {
       state.stockQrSvg = "";
       state.stockQrBusy = false;
       state.stockQrSharing = false;
+    }
+    if (state.stockScannerPendingItemId && !state.snapshot.stockItems.some((item) => item.id === state.stockScannerPendingItemId)) {
+      state.stockScannerPendingItemId = "";
+      state.stockScannerPendingCode = "";
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -536,6 +546,8 @@ async function handleClick(event) {
   if (action === "open-stock-scanner" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     state.stockScannerOpen = true;
     state.stockScannerStatus = getStockScannerHint();
+    state.stockScannerPendingItemId = "";
+    state.stockScannerPendingCode = "";
     await stopStockScanner();
     render();
     return;
@@ -549,7 +561,20 @@ async function handleClick(event) {
   if (action === "close-stock-scanner" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     state.stockScannerOpen = false;
     state.stockScannerStatus = "";
+    state.stockScannerPendingItemId = "";
+    state.stockScannerPendingCode = "";
     await stopStockScanner();
+    render();
+    return;
+  }
+
+  if (action === "confirm-stock-scan" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await confirmStockScanSelection();
+    return;
+  }
+
+  if (action === "retry-stock-scan" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    clearPendingStockScan("Ready to scan another stock label.");
     render();
     return;
   }
@@ -1184,6 +1209,8 @@ async function startStockScanner() {
     return;
   }
 
+  clearPendingStockScan();
+
   if (!supportsStockQrDetection()) {
     state.stockScannerStatus = "This browser does not support barcode detection.";
     render();
@@ -1351,23 +1378,48 @@ async function applyStockScanResult(rawValue) {
     throw new Error("That label does not match a stock item in this snapshot.");
   }
 
+  await stopStockScanner();
+  state.stockScannerPendingItemId = item.id;
+  state.stockScannerPendingCode = buildStockQrPayload(item);
+  state.stockScannerStatus = `Scanned ${buildStockQrPayload(item)}. Confirm to select ${item.name}.`;
+  render();
+}
+
+async function confirmStockScanSelection() {
+  const item = getStockItemById(state.stockScannerPendingItemId);
+  if (!item) {
+    clearPendingStockScan(getStockScannerHint());
+    showFlash("Scan confirmation expired. Scan the label again.", "error");
+    render();
+    return;
+  }
+
   state.stockMovementSelectedItemId = item.id;
   state.stockScannerOpen = false;
   state.stockScannerStatus = "";
+  clearPendingStockScan();
   await stopStockScanner();
   showFlash(`Stock item selected: ${item.name}.`, "success");
   render();
 }
 
+function clearPendingStockScan(status = "") {
+  state.stockScannerPendingItemId = "";
+  state.stockScannerPendingCode = "";
+  if (status) {
+    state.stockScannerStatus = status;
+  }
+}
+
 function buildStockQrPayload(item) {
   const preferredSku = normalizeStockLabelText(item?.sku || "");
-  if (preferredSku && preferredSku.length <= 12 && /^[A-Z0-9-]+$/.test(preferredSku)) {
+  if (preferredSku && preferredSku.length <= STOCK_LABEL_SKU_MAX_LENGTH && /^[A-Z0-9-]+$/.test(preferredSku)) {
     return preferredSku;
   }
 
-  const uuidHex = String(item?.id || "").replace(/-/g, "").trim().toLowerCase();
-  if (uuidHex.length === 32) {
-    return encodeStockLabelCode(BigInt(`0x${uuidHex.slice(-16)}`), 13);
+  const uuidHex = getStockItemUuidHex(item);
+  if (uuidHex) {
+    return encodeStockLabelCode(BigInt(`0x${uuidHex.slice(-10)}`), STOCK_LABEL_CODE_LENGTH);
   }
 
   return normalizeStockLabelText(item?.quoteNumber || item?.id || "STOCK");
@@ -1384,7 +1436,10 @@ function parseStockQrPayload(rawValue) {
   }
 
   const normalizedValue = normalizeStockLabelText(value);
-  const matchedItem = state.snapshot.stockItems.find((item) => buildStockQrPayload(item) === normalizedValue);
+  const matchedItem = state.snapshot.stockItems.find((item) => (
+    buildStockQrPayload(item) === normalizedValue
+      || buildLegacyStockLabelCode(item) === normalizedValue
+  ));
   if (matchedItem) {
     return { stockItemId: matchedItem.id };
   }
@@ -1413,6 +1468,11 @@ function normalizeStockLabelText(value) {
   return String(value || "").trim().toUpperCase();
 }
 
+function getStockItemUuidHex(item) {
+  const uuidHex = String(item?.id || "").replace(/-/g, "").trim().toLowerCase();
+  return uuidHex.length === 32 ? uuidHex : "";
+}
+
 function encodeStockLabelCode(value, minLength = 1) {
   let current = BigInt(value || 0);
   let result = "";
@@ -1424,6 +1484,15 @@ function encodeStockLabelCode(value, minLength = 1) {
   } while (current > 0n);
 
   return result.padStart(minLength, "0");
+}
+
+function buildLegacyStockLabelCode(item) {
+  const uuidHex = getStockItemUuidHex(item);
+  if (!uuidHex) {
+    return "";
+  }
+
+  return encodeStockLabelCode(BigInt(`0x${uuidHex.slice(-16)}`), 13);
 }
 
 function normalizeStockScannerError(error) {
@@ -2736,26 +2805,55 @@ function renderStockScannerPanel() {
     return "";
   }
 
+  const pendingItem = getStockItemById(state.stockScannerPendingItemId);
+
   return `
     <section class="scanner-panel">
       <p class="field-note">${escapeHtml(state.stockScannerStatus || getStockScannerHint())}</p>
-      <div class="scanner-grid">
-        <div class="scanner-video-wrap">
-          <video data-stock-scanner-video class="scanner-video" muted autoplay playsinline></video>
-        </div>
-        <div class="scanner-actions">
-          <button type="button" class="button button-primary" data-action="start-stock-camera"${state.busy || !canUseLiveStockScanner() ? " disabled" : ""}>
-            Start camera
-          </button>
-          <label class="scanner-upload">
-            Upload barcode image
-            <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
-          </label>
-          <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
-            Close scanner
-          </button>
-        </div>
-      </div>
+      ${
+        pendingItem
+          ? `
+            <div class="scan-confirm-card">
+              <p class="eyebrow">Scan found</p>
+              <h4 class="panel-title">${escapeHtml(pendingItem.name)}</h4>
+              <div class="scan-confirm-meta">
+                <span>Label code: ${escapeHtml(state.stockScannerPendingCode || buildStockQrPayload(pendingItem))}</span>
+                <span>Stock code: ${escapeHtml(pendingItem.sku || "Not set")}</span>
+                <span>${escapeHtml(getReferenceLines(pendingItem).join(" | ") || "No order references set.")}</span>
+              </div>
+              <div class="action-row">
+                <button type="button" class="button button-primary" data-action="confirm-stock-scan"${state.busy ? " disabled" : ""}>
+                  Use this item
+                </button>
+                <button type="button" class="button button-secondary" data-action="retry-stock-scan"${state.busy ? " disabled" : ""}>
+                  Scan again
+                </button>
+                <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
+                  Close scanner
+                </button>
+              </div>
+            </div>
+          `
+          : `
+            <div class="scanner-grid">
+              <div class="scanner-video-wrap">
+                <video data-stock-scanner-video class="scanner-video" muted autoplay playsinline></video>
+              </div>
+              <div class="scanner-actions">
+                <button type="button" class="button button-primary" data-action="start-stock-camera"${state.busy || !canUseLiveStockScanner() ? " disabled" : ""}>
+                  Start camera
+                </button>
+                <label class="scanner-upload">
+                  Upload barcode image
+                  <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
+                </label>
+                <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
+                  Close scanner
+                </button>
+              </div>
+            </div>
+          `
+      }
     </section>
   `;
 }
