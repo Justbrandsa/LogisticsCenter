@@ -7,6 +7,8 @@ let Pool = null;
 let driverLoadError = null;
 let nodemailer = null;
 let mailerLoadError = null;
+let QRCode = null;
+let qrLoadError = null;
 
 try {
   ({ Pool } = require("pg"));
@@ -20,6 +22,12 @@ try {
   mailerLoadError = error;
 }
 
+try {
+  QRCode = require("qrcode");
+} catch (error) {
+  qrLoadError = error;
+}
+
 const HOST = "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
@@ -30,115 +38,6 @@ const MIME = {
   ".js": "application/javascript; charset=UTF-8",
   ".json": "application/json; charset=UTF-8",
 };
-const CODE128_PATTERNS = Object.freeze([
-  "212222",
-  "222122",
-  "222221",
-  "121223",
-  "121322",
-  "131222",
-  "122213",
-  "122312",
-  "132212",
-  "221213",
-  "221312",
-  "231212",
-  "112232",
-  "122132",
-  "122231",
-  "113222",
-  "123122",
-  "123221",
-  "223211",
-  "221132",
-  "221231",
-  "213212",
-  "223112",
-  "312131",
-  "311222",
-  "321122",
-  "321221",
-  "312212",
-  "322112",
-  "322211",
-  "212123",
-  "212321",
-  "232121",
-  "111323",
-  "131123",
-  "131321",
-  "112313",
-  "132113",
-  "132311",
-  "211313",
-  "231113",
-  "231311",
-  "112133",
-  "112331",
-  "132131",
-  "113123",
-  "113321",
-  "133121",
-  "313121",
-  "211331",
-  "231131",
-  "213113",
-  "213311",
-  "213131",
-  "311123",
-  "311321",
-  "331121",
-  "312113",
-  "312311",
-  "332111",
-  "314111",
-  "221411",
-  "431111",
-  "111224",
-  "111422",
-  "121124",
-  "121421",
-  "141122",
-  "141221",
-  "112214",
-  "112412",
-  "122114",
-  "122411",
-  "142112",
-  "142211",
-  "241211",
-  "221114",
-  "413111",
-  "241112",
-  "134111",
-  "111242",
-  "121142",
-  "121241",
-  "114212",
-  "124112",
-  "124211",
-  "411212",
-  "421112",
-  "421211",
-  "212141",
-  "214121",
-  "412121",
-  "111143",
-  "111341",
-  "131141",
-  "114113",
-  "114311",
-  "411113",
-  "411311",
-  "113141",
-  "114131",
-  "311141",
-  "411131",
-  "211412",
-  "211214",
-  "211232",
-  "2331112",
-]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RPC_DEFINITIONS = Object.freeze({
   get_login_state: { params: [] },
@@ -278,7 +177,7 @@ async function routeRequest(request, response) {
     ) {
       const payload = await readJsonBody(request);
       const text = String(payload?.text || "").trim();
-      const svg = createBarcodeSvg(text);
+      const svg = await createQrSvg(text);
       sendSvg(response, 200, svg);
       return;
     }
@@ -1003,64 +902,29 @@ function escapeCsvValue(value) {
   return `"${String(value || "").replaceAll('"', '""')}"`;
 }
 
-function createBarcodeSvg(text) {
+async function createQrSvg(text) {
+  if (!QRCode || qrLoadError) {
+    throw createHttpError(503, "QR generation is not configured.");
+  }
+
   if (!text) {
-    throw createHttpError(400, "Barcode text is required.");
+    throw createHttpError(400, "QR text is required.");
   }
 
-  if (text.length > 96) {
-    throw createHttpError(400, "Barcode text is too long.");
+  if (text.length > 1600) {
+    throw createHttpError(400, "QR text is too long.");
   }
 
-  const codes = encodeCode128B(text);
-  const moduleWidth = 2;
-  const quietZone = 10;
-  const barHeight = 120;
-  const bars = [];
-  let x = quietZone;
-
-  codes.forEach((code) => {
-    const pattern = CODE128_PATTERNS[code];
-    let drawBar = true;
-
-    for (const unit of pattern) {
-      const width = Number(unit);
-      if (drawBar) {
-        bars.push(
-          `<rect x="${x * moduleWidth}" y="0" width="${width * moduleWidth}" height="${barHeight}" fill="#173c34"/>`,
-        );
-      }
-      x += width;
-      drawBar = !drawBar;
-    }
+  return QRCode.toString(text, {
+    type: "svg",
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 320,
+    color: {
+      dark: "#173c34",
+      light: "#0000",
+    },
   });
-
-  const totalWidth = (x + quietZone) * moduleWidth;
-  return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalWidth} ${barHeight}" role="img">`,
-    bars.join(""),
-    "</svg>",
-  ].join("");
-}
-
-function encodeCode128B(text) {
-  const values = [];
-
-  for (const char of text) {
-    const codePoint = char.charCodeAt(0);
-    if (codePoint < 32 || codePoint > 126) {
-      throw createHttpError(400, "Barcode text contains unsupported characters.");
-    }
-    values.push(codePoint - 32);
-  }
-
-  let checksum = 104;
-  values.forEach((value, index) => {
-    checksum += value * (index + 1);
-  });
-  checksum %= 103;
-
-  return [104, ...values, checksum, 106];
 }
 
 async function serveStaticFile(cleanPath, headOnly, response) {
