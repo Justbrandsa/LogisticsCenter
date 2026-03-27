@@ -579,6 +579,29 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "apply-stock-manual-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    const scannerPanel = button.closest(".scanner-panel");
+    const input = scannerPanel instanceof HTMLElement
+      ? scannerPanel.querySelector("[data-stock-manual-value]")
+      : null;
+    const rawValue = input instanceof HTMLInputElement ? input.value.trim() : "";
+
+    if (!rawValue) {
+      showFlash("Enter the QR value printed on the label.", "error");
+      render();
+      return;
+    }
+
+    try {
+      await applyStockScanResult(rawValue);
+    } catch (error) {
+      showFlash(normalizeStockScannerError(error), "error");
+      state.stockScannerStatus = normalizeStockScannerError(error);
+      render();
+    }
+    return;
+  }
+
   if (action === "clear-stock-selection" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     state.stockMovementSelectedItemId = "";
     render();
@@ -1189,18 +1212,18 @@ async function getStockScannerDetector() {
 
 function getStockScannerHint() {
   if (!supportsStockQrDetection()) {
-    return "This browser does not support QR detection. Use manual entry for stock selection.";
+    return "This browser does not support QR detection. Use the printed QR value for stock selection.";
   }
 
   if (canUseLiveStockScanner()) {
-    return "Start the camera to scan a stock QR code, or upload a QR image from the phone camera.";
+    return "Start the camera to scan a stock QR code, upload a QR image, or enter the printed QR value.";
   }
 
   if (navigator.mediaDevices?.getUserMedia && !window.isSecureContext && !isLocalHost()) {
-    return "Live camera scan needs HTTPS or localhost. Upload a QR image here, or use manual entry.";
+    return "Live camera scan needs HTTPS or localhost. Upload a QR image here, or enter the printed QR value.";
   }
 
-  return "Upload a QR image here, or use manual entry.";
+  return "Upload a QR image here, or enter the printed QR value.";
 }
 
 async function startStockScanner() {
@@ -2854,6 +2877,15 @@ function renderStockScannerPanel() {
                   Upload QR image
                   <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
                 </label>
+                <div class="scanner-manual">
+                  <label>
+                    Enter QR value
+                    <input type="text" data-stock-manual-value placeholder="Type the code printed on the label" autocapitalize="characters" autocomplete="off" spellcheck="false">
+                  </label>
+                  <button type="button" class="button button-secondary" data-action="apply-stock-manual-qr"${state.busy ? " disabled" : ""}>
+                    Use QR value
+                  </button>
+                </div>
                 <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
                   Close scanner
                 </button>
