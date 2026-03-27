@@ -48,6 +48,11 @@ const state = {
   stockScannerStatus: "",
   stockScannerPendingItemId: "",
   stockScannerPendingCode: "",
+  stockSearchQuery: "",
+  stockMovementsSectionOpen: false,
+  stockArtworkPanelOpen: false,
+  stockArtworkRequestsSectionOpen: false,
+  stockOpenItemCards: {},
   stockScannerZoomSupported: false,
   stockScannerZoomValue: 1,
   stockScannerZoomMin: 1,
@@ -560,6 +565,37 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "clear-stock-search" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.stockSearchQuery = "";
+    render();
+    return;
+  }
+
+  if (action === "toggle-stock-section" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    const section = String(button.dataset.stockSection || "");
+    if (section === "movements") {
+      state.stockMovementsSectionOpen = !state.stockMovementsSectionOpen;
+    } else if (section === "artwork-form") {
+      state.stockArtworkPanelOpen = !state.stockArtworkPanelOpen;
+    } else if (section === "artwork-log") {
+      state.stockArtworkRequestsSectionOpen = !state.stockArtworkRequestsSectionOpen;
+    }
+    render();
+    return;
+  }
+
+  if (action === "toggle-stock-item-card" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    const stockItemId = String(button.dataset.stockItemId || "");
+    if (stockItemId) {
+      state.stockOpenItemCards = {
+        ...state.stockOpenItemCards,
+        [stockItemId]: !state.stockOpenItemCards[stockItemId],
+      };
+      render();
+    }
+    return;
+  }
+
   if (action === "start-stock-camera" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     await startStockScanner();
     return;
@@ -675,6 +711,12 @@ function handleChange(event) {
 function handleInput(event) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  if (target.matches("[data-stock-search]") && target instanceof HTMLInputElement) {
+    state.stockSearchQuery = target.value;
+    render();
     return;
   }
 
@@ -1180,6 +1222,70 @@ async function syncStockScannerUi() {
 
 function getStockItemById(stockItemId) {
   return state.snapshot.stockItems.find((item) => item.id === stockItemId) || null;
+}
+
+function normalizeStockSearchValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function matchesStockSearch(record, query = state.stockSearchQuery) {
+  const needle = normalizeStockSearchValue(query);
+  if (!needle) {
+    return true;
+  }
+
+  return [
+    record?.name,
+    record?.sku,
+    record?.quoteNumber,
+    record?.salesOrderNumber,
+    record?.invoiceNumber,
+    record?.poNumber,
+  ].some((value) => normalizeStockSearchValue(value).includes(needle));
+}
+
+function getFilteredStockItems() {
+  return state.snapshot.stockItems.filter((item) => matchesStockSearch(item));
+}
+
+function getStockItemSearchSummary(filteredCount, totalCount) {
+  const query = String(state.stockSearchQuery || "").trim();
+  if (!query) {
+    return "Search by quote, sales order, invoice, PO, stock code, or item name.";
+  }
+
+  if (!filteredCount) {
+    return `No stock items match "${query}".`;
+  }
+
+  return `Showing ${filteredCount} of ${totalCount} stock items for "${query}".`;
+}
+
+function renderStockDisclosure({ tag = "section", containerClass = "table-card", sectionKey, eyebrow, title, subtitle = "", summary = "", open = false, body }) {
+  return `
+    <${tag} class="${containerClass} stock-disclosure${open ? " is-open" : ""}">
+      <div class="stock-disclosure-header">
+        <div class="stock-disclosure-copy">
+          <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+          <h3 class="panel-title">${escapeHtml(title)}</h3>
+          ${subtitle ? `<p class="panel-subtitle">${escapeHtml(subtitle)}</p>` : ""}
+          ${summary ? `<p class="stock-disclosure-summary">${escapeHtml(summary)}</p>` : ""}
+        </div>
+        <button
+          type="button"
+          class="button button-ghost stock-disclosure-toggle"
+          data-action="toggle-stock-section"
+          data-stock-section="${escapeHtml(sectionKey)}"
+          ${state.busy ? " disabled" : ""}
+        >
+          ${open ? "Collapse" : "Expand"}
+        </button>
+      </div>
+      ${open ? `<div class="stock-disclosure-body">${body}</div>` : ""}
+    </${tag}>
+  `;
 }
 
 function isLocalHost() {
@@ -2677,9 +2783,9 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
       ${renderStockMovementPanel()}
     </section>
     ${renderStockQrPreviewPanel()}
-    ${renderArtworkRequestPanel(viewerRole)}
     ${renderStockItemsSection(viewerRole)}
     ${renderStockMovementsSection()}
+    ${renderArtworkRequestPanel(viewerRole)}
     ${renderArtworkRequestsSection()}
   `;
 }
@@ -2800,13 +2906,16 @@ function renderStockMovementPanel() {
 }
 
 function renderArtworkRequestPanel(viewerRole) {
-  return `
-    <article class="panel">
-      <p class="eyebrow">Artwork</p>
-      <h3 class="panel-title">Email artwork request</h3>
-      <p class="panel-subtitle">
-        Send a request to ${escapeHtml(state.artworkTo)} so the artwork department can prepare what logistics needs.
-      </p>
+  return renderStockDisclosure({
+    tag: "article",
+    containerClass: "panel",
+    sectionKey: "artwork-form",
+    eyebrow: "Artwork",
+    title: "Email artwork request",
+    subtitle: `Send a request to ${state.artworkTo} so the artwork department can prepare what logistics needs.`,
+    summary: "Collapsed until you need to send a request.",
+    open: state.stockArtworkPanelOpen,
+    body: `
       <form data-form="request-artwork">
         <div class="form-grid">
           <label>
@@ -2833,25 +2942,51 @@ function renderArtworkRequestPanel(viewerRole) {
             : ""
         }
       </form>
-    </article>
-  `;
+    `,
+  });
 }
 
 function renderStockItemsSection(viewerRole) {
   const allowDelete = viewerRole === "admin";
+  const filteredItems = getFilteredStockItems();
+  const totalItems = state.snapshot.stockItems.length;
 
   return `
     <section class="table-card">
-      <p class="eyebrow">Stock register</p>
-      <h3 class="panel-title">On-hand summary</h3>
-      <p class="panel-subtitle">
-        ${
-          allowDelete
-            ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
-            : "Each item stays linked to its movement and artwork history for traceability."
-        }
-      </p>
-      <div class="table-scroll">
+      <div class="table-toolbar stock-table-toolbar">
+        <div class="stock-section-copy">
+          <p class="eyebrow">Stock register</p>
+          <h3 class="panel-title">On-hand summary</h3>
+          <p class="panel-subtitle">
+            ${
+              allowDelete
+                ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
+                : "Each item stays linked to its movement and artwork history for traceability."
+            }
+          </p>
+          <p class="stock-results-note">${escapeHtml(getStockItemSearchSummary(filteredItems.length, totalItems))}</p>
+        </div>
+        <label class="stock-search">
+          Search order numbers
+          <div class="stock-search-controls">
+            <input
+              type="search"
+              value="${escapeHtml(state.stockSearchQuery)}"
+              placeholder="Quote, sales order, invoice, PO, stock code"
+              autocapitalize="characters"
+              autocomplete="off"
+              spellcheck="false"
+              data-stock-search
+            >
+            ${
+              state.stockSearchQuery
+                ? `<button type="button" class="button button-ghost" data-action="clear-stock-search"${state.busy ? " disabled" : ""}>Clear</button>`
+                : ""
+            }
+          </div>
+        </label>
+      </div>
+      <div class="table-scroll stock-items-table">
         <table class="responsive-stack">
           <thead>
             <tr>
@@ -2867,26 +3002,36 @@ function renderStockItemsSection(viewerRole) {
           </thead>
           <tbody>
             ${
-              state.snapshot.stockItems.length
-                ? state.snapshot.stockItems.map((item) => renderStockItemRow(item, viewerRole)).join("")
+              filteredItems.length
+                ? filteredItems.map((item) => renderStockItemRow(item, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="8">No stock items added yet.</td>
+                    <td colspan="8">${totalItems ? "No stock items match this search." : "No stock items added yet."}</td>
                   </tr>
                 `
             }
           </tbody>
         </table>
       </div>
+      <div class="stock-item-mobile-list">
+        ${
+          filteredItems.length
+            ? filteredItems.map((item) => renderStockItemCard(item, viewerRole)).join("")
+            : `<div class="empty-state">${escapeHtml(totalItems ? "No stock items match this search." : "No stock items added yet.")}</div>`
+        }
+      </div>
     </section>
   `;
 }
 
 function renderStockMovementsSection() {
-  return `
-    <section class="table-card">
-      <p class="eyebrow">Stock history</p>
-      <h3 class="panel-title">Movement ledger</h3>
+  return renderStockDisclosure({
+    sectionKey: "movements",
+    eyebrow: "Stock history",
+    title: "Movement ledger",
+    summary: `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}.`,
+    open: state.stockMovementsSectionOpen,
+    body: `
       <div class="table-scroll">
         <table class="responsive-stack">
           <thead>
@@ -2913,8 +3058,8 @@ function renderStockMovementsSection() {
           </tbody>
         </table>
       </div>
-    </section>
-  `;
+    `,
+  });
 }
 
 function renderStockQrPreviewPanel() {
@@ -3051,10 +3196,13 @@ function renderStockScannerPanel() {
 }
 
 function renderArtworkRequestsSection() {
-  return `
-    <section class="table-card">
-      <p class="eyebrow">Artwork requests</p>
-      <h3 class="panel-title">Email request log</h3>
+  return renderStockDisclosure({
+    sectionKey: "artwork-log",
+    eyebrow: "Artwork requests",
+    title: "Email request log",
+    summary: `${state.snapshot.artworkRequests.length} artwork request${state.snapshot.artworkRequests.length === 1 ? "" : "s"} sent.`,
+    open: state.stockArtworkRequestsSectionOpen,
+    body: `
       <div class="table-scroll">
         <table class="responsive-stack">
           <thead>
@@ -3080,8 +3228,8 @@ function renderArtworkRequestsSection() {
           </tbody>
         </table>
       </div>
-    </section>
-  `;
+    `,
+  });
 }
 
 function renderDriverPageContent() {
@@ -3887,6 +4035,73 @@ function renderStockItemRow(item, viewerRole) {
         </div>
       </td>
     </tr>
+  `;
+}
+
+function renderStockItemCard(item, viewerRole) {
+  const allowDelete = viewerRole === "admin";
+  const isOpen = Boolean(state.stockOpenItemCards[item.id]);
+  const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
+  const actions = [
+    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
+  ];
+
+  if (allowDelete) {
+    actions.push(
+      `<button class="button button-danger" data-action="delete-stock-item" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>Delete</button>`,
+    );
+  }
+
+  return `
+    <article class="stock-item-mobile-card${isOpen ? " is-open" : ""}">
+      <div class="stock-item-mobile-head">
+        <div class="stock-item-mobile-copy">
+          <h4 class="stock-item-mobile-title">${escapeHtml(item.name)}</h4>
+          <p class="stock-item-mobile-summary">${escapeHtml(referenceSummary)}</p>
+        </div>
+        <div class="stock-item-mobile-side">
+          <span class="stock-item-mobile-onhand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(item.unit || "units")}</span>
+          <button
+            type="button"
+            class="button button-ghost stock-item-mobile-toggle"
+            data-action="toggle-stock-item-card"
+            data-stock-item-id="${item.id}"
+            ${state.busy ? " disabled" : ""}
+          >
+            ${isOpen ? "Hide details" : "Show details"}
+          </button>
+        </div>
+      </div>
+      ${
+        isOpen
+          ? `
+            <div class="stock-item-mobile-body">
+              <div class="stock-item-mobile-grid">
+                <div class="stock-item-mobile-field">
+                  <span class="stock-item-mobile-label">Stock code</span>
+                  <strong>${escapeHtml(item.sku || "Not set")}</strong>
+                </div>
+                <div class="stock-item-mobile-field">
+                  <span class="stock-item-mobile-label">Updated</span>
+                  <strong>${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</strong>
+                </div>
+                <div class="stock-item-mobile-field">
+                  <span class="stock-item-mobile-label">References</span>
+                  <div>${renderReferenceSummary(item)}</div>
+                </div>
+                <div class="stock-item-mobile-field">
+                  <span class="stock-item-mobile-label">Notes</span>
+                  <strong>${escapeHtml(item.notes || "None")}</strong>
+                </div>
+              </div>
+              <div class="action-row">
+                ${actions.join("")}
+              </div>
+            </div>
+          `
+          : ""
+      }
+    </article>
   `;
 }
 
