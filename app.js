@@ -48,6 +48,11 @@ const state = {
   stockScannerStatus: "",
   stockScannerPendingItemId: "",
   stockScannerPendingCode: "",
+  stockScannerZoomSupported: false,
+  stockScannerZoomValue: 1,
+  stockScannerZoomMin: 1,
+  stockScannerZoomMax: 1,
+  stockScannerZoomStep: 0.1,
   pagination: {
     globalEntries: 1,
     assignments: 1,
@@ -81,10 +86,12 @@ let stockScannerAnimationFrame = 0;
 let stockScannerStarting = false;
 let stockScannerStopRequested = false;
 let stockScannerDetector = null;
+let stockScannerVideoTrack = null;
 
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleChange);
+document.addEventListener("input", handleInput);
 window.addEventListener("hashchange", handleHashChange);
 window.addEventListener("beforeunload", () => {
   void stopStockScanner();
@@ -665,6 +672,20 @@ function handleChange(event) {
   }
 }
 
+function handleInput(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  if (target.matches("[data-stock-scanner-zoom]") && target instanceof HTMLInputElement) {
+    const zoomValue = Number(target.value);
+    if (Number.isFinite(zoomValue)) {
+      void setStockScannerZoom(zoomValue);
+    }
+  }
+}
+
 async function handleBootstrap(formData) {
   const name = String(formData.get("name") || "").trim();
   const password = String(formData.get("password") || "").trim();
@@ -1226,9 +1247,112 @@ function getStockScannerHint() {
   return "Upload a QR image here, or enter the printed QR value.";
 }
 
-async function startStockScanner() {
+function resetStockScannerCameraState() {
+  stockScannerVideoTrack = null;
+  state.stockScannerZoomSupported = false;
+  state.stockScannerZoomValue = 1;
+  state.stockScannerZoomMin = 1;
+  state.stockScannerZoomMax = 1;
+  state.stockScannerZoomStep = 0.1;
+}
+
+function getActiveStockScannerStatus() {
+  if (state.stockScannerZoomSupported) {
+    return "Scanning for a stock QR code. Move slowly closer until it looks sharp, or use Zoom.";
+  }
+
+  return "Scanning for a stock QR code. Move slowly closer until it looks sharp.";
+}
+
+async function configureStockScannerTrack(track) {
+  resetStockScannerCameraState();
+
+  if (!track) {
+    return;
+  }
+
+  stockScannerVideoTrack = track;
+
+  let capabilities = null;
+  let settings = null;
+
+  try {
+    capabilities = typeof track.getCapabilities === "function" ? track.getCapabilities() : null;
+  } catch (error) {
+    capabilities = null;
+  }
+
+  try {
+    settings = typeof track.getSettings === "function" ? track.getSettings() : null;
+  } catch (error) {
+    settings = null;
+  }
+
+  const focusModes = Array.isArray(capabilities?.focusMode) ? capabilities.focusMode : [];
+  if (focusModes.length) {
+    const preferredFocusMode = focusModes.includes("continuous")
+      ? "continuous"
+      : (focusModes.includes("single-shot") ? "single-shot" : "");
+
+    if (preferredFocusMode) {
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: preferredFocusMode }] });
+      } catch (error) {
+        // Ignore devices that expose focus metadata but reject browser focus controls.
+      }
+    }
+  }
+
+  const zoomCapability = capabilities?.zoom;
+  const zoomMin = Number(zoomCapability?.min);
+  const zoomMax = Number(zoomCapability?.max);
+  const zoomStep = Number(zoomCapability?.step);
+  const currentZoom = Number(settings?.zoom);
+
+  if (Number.isFinite(zoomMin) && Number.isFinite(zoomMax) && zoomMax > zoomMin) {
+    state.stockScannerZoomSupported = true;
+    state.stockScannerZoomMin = Math.round(zoomMin * 100) / 100;
+    state.stockScannerZoomMax = Math.round(zoomMax * 100) / 100;
+    state.stockScannerZoomStep = Number.isFinite(zoomStep) && zoomStep > 0
+      ? Math.max(Math.round(zoomStep * 100) / 100, 0.01)
+      : Math.max(Math.round(((zoomMax - zoomMin) / 20) * 100) / 100, 0.01);
+    state.stockScannerZoomValue = Math.min(
+      Math.max(Number.isFinite(currentZoom) ? currentZoom : zoomMin, zoomMin),
+      zoomMax,
+    );
+  }
+}
+
+async function bindStockScannerVideo(stream) {
   const videoEl = document.querySelector("[data-stock-scanner-video]");
   if (!(videoEl instanceof HTMLVideoElement)) {
+    return null;
+  }
+
+  videoEl.muted = true;
+  videoEl.srcObject = stream;
+  videoEl.setAttribute("playsinline", "true");
+  await videoEl.play();
+  return videoEl;
+}
+
+async function setStockScannerZoom(zoomValue) {
+  if (!stockScannerVideoTrack || !state.stockScannerZoomSupported || !Number.isFinite(zoomValue)) {
+    return;
+  }
+
+  const nextZoom = Math.min(Math.max(zoomValue, state.stockScannerZoomMin), state.stockScannerZoomMax);
+
+  try {
+    await stockScannerVideoTrack.applyConstraints({ advanced: [{ zoom: nextZoom }] });
+    state.stockScannerZoomValue = nextZoom;
+  } catch (error) {
+    // Ignore devices that expose zoom but do not allow live updates from the browser.
+  }
+}
+
+async function startStockScanner() {
+  if (!state.stockScannerOpen) {
     return;
   }
 
@@ -1265,6 +1389,8 @@ async function startStockScanner() {
       audio: false,
       video: {
         facingMode: { ideal: "environment" },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
       },
     });
 
@@ -1274,12 +1400,19 @@ async function startStockScanner() {
     }
 
     stockScannerStream = stream;
-    videoEl.srcObject = stream;
-    videoEl.setAttribute("playsinline", "true");
-    await videoEl.play();
-    state.stockScannerStatus = "Scanning for a stock QR code.";
+    await configureStockScannerTrack(stream.getVideoTracks()[0] || null);
+    state.stockScannerStatus = getActiveStockScannerStatus();
+    render();
+
+    const videoEl = await bindStockScannerVideo(stream);
+    if (!(videoEl instanceof HTMLVideoElement)) {
+      await stopStockScanner();
+      return;
+    }
+
     scanStockVideoFrame(videoEl, detector);
   } catch (error) {
+    await stopStockScanner();
     state.stockScannerStatus = normalizeStockScannerError(error);
     render();
   } finally {
@@ -1334,6 +1467,8 @@ async function stopStockScanner() {
     stockScannerStream.getTracks().forEach((track) => track.stop());
     stockScannerStream = null;
   }
+
+  resetStockScannerCameraState();
 
   const videoEl = document.querySelector("[data-stock-scanner-video]");
   if (videoEl instanceof HTMLVideoElement) {
@@ -2873,6 +3008,24 @@ function renderStockScannerPanel() {
                 <button type="button" class="button button-primary" data-action="start-stock-camera"${state.busy || !canUseLiveStockScanner() ? " disabled" : ""}>
                   Start camera
                 </button>
+                ${
+                  state.stockScannerZoomSupported
+                    ? `
+                      <label class="scanner-zoom">
+                        Zoom
+                        <input
+                          type="range"
+                          min="${escapeHtml(String(state.stockScannerZoomMin))}"
+                          max="${escapeHtml(String(state.stockScannerZoomMax))}"
+                          step="${escapeHtml(String(state.stockScannerZoomStep))}"
+                          value="${escapeHtml(String(state.stockScannerZoomValue))}"
+                          data-stock-scanner-zoom
+                        >
+                        <span class="field-note">Move closer first. Use zoom only if the QR still looks soft.</span>
+                      </label>
+                    `
+                    : ""
+                }
                 <label class="scanner-upload">
                   Upload QR image
                   <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
