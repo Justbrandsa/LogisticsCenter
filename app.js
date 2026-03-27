@@ -527,6 +527,11 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "copy-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await copyStockQrValue(String(button.dataset.stockItemId || ""));
+    return;
+  }
+
   if (action === "open-stock-scanner" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     state.stockScannerOpen = true;
     state.stockScannerStatus = getStockScannerHint();
@@ -1506,15 +1511,25 @@ async function shareStockQrLabel(stockItemId) {
     return;
   }
 
-  const file = createStockLabelFile(item, state.stockQrSvg);
-  if (typeof navigator.canShare === "function" && !navigator.canShare({ files: [file] })) {
-    showFlash("This browser cannot share the label file.", "error");
+  state.stockQrSharing = true;
+  render();
+
+  let file;
+  try {
+    file = await createStockLabelFile(item, state.stockQrSvg);
+  } catch (error) {
+    state.stockQrSharing = false;
+    showFlash(normalizeError(error), "error");
     render();
     return;
   }
 
-  state.stockQrSharing = true;
-  render();
+  if (typeof navigator.canShare === "function" && !navigator.canShare({ files: [file] })) {
+    state.stockQrSharing = false;
+    showFlash("This browser cannot share the label file.", "error");
+    render();
+    return;
+  }
 
   try {
     await navigator.share({
@@ -1522,7 +1537,7 @@ async function shareStockQrLabel(stockItemId) {
       text: getReferenceLines(item).join(" | ") || `Barcode label for ${item.name}`,
       files: [file],
     });
-    showFlash("Label shared. Choose Labelnize to import it.", "success");
+    showFlash("PNG label shared. Choose Labelnize to import it.", "success");
   } catch (error) {
     if (String(error?.name || "") !== "AbortError") {
       showFlash(normalizeError(error), "error");
@@ -1537,14 +1552,15 @@ function supportsStockLabelShare() {
   return typeof navigator.share === "function" && typeof File === "function";
 }
 
-function createStockLabelFile(item, svg) {
+async function createStockLabelFile(item, svg) {
   const nameParts = [
     sanitizeFileStem(item?.name || ""),
     sanitizeFileStem(item?.sku || ""),
     String(item?.id || "").trim().slice(0, 8).toLowerCase(),
   ].filter(Boolean);
-  const fileName = `${nameParts.join("-") || "stock-label"}-barcode.svg`;
-  return new File([svg], fileName, { type: "image/svg+xml" });
+  const fileName = `${nameParts.join("-") || "stock-label"}-label.png`;
+  const blob = await renderStockLabelPng(item, svg);
+  return new File([blob], fileName, { type: "image/png" });
 }
 
 function sanitizeFileStem(value) {
@@ -1553,6 +1569,214 @@ function sanitizeFileStem(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+async function copyStockQrValue(stockItemId) {
+  const item = getStockItemById(stockItemId);
+  if (!item) {
+    showFlash("Stock item not found.", "error");
+    render();
+    return;
+  }
+
+  try {
+    await copyText(buildStockQrPayload(item));
+    showFlash("Barcode value copied.", "success");
+  } catch (error) {
+    showFlash(normalizeError(error), "error");
+  } finally {
+    render();
+  }
+}
+
+async function renderStockLabelPng(item, svg) {
+  const width = 1400;
+  const padding = 80;
+  const contentWidth = width - (padding * 2);
+  const titleFont = "700 60px Arial";
+  const titleLineHeight = 72;
+  const detailFont = "400 34px Arial";
+  const detailLineHeight = 46;
+  const borderInset = 10;
+  const detailLines = [
+    ...getReferenceLines(item),
+    `Stock code: ${item?.sku || "Not set"}`,
+  ];
+  const barcodeSize = getSvgViewBoxSize(svg);
+  const barcodeHeight = Math.max(180, Math.round(contentWidth * (barcodeSize.height / barcodeSize.width)));
+
+  const measureCanvas = document.createElement("canvas");
+  const measureContext = measureCanvas.getContext("2d");
+  if (!measureContext) {
+    throw new Error("This browser cannot prepare the label image.");
+  }
+
+  measureContext.font = titleFont;
+  const titleLines = wrapCanvasText(measureContext, item?.name || "Stock label", contentWidth, 3);
+  measureContext.font = detailFont;
+  const wrappedDetailLines = detailLines.flatMap((line) => wrapCanvasText(measureContext, line, contentWidth, 2));
+  const height = Math.max(
+    820,
+    padding
+      + (titleLines.length * titleLineHeight)
+      + 24
+      + (wrappedDetailLines.length * detailLineHeight)
+      + 40
+      + barcodeHeight
+      + padding,
+  );
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("This browser cannot prepare the label image.");
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "#cddcd7";
+  context.lineWidth = 4;
+  context.strokeRect(borderInset, borderInset, width - (borderInset * 2), height - (borderInset * 2));
+
+  let y = padding;
+  context.fillStyle = "#173c34";
+  context.font = titleFont;
+  titleLines.forEach((line) => {
+    context.fillText(line, padding, y);
+    y += titleLineHeight;
+  });
+
+  y += 12;
+  context.font = detailFont;
+  wrappedDetailLines.forEach((line) => {
+    context.fillText(line, padding, y);
+    y += detailLineHeight;
+  });
+
+  y += 24;
+  const barcodeImage = await loadSvgImage(svg);
+  context.drawImage(barcodeImage, padding, y, contentWidth, barcodeHeight);
+
+  const blob = await canvasToBlob(canvas, "image/png");
+  return blob;
+}
+
+function getSvgViewBoxSize(svg) {
+  const documentSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const svgEl = documentSvg.documentElement;
+  const viewBox = String(svgEl.getAttribute("viewBox") || "")
+    .trim()
+    .split(/\s+/)
+    .map((value) => Number(value));
+
+  if (viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0) {
+    return { width: viewBox[2], height: viewBox[3] };
+  }
+
+  return { width: 900, height: 120 };
+}
+
+function wrapCanvasText(context, text, maxWidth, maxLines = Number.MAX_SAFE_INTEGER) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return [];
+  }
+
+  const lines = [];
+  let currentLine = "";
+
+  for (let index = 0; index < words.length; index += 1) {
+    const candidate = currentLine ? `${currentLine} ${words[index]}` : words[index];
+    if (!currentLine || context.measureText(candidate).width <= maxWidth) {
+      currentLine = candidate;
+      continue;
+    }
+
+    if (lines.length === maxLines - 1) {
+      lines.push(trimCanvasText(context, `${currentLine} ${words.slice(index).join(" ")}`.trim(), maxWidth));
+      return lines;
+    }
+
+    lines.push(currentLine);
+    currentLine = words[index];
+  }
+
+  if (currentLine) {
+    if (lines.length === maxLines - 1 && context.measureText(currentLine).width > maxWidth) {
+      lines.push(trimCanvasText(context, currentLine, maxWidth));
+      return lines;
+    }
+    lines.push(currentLine);
+  }
+
+  return lines;
+}
+
+function trimCanvasText(context, text, maxWidth) {
+  let value = String(text || "").trim();
+  if (context.measureText(value).width <= maxWidth) {
+    return value;
+  }
+
+  while (value && context.measureText(`${value}...`).width > maxWidth) {
+    value = value.slice(0, -1).trimEnd();
+  }
+
+  return `${value || ""}...`;
+}
+
+function loadSvgImage(svg) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("The barcode image could not be prepared."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToBlob(canvas, type) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+
+      reject(new Error("The label image could not be prepared."));
+    }, type);
+  });
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = String(text || "");
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.focus();
+  input.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(input);
+
+  if (!copied) {
+    throw new Error("This browser could not copy the barcode value.");
+  }
 }
 
 function renderHeader() {
@@ -2497,6 +2721,9 @@ function renderStockQrPreviewPanel() {
           </button>
           <button class="button button-secondary" data-action="share-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing || !state.stockQrSvg || !supportsStockLabelShare() ? " disabled" : ""}>
             ${state.stockQrSharing ? "Sharing..." : "Share label"}
+          </button>
+          <button class="button button-secondary" data-action="copy-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing ? " disabled" : ""}>
+            Copy code
           </button>
           <button class="button button-ghost" data-action="close-stock-qr"${state.stockQrBusy || state.stockQrSharing ? " disabled" : ""}>
             Close
