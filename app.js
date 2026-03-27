@@ -4,6 +4,7 @@ const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
 const STOCK_QR_TYPE = "route-ledger-stock";
 const STOCK_QR_VERSION = 1;
+const STOCK_SCANNER_FORMATS = ["code_128", "qr_code"];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZES = {
   globalEntries: 12,
@@ -39,6 +40,7 @@ const state = {
   stockQrItemId: "",
   stockQrSvg: "",
   stockQrBusy: false,
+  stockQrSharing: false,
   stockScannerOpen: false,
   stockScannerStatus: "",
   pagination: {
@@ -154,6 +156,7 @@ async function refreshPublicState() {
   state.stockQrItemId = "";
   state.stockQrSvg = "";
   state.stockQrBusy = false;
+  state.stockQrSharing = false;
   state.stockScannerOpen = false;
   state.stockScannerStatus = "";
   void stopStockScanner();
@@ -192,6 +195,7 @@ async function refreshSnapshot() {
       state.stockQrItemId = "";
       state.stockQrSvg = "";
       state.stockQrBusy = false;
+      state.stockQrSharing = false;
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -508,12 +512,18 @@ async function handleClick(event) {
     state.stockQrItemId = "";
     state.stockQrSvg = "";
     state.stockQrBusy = false;
+    state.stockQrSharing = false;
     render();
     return;
   }
 
   if (action === "print-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     printStockQrLabel(String(button.dataset.stockItemId || ""));
+    return;
+  }
+
+  if (action === "share-stock-qr" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    await shareStockQrLabel(String(button.dataset.stockItemId || ""));
     return;
   }
 
@@ -925,7 +935,7 @@ async function createStockItem(formData) {
   }
 
   if (!quoteNumber) {
-    showFlash("Quote number is required for QR-managed stock.", "error");
+    showFlash("Quote number is required for stock labels.", "error");
     render();
     return;
   }
@@ -1110,20 +1120,56 @@ function canUseLiveStockScanner() {
   return supportsStockQrDetection() && Boolean(navigator.mediaDevices?.getUserMedia) && (window.isSecureContext || isLocalHost());
 }
 
+async function getStockScannerDetector() {
+  if (!supportsStockQrDetection()) {
+    throw new Error("This browser does not support barcode detection.");
+  }
+
+  if (stockScannerDetector) {
+    return stockScannerDetector;
+  }
+
+  let formats = STOCK_SCANNER_FORMATS.slice();
+
+  if (typeof window.BarcodeDetector.getSupportedFormats === "function") {
+    try {
+      const supportedFormats = await window.BarcodeDetector.getSupportedFormats();
+      if (Array.isArray(supportedFormats)) {
+        if (!supportedFormats.includes("code_128")) {
+          throw new Error("This browser does not support barcode scanning.");
+        }
+        formats = STOCK_SCANNER_FORMATS.filter((format) => supportedFormats.includes(format));
+      }
+    } catch (error) {
+      if (String(error?.message || "").toLowerCase().includes("barcode scanning")) {
+        throw error;
+      }
+      formats = STOCK_SCANNER_FORMATS.slice();
+    }
+  }
+
+  if (!formats.length) {
+    throw new Error("This browser does not support stock label scanning.");
+  }
+
+  stockScannerDetector = new window.BarcodeDetector({ formats });
+  return stockScannerDetector;
+}
+
 function getStockScannerHint() {
   if (!supportsStockQrDetection()) {
-    return "This browser does not support QR detection. Use manual entry for stock selection.";
+    return "This browser does not support barcode detection. Use manual entry for stock selection.";
   }
 
   if (canUseLiveStockScanner()) {
-    return "Start the camera to scan a stock QR code, or upload a QR image from the phone camera.";
+    return "Start the camera to scan a stock barcode, or upload a barcode image from the phone camera.";
   }
 
   if (navigator.mediaDevices?.getUserMedia && !window.isSecureContext && !isLocalHost()) {
-    return "Live camera scan needs HTTPS or localhost. Upload a QR image here, or use manual entry.";
+    return "Live camera scan needs HTTPS or localhost. Upload a barcode image here, or use manual entry.";
   }
 
-  return "Upload a QR image here, or use manual entry.";
+  return "Upload a barcode image here, or use manual entry.";
 }
 
 async function startStockScanner() {
@@ -1133,7 +1179,7 @@ async function startStockScanner() {
   }
 
   if (!supportsStockQrDetection()) {
-    state.stockScannerStatus = "This browser does not support QR detection.";
+    state.stockScannerStatus = "This browser does not support barcode detection.";
     render();
     return;
   }
@@ -1145,7 +1191,7 @@ async function startStockScanner() {
   }
 
   if (!window.isSecureContext && !isLocalHost()) {
-    state.stockScannerStatus = "Live camera scan needs HTTPS or localhost. Upload a QR image instead.";
+    state.stockScannerStatus = "Live camera scan needs HTTPS or localhost. Upload a barcode image instead.";
     render();
     return;
   }
@@ -1158,7 +1204,7 @@ async function startStockScanner() {
   stockScannerStopRequested = false;
 
   try {
-    stockScannerDetector = stockScannerDetector || new window.BarcodeDetector({ formats: ["qr_code"] });
+    const detector = await getStockScannerDetector();
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -1175,8 +1221,8 @@ async function startStockScanner() {
     videoEl.srcObject = stream;
     videoEl.setAttribute("playsinline", "true");
     await videoEl.play();
-    state.stockScannerStatus = "Scanning for a stock QR code.";
-    scanStockVideoFrame(videoEl);
+    state.stockScannerStatus = "Scanning for a stock barcode.";
+    scanStockVideoFrame(videoEl, detector);
   } catch (error) {
     state.stockScannerStatus = normalizeStockScannerError(error);
     render();
@@ -1185,7 +1231,7 @@ async function startStockScanner() {
   }
 }
 
-function scanStockVideoFrame(videoEl) {
+function scanStockVideoFrame(videoEl, detector = stockScannerDetector) {
   if (!stockScannerStream || stockScannerStopRequested || !(videoEl instanceof HTMLVideoElement)) {
     return;
   }
@@ -1196,7 +1242,7 @@ function scanStockVideoFrame(videoEl) {
     }
 
     try {
-      const detections = await stockScannerDetector.detect(videoEl);
+      const detections = await detector.detect(videoEl);
       const rawValue = detections.find((entry) => typeof entry?.rawValue === "string" && entry.rawValue.trim())?.rawValue?.trim();
 
       if (rawValue) {
@@ -1242,22 +1288,22 @@ async function stopStockScanner() {
 
 async function handleStockScanUpload(file, inputEl) {
   if (!supportsStockQrDetection()) {
-    showFlash("This browser does not support QR detection from images.", "error");
+    showFlash("This browser does not support barcode detection from images.", "error");
     render();
     return;
   }
 
   try {
-    state.stockScannerStatus = "Reading QR image.";
+    state.stockScannerStatus = "Reading barcode image.";
     render();
 
     const image = await loadImageFromFile(file);
-    stockScannerDetector = stockScannerDetector || new window.BarcodeDetector({ formats: ["qr_code"] });
-    const detections = await stockScannerDetector.detect(image);
+    const detector = await getStockScannerDetector();
+    const detections = await detector.detect(image);
     const rawValue = detections.find((entry) => typeof entry?.rawValue === "string" && entry.rawValue.trim())?.rawValue?.trim();
 
     if (!rawValue) {
-      throw new Error("No stock QR code was found in that image.");
+      throw new Error("No stock label was found in that image.");
     }
 
     await applyStockScanResult(rawValue);
@@ -1291,12 +1337,12 @@ function loadImageFromFile(file) {
 async function applyStockScanResult(rawValue) {
   const parsed = parseStockQrPayload(rawValue);
   if (!parsed?.stockItemId) {
-    throw new Error("That QR code is not a Route Ledger stock label.");
+    throw new Error("That label is not a Route Ledger stock label.");
   }
 
   const item = getStockItemById(parsed.stockItemId);
   if (!item) {
-    throw new Error("That QR code does not match a stock item in this snapshot.");
+    throw new Error("That label does not match a stock item in this snapshot.");
   }
 
   state.stockMovementSelectedItemId = item.id;
@@ -1308,16 +1354,7 @@ async function applyStockScanResult(rawValue) {
 }
 
 function buildStockQrPayload(item) {
-  return JSON.stringify({
-    type: STOCK_QR_TYPE,
-    version: STOCK_QR_VERSION,
-    stockItemId: item.id,
-    description: item.name || "",
-    quoteNumber: item.quoteNumber || "",
-    salesOrderNumber: item.salesOrderNumber || "",
-    invoiceNumber: item.invoiceNumber || "",
-    poNumber: item.poNumber || "",
-  });
+  return String(item?.id || "").trim();
 }
 
 function parseStockQrPayload(rawValue) {
@@ -1327,7 +1364,7 @@ function parseStockQrPayload(rawValue) {
   }
 
   if (UUID_PATTERN.test(value)) {
-    return { stockItemId: value };
+    return { stockItemId: value.toLowerCase() };
   }
 
   try {
@@ -1338,7 +1375,10 @@ function parseStockQrPayload(rawValue) {
       && Number(payload.version) === STOCK_QR_VERSION
       && UUID_PATTERN.test(String(payload.stockItemId || ""))
     ) {
-      return payload;
+      return {
+        ...payload,
+        stockItemId: String(payload.stockItemId || "").toLowerCase(),
+      };
     }
   } catch (error) {
     return null;
@@ -1351,12 +1391,16 @@ function normalizeStockScannerError(error) {
   const message = normalizeError(error);
   const lowerMessage = message.toLowerCase();
 
+  if (lowerMessage.includes("barcode scanning")) {
+    return "This browser does not support barcode scanning.";
+  }
+
   if (lowerMessage.includes("permission") || lowerMessage.includes("denied")) {
-    return "Camera access was blocked. Allow camera access, or upload a QR image instead.";
+    return "Camera access was blocked. Allow camera access, or upload a barcode image instead.";
   }
 
   if (lowerMessage.includes("not found")) {
-    return "No camera was found. Upload a QR image instead.";
+    return "No camera was found. Upload a barcode image instead.";
   }
 
   return message;
@@ -1378,10 +1422,11 @@ async function openStockQrPreview(stockItemId) {
   state.stockQrItemId = item.id;
   state.stockQrSvg = "";
   state.stockQrBusy = true;
+  state.stockQrSharing = false;
   render();
 
   try {
-    state.stockQrSvg = await requestText(`${API_ROOT}/qr/svg`, {
+    state.stockQrSvg = await requestText(`${API_ROOT}/barcode/svg`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1393,6 +1438,7 @@ async function openStockQrPreview(stockItemId) {
   } catch (error) {
     state.stockQrItemId = "";
     state.stockQrSvg = "";
+    state.stockQrSharing = false;
     showFlash(normalizeError(error), "error");
   } finally {
     state.stockQrBusy = false;
@@ -1403,7 +1449,7 @@ async function openStockQrPreview(stockItemId) {
 function printStockQrLabel(stockItemId) {
   const item = getStockItemById(stockItemId);
   if (!item || !state.stockQrSvg || state.stockQrItemId !== stockItemId) {
-    showFlash("Open the QR preview before printing.", "error");
+    showFlash("Open the barcode preview before printing.", "error");
     render();
     return;
   }
@@ -1427,9 +1473,9 @@ function printStockQrLabel(stockItemId) {
         <title>${escapeHtml(item.name)}</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #173c34; }
-          .label { max-width: 420px; padding: 24px; border: 1px solid #cddcd7; border-radius: 16px; }
-          .qr { margin: 16px 0; width: 240px; height: 240px; }
-          .qr svg { width: 100%; height: 100%; }
+          .label { max-width: 560px; padding: 24px; border: 1px solid #cddcd7; border-radius: 16px; }
+          .barcode { margin: 16px 0; width: 100%; }
+          .barcode svg { width: 100%; height: auto; display: block; }
           p { margin: 6px 0; }
         </style>
       </head>
@@ -1437,13 +1483,76 @@ function printStockQrLabel(stockItemId) {
         <div class="label">
           <h1>${escapeHtml(item.name)}</h1>
           ${details}
-          <div class="qr">${state.stockQrSvg}</div>
+          <div class="barcode">${state.stockQrSvg}</div>
         </div>
         <script>window.print();</script>
       </body>
     </html>
   `);
   printWindow.document.close();
+}
+
+async function shareStockQrLabel(stockItemId) {
+  const item = getStockItemById(stockItemId);
+  if (!item || !state.stockQrSvg || state.stockQrItemId !== stockItemId) {
+    showFlash("Open the barcode preview before sharing.", "error");
+    render();
+    return;
+  }
+
+  if (!supportsStockLabelShare()) {
+    showFlash("This browser cannot share the label file.", "error");
+    render();
+    return;
+  }
+
+  const file = createStockLabelFile(item, state.stockQrSvg);
+  if (typeof navigator.canShare === "function" && !navigator.canShare({ files: [file] })) {
+    showFlash("This browser cannot share the label file.", "error");
+    render();
+    return;
+  }
+
+  state.stockQrSharing = true;
+  render();
+
+  try {
+    await navigator.share({
+      title: `${item.name} barcode label`,
+      text: getReferenceLines(item).join(" | ") || `Barcode label for ${item.name}`,
+      files: [file],
+    });
+    showFlash("Label shared. Choose Labelnize to import it.", "success");
+  } catch (error) {
+    if (String(error?.name || "") !== "AbortError") {
+      showFlash(normalizeError(error), "error");
+    }
+  } finally {
+    state.stockQrSharing = false;
+    render();
+  }
+}
+
+function supportsStockLabelShare() {
+  return typeof navigator.share === "function" && typeof File === "function";
+}
+
+function createStockLabelFile(item, svg) {
+  const nameParts = [
+    sanitizeFileStem(item?.name || ""),
+    sanitizeFileStem(item?.sku || ""),
+    String(item?.id || "").trim().slice(0, 8).toLowerCase(),
+  ].filter(Boolean);
+  const fileName = `${nameParts.join("-") || "stock-label"}-barcode.svg`;
+  return new File([svg], fileName, { type: "image/svg+xml" });
+}
+
+function sanitizeFileStem(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function renderHeader() {
@@ -2196,7 +2305,7 @@ function renderStockMovementPanel() {
       <p class="panel-subtitle">Every stock movement is timestamped and linked to the staff member who recorded it.</p>
       <div class="action-row">
         <button type="button" class="button button-secondary" data-action="open-stock-scanner"${state.busy ? " disabled" : ""}>
-          Scan QR
+          Scan barcode
         </button>
         <button type="button" class="button button-ghost" data-action="clear-stock-selection"${state.busy || !state.stockMovementSelectedItemId ? " disabled" : ""}>
           Clear selection
@@ -2378,22 +2487,25 @@ function renderStockQrPreviewPanel() {
     <section class="table-card qr-preview-card">
       <div class="table-toolbar">
         <div>
-          <p class="eyebrow">QR Label</p>
+          <p class="eyebrow">Barcode Label</p>
           <h3 class="panel-title">${escapeHtml(item.name)}</h3>
           <p class="panel-subtitle">${escapeHtml(getReferenceLines(item).join(" | ") || "No order references set.")}</p>
         </div>
         <div class="action-row">
-          <button class="button button-secondary" data-action="print-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || !state.stockQrSvg ? " disabled" : ""}>
+          <button class="button button-secondary" data-action="print-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing || !state.stockQrSvg ? " disabled" : ""}>
             Print label
           </button>
-          <button class="button button-ghost" data-action="close-stock-qr"${state.stockQrBusy ? " disabled" : ""}>
+          <button class="button button-secondary" data-action="share-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing || !state.stockQrSvg || !supportsStockLabelShare() ? " disabled" : ""}>
+            ${state.stockQrSharing ? "Sharing..." : "Share label"}
+          </button>
+          <button class="button button-ghost" data-action="close-stock-qr"${state.stockQrBusy || state.stockQrSharing ? " disabled" : ""}>
             Close
           </button>
         </div>
       </div>
       ${
         state.stockQrBusy
-          ? '<p class="field-note">Generating QR label...</p>'
+          ? '<p class="field-note">Generating barcode label...</p>'
           : `
             <div class="qr-preview-body">
               <div class="qr-preview-code">${state.stockQrSvg}</div>
@@ -2425,7 +2537,7 @@ function renderStockScannerPanel() {
             Start camera
           </button>
           <label class="scanner-upload">
-            Upload QR image
+            Upload barcode image
             <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
           </label>
           <button type="button" class="button button-ghost" data-action="close-stock-scanner"${state.busy ? " disabled" : ""}>
@@ -3248,7 +3360,7 @@ function renderReferenceSummary(record, emptyLabel = "No order references") {
 function renderStockItemRow(item, viewerRole) {
   const allowDelete = viewerRole === "admin";
   const actions = [
-    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
+    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>Barcode</button>`,
   ];
 
   if (allowDelete) {

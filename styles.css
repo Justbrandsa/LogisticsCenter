@@ -564,7 +564,7 @@ th {
 
 .qr-preview-body {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(340px, 2fr) minmax(220px, 1fr);
   gap: 1rem;
   align-items: start;
 }
@@ -572,7 +572,7 @@ th {
 .qr-preview-code {
   display: grid;
   place-items: center;
-  padding: 1rem;
+  padding: 1rem 1.25rem;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(27, 106, 90, 0.12);
@@ -581,7 +581,7 @@ th {
 .qr-preview-code svg {
   width: 100%;
   height: auto;
-  max-width: 260px;
+  max-width: 100%;
   display: block;
 }
 
