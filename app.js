@@ -5,6 +5,7 @@ const API_ROOT = "/api";
 const STOCK_QR_TYPE = "route-ledger-stock";
 const STOCK_QR_VERSION = 1;
 const STOCK_SCANNER_FORMATS = ["code_128", "qr_code"];
+const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZES = {
   globalEntries: 12,
@@ -1359,7 +1360,17 @@ async function applyStockScanResult(rawValue) {
 }
 
 function buildStockQrPayload(item) {
-  return String(item?.id || "").trim();
+  const preferredSku = normalizeStockLabelText(item?.sku || "");
+  if (preferredSku && preferredSku.length <= 12 && /^[A-Z0-9-]+$/.test(preferredSku)) {
+    return preferredSku;
+  }
+
+  const uuidHex = String(item?.id || "").replace(/-/g, "").trim().toLowerCase();
+  if (uuidHex.length === 32) {
+    return encodeStockLabelCode(BigInt(`0x${uuidHex.slice(-16)}`), 13);
+  }
+
+  return normalizeStockLabelText(item?.quoteNumber || item?.id || "STOCK");
 }
 
 function parseStockQrPayload(rawValue) {
@@ -1370,6 +1381,12 @@ function parseStockQrPayload(rawValue) {
 
   if (UUID_PATTERN.test(value)) {
     return { stockItemId: value.toLowerCase() };
+  }
+
+  const normalizedValue = normalizeStockLabelText(value);
+  const matchedItem = state.snapshot.stockItems.find((item) => buildStockQrPayload(item) === normalizedValue);
+  if (matchedItem) {
+    return { stockItemId: matchedItem.id };
   }
 
   try {
@@ -1390,6 +1407,23 @@ function parseStockQrPayload(rawValue) {
   }
 
   return null;
+}
+
+function normalizeStockLabelText(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function encodeStockLabelCode(value, minLength = 1) {
+  let current = BigInt(value || 0);
+  let result = "";
+
+  do {
+    const digit = Number(current % 32n);
+    result = `${STOCK_LABEL_ALPHABET[digit]}${result}`;
+    current /= 32n;
+  } while (current > 0n);
+
+  return result.padStart(minLength, "0");
 }
 
 function normalizeStockScannerError(error) {
@@ -1466,9 +1500,8 @@ function printStockQrLabel(stockItemId) {
     return;
   }
 
-  const details = getReferenceLines(item)
-    .map((line) => `<p>${escapeHtml(line)}</p>`)
-    .join("");
+  const labelCode = buildStockQrPayload(item);
+  const labelCaption = getStockLabelCaption(item);
 
   printWindow.document.write(`
     <!DOCTYPE html>
@@ -1477,18 +1510,47 @@ function printStockQrLabel(stockItemId) {
         <meta charset="UTF-8">
         <title>${escapeHtml(item.name)}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #173c34; }
-          .label { max-width: 560px; padding: 24px; border: 1px solid #cddcd7; border-radius: 16px; }
-          .barcode { margin: 16px 0; width: 100%; }
-          .barcode svg { width: 100%; height: auto; display: block; }
-          p { margin: 6px 0; }
+          @page { size: 40mm 14mm; margin: 0; }
+          html, body { width: 40mm; height: 14mm; margin: 0; padding: 0; }
+          body { font-family: Arial, sans-serif; color: #173c34; }
+          .label {
+            width: 40mm;
+            height: 14mm;
+            box-sizing: border-box;
+            padding: 0.7mm 1mm 0.6mm;
+            border: 0.2mm solid #cddcd7;
+            overflow: hidden;
+          }
+          .caption {
+            margin: 0 0 0.45mm;
+            font-size: 2.1mm;
+            line-height: 1.05;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .barcode {
+            width: 100%;
+            height: 7.1mm;
+            display: flex;
+            align-items: center;
+          }
+          .barcode svg { width: 100%; height: 100%; display: block; }
+          .code {
+            margin: 0.35mm 0 0;
+            font-size: 2.15mm;
+            font-weight: 700;
+            line-height: 1;
+            text-align: center;
+            letter-spacing: 0.22mm;
+          }
         </style>
       </head>
       <body>
         <div class="label">
-          <h1>${escapeHtml(item.name)}</h1>
-          ${details}
+          <p class="caption">${escapeHtml(labelCaption)}</p>
           <div class="barcode">${state.stockQrSvg}</div>
+          <p class="code">${escapeHtml(labelCode)}</p>
         </div>
         <script>window.print();</script>
       </body>
@@ -1555,8 +1617,7 @@ function supportsStockLabelShare() {
 async function createStockLabelFile(item, svg) {
   const nameParts = [
     sanitizeFileStem(item?.name || ""),
-    sanitizeFileStem(item?.sku || ""),
-    String(item?.id || "").trim().slice(0, 8).toLowerCase(),
+    sanitizeFileStem(buildStockQrPayload(item)),
   ].filter(Boolean);
   const fileName = `${nameParts.join("-") || "stock-label"}-label.png`;
   const blob = await renderStockLabelPng(item, svg);
@@ -1581,7 +1642,7 @@ async function copyStockQrValue(stockItemId) {
 
   try {
     await copyText(buildStockQrPayload(item));
-    showFlash("Barcode value copied.", "success");
+    showFlash("Label code copied.", "success");
   } catch (error) {
     showFlash(normalizeError(error), "error");
   } finally {
@@ -1590,42 +1651,15 @@ async function copyStockQrValue(stockItemId) {
 }
 
 async function renderStockLabelPng(item, svg) {
-  const width = 1400;
-  const padding = 80;
-  const contentWidth = width - (padding * 2);
-  const titleFont = "700 60px Arial";
-  const titleLineHeight = 72;
-  const detailFont = "400 34px Arial";
-  const detailLineHeight = 46;
-  const borderInset = 10;
-  const detailLines = [
-    ...getReferenceLines(item),
-    `Stock code: ${item?.sku || "Not set"}`,
-  ];
-  const barcodeSize = getSvgViewBoxSize(svg);
-  const barcodeHeight = Math.max(180, Math.round(contentWidth * (barcodeSize.height / barcodeSize.width)));
-
-  const measureCanvas = document.createElement("canvas");
-  const measureContext = measureCanvas.getContext("2d");
-  if (!measureContext) {
-    throw new Error("This browser cannot prepare the label image.");
-  }
-
-  measureContext.font = titleFont;
-  const titleLines = wrapCanvasText(measureContext, item?.name || "Stock label", contentWidth, 3);
-  measureContext.font = detailFont;
-  const wrappedDetailLines = detailLines.flatMap((line) => wrapCanvasText(measureContext, line, contentWidth, 2));
-  const height = Math.max(
-    820,
-    padding
-      + (titleLines.length * titleLineHeight)
-      + 24
-      + (wrappedDetailLines.length * detailLineHeight)
-      + 40
-      + barcodeHeight
-      + padding,
-  );
-
+  const width = 1200;
+  const height = 420;
+  const paddingX = 42;
+  const captionY = 48;
+  const barcodeTop = 72;
+  const barcodeHeight = 220;
+  const codeY = 364;
+  const labelCode = buildStockQrPayload(item);
+  const caption = getStockLabelCaption(item);
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -1637,81 +1671,25 @@ async function renderStockLabelPng(item, svg) {
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
   context.strokeStyle = "#cddcd7";
-  context.lineWidth = 4;
-  context.strokeRect(borderInset, borderInset, width - (borderInset * 2), height - (borderInset * 2));
+  context.lineWidth = 6;
+  context.strokeRect(6, 6, width - 12, height - 12);
 
-  let y = padding;
   context.fillStyle = "#173c34";
-  context.font = titleFont;
-  titleLines.forEach((line) => {
-    context.fillText(line, padding, y);
-    y += titleLineHeight;
-  });
+  context.font = "600 34px Arial";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillText(trimCanvasText(context, caption, width - (paddingX * 2)), paddingX, captionY);
 
-  y += 12;
-  context.font = detailFont;
-  wrappedDetailLines.forEach((line) => {
-    context.fillText(line, padding, y);
-    y += detailLineHeight;
-  });
-
-  y += 24;
   const barcodeImage = await loadSvgImage(svg);
-  context.drawImage(barcodeImage, padding, y, contentWidth, barcodeHeight);
+  context.drawImage(barcodeImage, paddingX, barcodeTop, width - (paddingX * 2), barcodeHeight);
+
+  context.font = "700 50px Arial";
+  context.textAlign = "center";
+  context.textBaseline = "alphabetic";
+  context.fillText(labelCode, width / 2, codeY);
 
   const blob = await canvasToBlob(canvas, "image/png");
   return blob;
-}
-
-function getSvgViewBoxSize(svg) {
-  const documentSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
-  const svgEl = documentSvg.documentElement;
-  const viewBox = String(svgEl.getAttribute("viewBox") || "")
-    .trim()
-    .split(/\s+/)
-    .map((value) => Number(value));
-
-  if (viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0) {
-    return { width: viewBox[2], height: viewBox[3] };
-  }
-
-  return { width: 900, height: 120 };
-}
-
-function wrapCanvasText(context, text, maxWidth, maxLines = Number.MAX_SAFE_INTEGER) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
-  if (!words.length) {
-    return [];
-  }
-
-  const lines = [];
-  let currentLine = "";
-
-  for (let index = 0; index < words.length; index += 1) {
-    const candidate = currentLine ? `${currentLine} ${words[index]}` : words[index];
-    if (!currentLine || context.measureText(candidate).width <= maxWidth) {
-      currentLine = candidate;
-      continue;
-    }
-
-    if (lines.length === maxLines - 1) {
-      lines.push(trimCanvasText(context, `${currentLine} ${words.slice(index).join(" ")}`.trim(), maxWidth));
-      return lines;
-    }
-
-    lines.push(currentLine);
-    currentLine = words[index];
-  }
-
-  if (currentLine) {
-    if (lines.length === maxLines - 1 && context.measureText(currentLine).width > maxWidth) {
-      lines.push(trimCanvasText(context, currentLine, maxWidth));
-      return lines;
-    }
-    lines.push(currentLine);
-  }
-
-  return lines;
 }
 
 function trimCanvasText(context, text, maxWidth) {
@@ -1725,6 +1703,10 @@ function trimCanvasText(context, text, maxWidth) {
   }
 
   return `${value || ""}...`;
+}
+
+function getStockLabelCaption(item) {
+  return String(item?.sku || item?.quoteNumber || item?.name || "Stock item").trim();
 }
 
 function loadSvgImage(svg) {
@@ -2636,7 +2618,7 @@ function renderStockItemsSection(viewerRole) {
         }
       </p>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Item</th>
@@ -2672,7 +2654,7 @@ function renderStockMovementsSection() {
       <p class="eyebrow">Stock history</p>
       <h3 class="panel-title">Movement ledger</h3>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Logged</th>
@@ -2713,7 +2695,7 @@ function renderStockQrPreviewPanel() {
         <div>
           <p class="eyebrow">Barcode Label</p>
           <h3 class="panel-title">${escapeHtml(item.name)}</h3>
-          <p class="panel-subtitle">${escapeHtml(getReferenceLines(item).join(" | ") || "No order references set.")}</p>
+          <p class="panel-subtitle">${escapeHtml(getStockLabelCaption(item))}</p>
         </div>
         <div class="action-row">
           <button class="button button-secondary" data-action="print-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing || !state.stockQrSvg ? " disabled" : ""}>
@@ -2723,7 +2705,7 @@ function renderStockQrPreviewPanel() {
             ${state.stockQrSharing ? "Sharing..." : "Share label"}
           </button>
           <button class="button button-secondary" data-action="copy-stock-qr" data-stock-item-id="${item.id}"${state.stockQrBusy || state.stockQrSharing ? " disabled" : ""}>
-            Copy code
+            Copy label code
           </button>
           <button class="button button-ghost" data-action="close-stock-qr"${state.stockQrBusy || state.stockQrSharing ? " disabled" : ""}>
             Close
@@ -2737,6 +2719,8 @@ function renderStockQrPreviewPanel() {
             <div class="qr-preview-body">
               <div class="qr-preview-code">${state.stockQrSvg}</div>
               <div class="qr-preview-meta">
+                <span>Label code: ${escapeHtml(buildStockQrPayload(item))}</span>
+                <span>Format: Code 128</span>
                 ${getReferenceLines(item).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
                 <span>Stock code: ${escapeHtml(item.sku || "Not set")}</span>
               </div>
@@ -2782,7 +2766,7 @@ function renderArtworkRequestsSection() {
       <p class="eyebrow">Artwork requests</p>
       <h3 class="panel-title">Email request log</h3>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Sent</th>
@@ -3024,7 +3008,7 @@ function renderSupplierNetworkSection() {
           </div>
         </form>
         <div class="table-scroll">
-          <table>
+          <table class="responsive-stack">
             <thead>
               <tr>
                 <th>Location</th>
@@ -3059,7 +3043,7 @@ function renderUsersSection() {
       <h3 class="panel-title">Team account management</h3>
       <p class="panel-subtitle">Admin, sales, driver, and logistics accounts all appear in this list.</p>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Name</th>
@@ -3192,7 +3176,7 @@ function renderAssignmentManager(viewerRole) {
         </div>
       </div>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Entry</th>
@@ -3266,7 +3250,7 @@ function renderGlobalOrdersSection(viewerRole) {
           : ""
       }
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Reference</th>
@@ -3360,7 +3344,7 @@ function renderCompletedOrders(driverUserId) {
       <p class="eyebrow">Completed</p>
       <h3 class="panel-title">Finished entries</h3>
       <div class="table-scroll">
-        <table>
+        <table class="responsive-stack">
           <thead>
             <tr>
               <th>Reference</th>
@@ -3376,10 +3360,10 @@ function renderCompletedOrders(driverUserId) {
                     .map(
                       (order) => `
                         <tr>
-                          <td>${escapeHtml(order.reference)}</td>
-                          <td>${renderReferenceSummary(order)}</td>
-                          <td>${renderTypeChip(order.entryType)}</td>
-                          <td>${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}</td>
+                          <td data-label="Reference">${escapeHtml(order.reference)}</td>
+                          <td data-label="Order references">${renderReferenceSummary(order)}</td>
+                          <td data-label="Type">${renderTypeChip(order.entryType)}</td>
+                          <td data-label="Completed">${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}</td>
                         </tr>
                       `,
                     )
@@ -3401,19 +3385,19 @@ function renderCompletedOrders(driverUserId) {
 function renderGlobalOrderRow(order) {
   return `
     <tr>
-      <td>${escapeHtml(order.reference)}</td>
-      <td>${renderReferenceSummary(order)}</td>
-      <td>${renderTypeChip(order.entryType)}</td>
-      <td>${renderMoveToFactoryValue(order)}</td>
-      <td>${renderDriverAssignmentValue(order)}</td>
-      <td>
+      <td data-label="Reference">${escapeHtml(order.reference)}</td>
+      <td data-label="Order references">${renderReferenceSummary(order)}</td>
+      <td data-label="Type">${renderTypeChip(order.entryType)}</td>
+      <td data-label="Move to factory">${renderMoveToFactoryValue(order)}</td>
+      <td data-label="Driver">${renderDriverAssignmentValue(order)}</td>
+      <td data-label="Pickup location">
         <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
         <span class="muted">${escapeHtml(order.locationAddress || "")}</span>
       </td>
-      <td>${escapeHtml(order.createdByName || "Unknown")}</td>
-      <td>${renderStatusChip(order.status)}</td>
-      <td>${renderOrderNotice(order, "None")}</td>
-      <td>${escapeHtml(formatDateTime(order.createdAt))}</td>
+      <td data-label="Created by">${escapeHtml(order.createdByName || "Unknown")}</td>
+      <td data-label="Status">${renderStatusChip(order.status)}</td>
+      <td data-label="Notice">${renderOrderNotice(order, "None")}</td>
+      <td data-label="Created">${escapeHtml(formatDateTime(order.createdAt))}</td>
     </tr>
   `;
 }
@@ -3421,7 +3405,7 @@ function renderGlobalOrderRow(order) {
 function renderAssignmentRow(order, viewerRole) {
   return `
     <tr>
-      <td>
+      <td data-label="Entry">
         <strong>${escapeHtml(order.reference)}</strong><br>
         ${renderReferenceSummary(order)}
         <div class="chip-row">
@@ -3430,16 +3414,16 @@ function renderAssignmentRow(order, viewerRole) {
         </div>
         ${renderOrderNotice(order)}
       </td>
-      <td>${renderDriverAssignmentValue(order)}</td>
-      <td>
+      <td data-label="Current driver">${renderDriverAssignmentValue(order)}</td>
+      <td data-label="Pickup location">
         <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
         <span class="muted">${escapeHtml(order.locationAddress || "")}</span>
       </td>
-      <td>
+      <td data-label="Created by">
         ${escapeHtml(order.createdByName || "Unknown")}<br>
         <span class="muted">${escapeHtml(formatDateTime(order.createdAt))}</span>
       </td>
-      <td>
+      <td data-label="Assign to">
         <div class="assignment-control">
           <select data-assignment-driver data-order-id="${order.id}">
             ${renderDriverOptions(order.driverUserId || "", true)}
@@ -3456,7 +3440,7 @@ function renderAssignmentRow(order, viewerRole) {
           }
         </div>
       </td>
-      <td>
+      <td data-label="Action">
         <button class="button button-primary" data-action="save-order-assignment" data-order-id="${order.id}"${state.busy ? " disabled" : ""}>
           ${order.driverUserId ? "Save" : "Assign"}
         </button>
@@ -3482,11 +3466,11 @@ function renderUserRow(user) {
 
   return `
     <tr>
-      <td>${escapeHtml(user.name)}</td>
-      <td><span class="chip chip-role-${user.role}">${capitalize(user.role)}</span></td>
-      <td>${user.active ? '<span class="chip chip-success">Active</span>' : '<span class="chip chip-warning">Inactive</span>'}</td>
-      <td>${detailParts.length ? detailParts.join("<br>") : "n/a"}</td>
-      <td>
+      <td data-label="Name">${escapeHtml(user.name)}</td>
+      <td data-label="Role"><span class="chip chip-role-${user.role}">${capitalize(user.role)}</span></td>
+      <td data-label="Status">${user.active ? '<span class="chip chip-success">Active</span>' : '<span class="chip chip-warning">Inactive</span>'}</td>
+      <td data-label="Details">${detailParts.length ? detailParts.join("<br>") : "n/a"}</td>
+      <td data-label="Actions">
         <div class="action-row">
           <button class="button button-secondary" data-action="edit-user" data-user-id="${user.id}"${state.busy ? " disabled" : ""}>
             Edit
@@ -3507,12 +3491,12 @@ function renderSupplierRow(supplier) {
   const locationCount = state.snapshot.locations.filter((location) => location.supplierId === supplier.id).length;
   return `
     <tr>
-      <td>${escapeHtml(supplier.name)}</td>
-      <td>${escapeHtml(supplier.contactPerson || "Not set")}</td>
-      <td>${escapeHtml(supplier.contactNumber || "Not set")}</td>
-      <td>${supplier.factory ? "Yes" : "No"}</td>
-      <td>${locationCount}</td>
-      <td>
+      <td data-label="Name">${escapeHtml(supplier.name)}</td>
+      <td data-label="Contact person">${escapeHtml(supplier.contactPerson || "Not set")}</td>
+      <td data-label="Contact number">${escapeHtml(supplier.contactNumber || "Not set")}</td>
+      <td data-label="Factory">${supplier.factory ? "Yes" : "No"}</td>
+      <td data-label="Locations">${locationCount}</td>
+      <td data-label="Actions">
         <div class="action-row">
           <button class="button button-secondary" data-action="edit-supplier" data-supplier-id="${supplier.id}"${state.busy ? " disabled" : ""}>
             Edit
@@ -3529,13 +3513,13 @@ function renderSupplierRow(supplier) {
 function renderLocationRow(location) {
   return `
     <tr>
-      <td>
+      <td data-label="Location">
         <strong>${escapeHtml(location.name)}</strong>
       </td>
-      <td>${escapeHtml(capitalize(location.locationType || ""))}</td>
-      <td>${escapeHtml(location.address)}</td>
-      <td>${escapeHtml(location.contactPerson || "Not set")}<br><span class="muted">${escapeHtml(location.contactNumber || "Not set")}</span></td>
-      <td>
+      <td data-label="Location type">${escapeHtml(capitalize(location.locationType || ""))}</td>
+      <td data-label="Physical address">${escapeHtml(location.address)}</td>
+      <td data-label="Contact">${escapeHtml(location.contactPerson || "Not set")}<br><span class="muted">${escapeHtml(location.contactNumber || "Not set")}</span></td>
+      <td data-label="Actions">
         <div class="action-row">
           <button class="button button-secondary" data-action="edit-location" data-location-id="${location.id}"${state.busy ? " disabled" : ""}>
             Edit
@@ -3598,16 +3582,16 @@ function renderStockItemRow(item, viewerRole) {
 
   return `
     <tr>
-      <td>
+      <td data-label="Item">
         <strong>${escapeHtml(item.name)}</strong>
       </td>
-      <td>${renderReferenceSummary(item)}</td>
-      <td>${escapeHtml(item.sku || "Not set")}</td>
-      <td>${escapeHtml(item.unit || "units")}</td>
-      <td>${escapeHtml(String(item.onHandQuantity || 0))}</td>
-      <td>${escapeHtml(item.notes || "None")}</td>
-      <td>${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
-      <td>
+      <td data-label="References">${renderReferenceSummary(item)}</td>
+      <td data-label="Stock code">${escapeHtml(item.sku || "Not set")}</td>
+      <td data-label="Unit">${escapeHtml(item.unit || "units")}</td>
+      <td data-label="On hand">${escapeHtml(String(item.onHandQuantity || 0))}</td>
+      <td data-label="Notes">${escapeHtml(item.notes || "None")}</td>
+      <td data-label="Updated">${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
+      <td data-label="Actions">
         <div class="action-row">
           ${actions.join("")}
         </div>
@@ -3619,17 +3603,17 @@ function renderStockItemRow(item, viewerRole) {
 function renderStockMovementRow(movement) {
   return `
     <tr>
-      <td>${escapeHtml(formatDateTime(movement.createdAt) || "")}</td>
-      <td>
+      <td data-label="Logged">${escapeHtml(formatDateTime(movement.createdAt) || "")}</td>
+      <td data-label="Item">
         <strong>${escapeHtml(movement.itemName || "Unknown")}</strong><br>
         <span class="muted">${escapeHtml(movement.sku || "No stock code")}</span><br>
         ${renderReferenceSummary(movement)}
       </td>
-      <td>${movement.movementType === "in" ? '<span class="chip chip-success">Stock in</span>' : '<span class="chip chip-warning">Stock out</span>'}</td>
-      <td>${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}</td>
-      <td>${escapeHtml(getStockMovementPartyLabel(movement))}</td>
-      <td>${escapeHtml(movement.notes || "None")}</td>
-      <td>${escapeHtml(movement.createdByName || "Unknown")}</td>
+      <td data-label="Type">${movement.movementType === "in" ? '<span class="chip chip-success">Stock in</span>' : '<span class="chip chip-warning">Stock out</span>'}</td>
+      <td data-label="Quantity">${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}</td>
+      <td data-label="Supplier / driver">${escapeHtml(getStockMovementPartyLabel(movement))}</td>
+      <td data-label="Notes">${escapeHtml(movement.notes || "None")}</td>
+      <td data-label="Recorded by">${escapeHtml(movement.createdByName || "Unknown")}</td>
     </tr>
   `;
 }
@@ -3637,16 +3621,16 @@ function renderStockMovementRow(movement) {
 function renderArtworkRequestRow(request) {
   return `
     <tr>
-      <td>${escapeHtml(formatDateTime(request.sentAt) || "")}</td>
-      <td>
+      <td data-label="Sent">${escapeHtml(formatDateTime(request.sentAt) || "")}</td>
+      <td data-label="Item">
         <strong>${escapeHtml(request.itemName || "Unknown")}</strong><br>
         <span class="muted">${escapeHtml(request.sku || "No stock code")}</span><br>
         ${renderReferenceSummary(request)}
       </td>
-      <td>${escapeHtml(String(request.requestedQuantity || 0))}</td>
-      <td>${escapeHtml(request.requestedByName || "Unknown")}</td>
-      <td>${escapeHtml(request.sentTo || state.artworkTo)}</td>
-      <td>${escapeHtml(request.notes || "None")}</td>
+      <td data-label="Quantity">${escapeHtml(String(request.requestedQuantity || 0))}</td>
+      <td data-label="Requested by">${escapeHtml(request.requestedByName || "Unknown")}</td>
+      <td data-label="Sent to">${escapeHtml(request.sentTo || state.artworkTo)}</td>
+      <td data-label="Notes">${escapeHtml(request.notes || "None")}</td>
     </tr>
   `;
 }

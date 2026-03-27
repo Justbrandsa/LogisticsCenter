@@ -105,6 +105,7 @@ body {
   flex-direction: column;
   align-items: flex-end;
   gap: 0.75rem;
+  min-width: 0;
 }
 
 .page-nav {
@@ -122,12 +123,22 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+}
+
+.page-nav.page-nav-active::-webkit-scrollbar {
+  display: none;
 }
 
 .page-nav-link {
   border: 1px solid rgba(27, 106, 90, 0.14);
   background: rgba(255, 255, 255, 0.58);
   color: var(--brand-strong);
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .page-nav-link.is-active {
@@ -475,6 +486,9 @@ textarea {
 
 .table-scroll {
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 
 .table-toolbar {
@@ -801,31 +815,229 @@ canvas {
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   .page-shell {
     width: min(100% - 1rem, 1280px);
+    padding: 0.85rem 0 calc(1.5rem + env(safe-area-inset-bottom));
+  }
+
+  .background-orb {
+    opacity: 0.24;
   }
 
   .topbar {
-    padding: 1.1rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
     flex-direction: column;
+    gap: 0.85rem;
   }
 
   .topbar-side {
     width: 100%;
-    align-items: flex-start;
+    align-items: stretch;
   }
 
+  .topbar-side > * {
+    width: 100%;
+  }
+
+  .auth-meta {
+    text-align: left;
+  }
+
+  #user-actions .button,
+  #user-actions button {
+    width: 100%;
+  }
+
+  .page-nav.page-nav-active {
+    position: sticky;
+    top: 0.45rem;
+    z-index: 20;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    margin-bottom: 1rem;
+    border-radius: 22px;
+  }
+
+  .page-nav-link {
+    min-height: 44px;
+  }
+
+  .screen-grid {
+    gap: 1rem;
+  }
+
+  .sidebar {
+    order: 2;
+    padding: 1rem;
+    gap: 0.85rem;
+  }
+
+  .content {
+    order: 1;
+    gap: 1rem;
+  }
+
+  .hero-card,
+  .panel,
+  .sidebar-card,
+  .route-canvas-card,
+  .table-card,
+  .login-intro,
+  .login-form {
+    padding: 1rem;
+  }
+
+  .table-card {
+    padding: 0.9rem;
+  }
+
+  .table-toolbar {
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .action-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .action-row .button,
+  .action-row button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .assignment-control {
+    min-width: 0;
+  }
+
+  .scanner-video-wrap,
+  .scanner-video {
+    min-height: 210px;
+  }
+
+  .stop-header,
+  .order-meta {
+    gap: 0.55rem;
+  }
+}
+
+@media (max-width: 820px) {
+  .table-scroll {
+    overflow: visible;
+  }
+
+  table.responsive-stack {
+    min-width: 0;
+    border-collapse: separate;
+  }
+
+  table.responsive-stack thead {
+    display: none;
+  }
+
+  table.responsive-stack,
+  table.responsive-stack tbody,
+  table.responsive-stack tr,
+  table.responsive-stack td {
+    display: block;
+    width: 100%;
+  }
+
+  table.responsive-stack tbody {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  table.responsive-stack tr {
+    padding: 0.9rem;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(27, 106, 90, 0.08);
+  }
+
+  table.responsive-stack td {
+    display: grid;
+    grid-template-columns: minmax(92px, 112px) minmax(0, 1fr);
+    gap: 0.7rem;
+    align-items: start;
+    padding: 0.45rem 0;
+    border-bottom: 0;
+    min-width: 0;
+  }
+
+  table.responsive-stack td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  table.responsive-stack td[colspan] {
+    display: block;
+    padding: 0;
+  }
+
+  table.responsive-stack td[colspan]::before {
+    content: none;
+  }
+
+  table.responsive-stack td .action-row {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 720px) {
   .form-grid,
   .form-grid-3 {
     grid-template-columns: 1fr;
   }
 
-  .hero-card,
-  .panel,
-  .sidebar,
-  .login-intro,
-  .login-form {
-    padding: 1rem;
+  .button,
+  button,
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .page-shell {
+    width: min(100% - 0.75rem, 1280px);
+  }
+
+  .eyebrow {
+    letter-spacing: 0.16em;
+  }
+
+  .action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-title {
+    font-size: 1.2rem;
+  }
+
+  .scanner-panel,
+  .qr-preview-code {
+    padding: 0.85rem;
+  }
+
+  table.responsive-stack tr {
+    padding: 0.8rem;
+  }
+
+  table.responsive-stack td {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+    padding: 0.4rem 0;
+  }
+
+  table.responsive-stack td::before {
+    font-size: 0.68rem;
   }
 }
