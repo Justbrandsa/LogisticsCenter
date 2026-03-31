@@ -26,5 +26,26 @@
     <nav id="page-nav" class="page-nav"></nav>
     <main id="app"></main>
   </div>
+  <script>
+    (() => {
+      const host = window.location.hostname || "";
+      const isLanHost = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host);
+      const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local");
+
+      if (!(isLocalHost || isLanHost) || !("EventSource" in window)) {
+        return;
+      }
+
+      const source = new EventSource("/__live-reload");
+      let refreshTimer = 0;
+
+      source.addEventListener("reload", () => {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => {
+          window.location.reload();
+        }, 120);
+      });
+    })();
+  </script>
 </body>
 </html>

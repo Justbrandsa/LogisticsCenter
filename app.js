@@ -1,4 +1,5 @@
 const SESSION_KEY = "route-ledger-session-token-v2";
+const SNAPSHOT_REFRESH_LOG_KEY = "route-ledger-last-refresh-v1";
 const FLASH_TIMEOUT_MS = 3200;
 const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
@@ -21,6 +22,7 @@ const ORDER_PRIORITY_LEVELS = Object.freeze({
   medium: 1,
   low: 2,
 });
+const AUTO_REFRESH_INTERVAL_MS = 60000;
 const PAGE_SIZES = {
   globalEntries: 12,
   assignments: 12,
@@ -75,6 +77,7 @@ const state = {
   stockScannerZoomStep: 0.1,
   assignmentDriverFilter: "",
   flaggingOrderId: "",
+  lastSnapshotRefreshAt: loadLastSnapshotRefreshAt(),
   driverRouteOrigin: null,
   driverRouteOriginLoading: false,
   driverRouteOriginAttempted: false,
@@ -117,6 +120,7 @@ let stockScannerVideoTrack = null;
 let routeMap = null;
 let routeMapContainer = null;
 let routeMapLayers = null;
+let snapshotAutoRefreshTimer = 0;
 
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
@@ -125,6 +129,7 @@ document.addEventListener("input", handleInput);
 document.addEventListener("keydown", handleKeyDown);
 window.addEventListener("hashchange", handleHashChange);
 window.addEventListener("beforeunload", () => {
+  stopSnapshotAutoRefresh();
   void stopStockScanner();
 });
 
@@ -181,6 +186,24 @@ function loadSessionToken() {
   return window.localStorage.getItem(SESSION_KEY) || "";
 }
 
+function loadLastSnapshotRefreshAt() {
+  const rawValue = window.localStorage.getItem(SNAPSHOT_REFRESH_LOG_KEY);
+  const parsedValue = Number(rawValue);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+}
+
+function saveLastSnapshotRefreshAt(timestamp) {
+  const normalizedTimestamp = Number(timestamp);
+  if (Number.isFinite(normalizedTimestamp) && normalizedTimestamp > 0) {
+    state.lastSnapshotRefreshAt = normalizedTimestamp;
+    window.localStorage.setItem(SNAPSHOT_REFRESH_LOG_KEY, String(normalizedTimestamp));
+    return;
+  }
+
+  state.lastSnapshotRefreshAt = 0;
+  window.localStorage.removeItem(SNAPSHOT_REFRESH_LOG_KEY);
+}
+
 function saveSessionToken(token) {
   sessionToken = token || "";
   if (sessionToken) {
@@ -191,6 +214,7 @@ function saveSessionToken(token) {
 }
 
 async function refreshPublicState() {
+  stopSnapshotAutoRefresh();
   state.booting = true;
   state.editingUserId = "";
   state.editingSupplierId = "";
@@ -222,9 +246,12 @@ async function refreshPublicState() {
   render();
 }
 
-async function refreshSnapshot() {
-  state.booting = true;
-  render();
+async function refreshSnapshot(options = {}) {
+  const { silent = false } = options;
+  if (!silent) {
+    state.booting = true;
+    render();
+  }
 
   try {
     const data = await callRpc("get_app_snapshot", { p_token: sessionToken });
@@ -278,9 +305,11 @@ async function refreshSnapshot() {
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
     syncCurrentPage();
+    saveLastSnapshotRefreshAt(Date.now());
     state.booting = false;
     state.busy = false;
     render();
+    scheduleSnapshotAutoRefresh();
 
     if (state.snapshot.user && state.snapshot.user.role === "driver") {
       drawDriverRoute(state.snapshot.user.id);
@@ -294,8 +323,75 @@ async function refreshSnapshot() {
       return;
     }
 
+    if (silent) {
+      console.error("Automatic refresh failed.", error);
+      scheduleSnapshotAutoRefresh();
+      return;
+    }
+
     throw error;
   }
+}
+
+function stopSnapshotAutoRefresh() {
+  if (snapshotAutoRefreshTimer) {
+    window.clearTimeout(snapshotAutoRefreshTimer);
+    snapshotAutoRefreshTimer = 0;
+  }
+}
+
+function scheduleSnapshotAutoRefresh() {
+  stopSnapshotAutoRefresh();
+  if (!sessionToken) {
+    return;
+  }
+
+  snapshotAutoRefreshTimer = window.setTimeout(() => {
+    void runSnapshotAutoRefresh();
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
+async function runSnapshotAutoRefresh() {
+  if (!sessionToken) {
+    stopSnapshotAutoRefresh();
+    return;
+  }
+
+  if (shouldDeferSnapshotAutoRefresh()) {
+    scheduleSnapshotAutoRefresh();
+    return;
+  }
+
+  await refreshSnapshot({ silent: true });
+}
+
+function shouldDeferSnapshotAutoRefresh() {
+  if (state.busy || state.booting || state.stockScannerOpen || state.stockQrBusy || state.stockQrSharing) {
+    return true;
+  }
+
+  if (
+    state.flaggingOrderId
+    || state.editingUserId
+    || state.editingSupplierId
+    || state.editingLocationId
+    || state.editingStockItemId
+    || state.editingStockMovementId
+  ) {
+    return true;
+  }
+
+  const activeElement = document.activeElement;
+  if (
+    activeElement instanceof HTMLElement
+    && activeElement.matches("input, textarea, select")
+    && !activeElement.hasAttribute("readonly")
+    && !activeElement.hasAttribute("disabled")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 async function callRpc(functionName, parameters = {}) {
@@ -2535,15 +2631,26 @@ function renderHeader() {
   const summaryLine = currentUser.role === "logistics"
     ? `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}`
     : `${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}`;
+  const refreshLine = getSnapshotRefreshSummary();
 
   authMetaEl.innerHTML = `
     <strong>${escapeHtml(currentUser.name)}</strong><br>
     <span class="muted">${capitalize(currentUser.role)} account</span><br>
-    <span class="muted">${escapeHtml(summaryLine)}</span>
+    <span class="muted">${escapeHtml(summaryLine)}</span><br>
+    <span class="muted">${escapeHtml(refreshLine)}</span>
   `;
   userActionsEl.innerHTML = `
     <button class="button button-ghost" data-action="logout"${state.busy ? " disabled" : ""}>Logout</button>
   `;
+}
+
+function getSnapshotRefreshSummary() {
+  const lastRefreshLabel = formatPreciseDateTime(state.lastSnapshotRefreshAt);
+  if (!lastRefreshLabel) {
+    return `Auto refresh every ${Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)} sec. Waiting for first sync.`;
+  }
+
+  return `Last refresh ${lastRefreshLabel}. Auto refresh every ${Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)} sec.`;
 }
 
 function renderPageNavigation() {
@@ -6459,6 +6566,23 @@ function formatDateTime(value) {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: TIME_ZONE,
+  }).format(date);
+}
+
+function formatPreciseDateTime(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  return new Intl.DateTimeFormat("en-ZA", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
     timeZone: TIME_ZONE,
   }).format(date);
 }

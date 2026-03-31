@@ -32,6 +32,7 @@ const HOST = "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 const MAX_BODY_BYTES = 1024 * 1024;
+const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
 const MIME = {
   ".css": "text/css; charset=UTF-8",
   ".html": "text/html; charset=UTF-8",
@@ -103,8 +104,15 @@ const RPC_DEFINITIONS = Object.freeze({
 
 const database = createDatabase();
 const mailer = createMailer();
+const liveReloadClients = new Set();
+
+let liveReloadWatcherStarted = false;
+let liveReloadTimer = null;
+let liveReloadPendingFile = "";
 
 function startServer() {
+  startLiveReloadWatcher();
+
   const server = http.createServer((request, response) => {
     void routeRequest(request, response);
   });
@@ -152,6 +160,11 @@ async function routeRequest(request, response) {
   const cleanPath = decodeURIComponent(requestUrl.pathname || "/");
 
   try {
+    if (request.method === "GET" && cleanPath === "/__live-reload") {
+      handleLiveReloadStream(request, response);
+      return;
+    }
+
     if (request.method === "GET" && cleanPath === "/api/status") {
       sendJson(response, 200, {
         ...database.getStatus(),
@@ -980,6 +993,99 @@ async function createQrSvg(text) {
   });
 }
 
+function startLiveReloadWatcher() {
+  if (liveReloadWatcherStarted) {
+    return;
+  }
+
+  liveReloadWatcherStarted = true;
+
+  try {
+    fs.watch(ROOT, (_eventType, filename) => {
+      const normalized = normalizeLiveReloadFileName(filename);
+      if (!normalized || !LIVE_RELOAD_FILES.has(normalized)) {
+        return;
+      }
+
+      scheduleLiveReload(normalized);
+    });
+  } catch (error) {
+    console.warn(`Live reload watcher could not start: ${normalizeErrorMessage(error)}`);
+  }
+}
+
+function normalizeLiveReloadFileName(filename) {
+  if (typeof filename !== "string" || !filename.trim()) {
+    return "";
+  }
+
+  return path.basename(filename).toLowerCase();
+}
+
+function scheduleLiveReload(fileName) {
+  liveReloadPendingFile = fileName || liveReloadPendingFile;
+
+  if (liveReloadTimer) {
+    clearTimeout(liveReloadTimer);
+  }
+
+  liveReloadTimer = setTimeout(() => {
+    const changedFile = liveReloadPendingFile;
+    liveReloadPendingFile = "";
+    liveReloadTimer = null;
+    broadcastLiveReload(changedFile);
+  }, 120);
+}
+
+function broadcastLiveReload(fileName) {
+  if (!liveReloadClients.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    changedAt: Date.now(),
+    file: fileName || "",
+  });
+
+  liveReloadClients.forEach((client) => {
+    try {
+      client.write(`event: reload\ndata: ${payload}\n\n`);
+    } catch (error) {
+      liveReloadClients.delete(client);
+      if (!client.writableEnded) {
+        client.end();
+      }
+    }
+  });
+}
+
+function handleLiveReloadStream(request, response) {
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream; charset=UTF-8",
+    "X-Accel-Buffering": "no",
+  });
+  response.flushHeaders?.();
+  response.write(": connected\n\n");
+
+  const keepAliveTimer = setInterval(() => {
+    if (!response.writableEnded) {
+      response.write(": keepalive\n\n");
+    }
+  }, 15000);
+
+  liveReloadClients.add(response);
+
+  request.on("close", () => {
+    clearInterval(keepAliveTimer);
+    liveReloadClients.delete(response);
+    if (!response.writableEnded) {
+      response.end();
+    }
+  });
+}
+
 async function serveStaticFile(cleanPath, headOnly, response) {
   const relativePath = cleanPath === "/" ? "index.html" : cleanPath.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT, relativePath);
@@ -1000,6 +1106,7 @@ async function serveStaticFile(cleanPath, headOnly, response) {
 
   const extension = path.extname(filePath).toLowerCase();
   response.writeHead(200, {
+    "Cache-Control": "no-store",
     "Content-Type": MIME[extension] || "application/octet-stream",
   });
   response.end(headOnly ? undefined : contents);
