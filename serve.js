@@ -67,6 +67,9 @@ const RPC_DEFINITIONS = Object.freeze({
   create_stock_item: {
     params: ["p_token", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
   },
+  update_stock_item: {
+    params: ["p_token", "p_stock_item_id", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
+  },
   delete_stock_item: { params: ["p_token", "p_stock_item_id"] },
   record_stock_movement: {
     params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],

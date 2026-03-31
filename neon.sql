@@ -1595,6 +1595,90 @@ begin
 end;
 $$;
 
+drop function if exists public.update_stock_item(uuid, uuid, text, text, text, text, text, text, text, text);
+
+create or replace function public.update_stock_item(
+  p_token uuid,
+  p_stock_item_id uuid,
+  p_name text,
+  p_sku text default null,
+  p_quote_number text default null,
+  p_invoice_number text default null,
+  p_sales_order_number text default null,
+  p_po_number text default null,
+  p_unit text default null,
+  p_notes text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_stock_item private.stock_items;
+  v_name text := nullif(btrim(p_name), '');
+  v_sku text := coalesce(nullif(btrim(p_sku), ''), '');
+  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
+  v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
+  v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
+  v_unit text := coalesce(nullif(btrim(p_unit), ''), 'units');
+  v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+begin
+  v_actor := private.require_user(p_token, array['admin']);
+
+  select *
+  into v_stock_item
+  from private.stock_items
+  where id = p_stock_item_id;
+
+  if v_stock_item.id is null then
+    raise exception 'Stock item not found.';
+  end if;
+
+  if v_name is null then
+    raise exception 'Stock item name is required.';
+  end if;
+
+  if v_quote_number is null then
+    raise exception 'Quote number is required.';
+  end if;
+
+  if exists (
+    select 1
+    from private.stock_items
+    where id <> p_stock_item_id
+      and lower(btrim(name)) = lower(v_name)
+      and lower(btrim(quote_number)) = lower(v_quote_number)
+  ) then
+    raise exception 'That stock item already exists for the same quote number.';
+  end if;
+
+  if v_sku <> '' and exists (
+    select 1
+    from private.stock_items
+    where id <> p_stock_item_id
+      and lower(btrim(sku)) = lower(v_sku)
+  ) then
+    raise exception 'That stock code is already in use.';
+  end if;
+
+  update private.stock_items
+  set name = v_name,
+      sku = v_sku,
+      quote_number = v_quote_number,
+      invoice_number = v_invoice_number,
+      sales_order_number = v_sales_order_number,
+      po_number = v_po_number,
+      unit = v_unit,
+      notes = v_notes
+  where id = p_stock_item_id;
+
+  return jsonb_build_object('ok', true, 'updatedBy', v_actor.id);
+end;
+$$;
+
 create or replace function public.delete_stock_item(
   p_token uuid,
   p_stock_item_id uuid

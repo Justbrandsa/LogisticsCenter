@@ -40,6 +40,7 @@ const state = {
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
+  editingStockItemId: "",
   editingStockMovementId: "",
   stockMovementSelectedItemId: "",
   stockQrItemId: "",
@@ -99,6 +100,7 @@ document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleChange);
 document.addEventListener("input", handleInput);
+document.addEventListener("keydown", handleKeyDown);
 window.addEventListener("hashchange", handleHashChange);
 window.addEventListener("beforeunload", () => {
   void stopStockScanner();
@@ -171,6 +173,7 @@ async function refreshPublicState() {
   state.editingUserId = "";
   state.editingSupplierId = "";
   state.editingLocationId = "";
+  state.editingStockItemId = "";
   state.editingStockMovementId = "";
   state.stockMovementSelectedItemId = "";
   state.stockQrItemId = "";
@@ -209,6 +212,9 @@ async function refreshSnapshot() {
     }
     if (state.editingLocationId && !state.snapshot.locations.some((location) => location.id === state.editingLocationId)) {
       state.editingLocationId = "";
+    }
+    if (state.editingStockItemId && !state.snapshot.stockItems.some((item) => item.id === state.editingStockItemId)) {
+      state.editingStockItemId = "";
     }
     if (state.editingStockMovementId && !state.snapshot.stockMovements.some((movement) => movement.id === state.editingStockMovementId)) {
       state.editingStockMovementId = "";
@@ -525,6 +531,11 @@ async function handleClick(event) {
 
   if (action === "edit-stock-movement" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     const stockMovementId = String(button.dataset.stockMovementId || "");
+    if (state.editingStockMovementId === stockMovementId) {
+      cancelStockMovementEdit();
+      return;
+    }
+
     const movement = getStockMovement(stockMovementId);
     if (!movement) {
       showFlash("That stock movement could not be found.", "error");
@@ -541,8 +552,25 @@ async function handleClick(event) {
   }
 
   if (action === "cancel-edit-stock-movement" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
-    state.editingStockMovementId = "";
+    cancelStockMovementEdit();
+    return;
+  }
+
+  if (action === "edit-stock-item" && currentUser.role === "admin") {
+    const stockItemId = String(button.dataset.stockItemId || "");
+    if (state.editingStockItemId === stockItemId) {
+      cancelStockItemEdit();
+      return;
+    }
+
+    state.editingStockItemId = stockItemId;
     render();
+    focusStockItemForm();
+    return;
+  }
+
+  if (action === "cancel-edit-stock-item" && currentUser.role === "admin") {
+    cancelStockItemEdit();
     return;
   }
 
@@ -754,6 +782,23 @@ function handleInput(event) {
     if (Number.isFinite(zoomValue)) {
       void setStockScannerZoom(zoomValue);
     }
+  }
+}
+
+function handleKeyDown(event) {
+  if (event.key !== "Escape" || state.busy || state.currentPage !== "stock") {
+    return;
+  }
+
+  if (state.editingStockMovementId) {
+    event.preventDefault();
+    cancelStockMovementEdit();
+    return;
+  }
+
+  if (state.editingStockItemId) {
+    event.preventDefault();
+    cancelStockItemEdit();
   }
 }
 
@@ -1065,6 +1110,8 @@ async function saveOrderAssignment(button, currentUser) {
 }
 
 async function createStockItem(formData) {
+  const stockItemId = String(formData.get("stockItemId") || "").trim();
+  const currentUser = state.snapshot.user;
   const name = String(formData.get("name") || "").trim();
   const sku = String(formData.get("sku") || "").trim();
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
@@ -1073,6 +1120,12 @@ async function createStockItem(formData) {
   const poNumber = String(formData.get("poNumber") || "").trim();
   const unit = String(formData.get("unit") || "").trim();
   const notes = String(formData.get("notes") || "").trim();
+
+  if (stockItemId && currentUser?.role !== "admin") {
+    showFlash("Only admins can edit stock items.", "error");
+    render();
+    return;
+  }
 
   if (!name) {
     showFlash("Stock description is required.", "error");
@@ -1086,21 +1139,39 @@ async function createStockItem(formData) {
     return;
   }
 
-  await runMutation(
-    "create_stock_item",
-    {
-      p_token: sessionToken,
-      p_name: name,
-      p_sku: sku,
-      p_quote_number: quoteNumber,
-      p_invoice_number: invoiceNumber,
-      p_sales_order_number: salesOrderNumber,
-      p_po_number: poNumber,
-      p_unit: unit || "units",
-      p_notes: notes,
-    },
-    `Stock item added: ${name}.`,
+  const ok = await runMutation(
+    stockItemId ? "update_stock_item" : "create_stock_item",
+    stockItemId
+      ? {
+          p_token: sessionToken,
+          p_stock_item_id: stockItemId,
+          p_name: name,
+          p_sku: sku,
+          p_quote_number: quoteNumber,
+          p_invoice_number: invoiceNumber,
+          p_sales_order_number: salesOrderNumber,
+          p_po_number: poNumber,
+          p_unit: unit || "units",
+          p_notes: notes,
+        }
+      : {
+          p_token: sessionToken,
+          p_name: name,
+          p_sku: sku,
+          p_quote_number: quoteNumber,
+          p_invoice_number: invoiceNumber,
+          p_sales_order_number: salesOrderNumber,
+          p_po_number: poNumber,
+          p_unit: unit || "units",
+          p_notes: notes,
+        },
+    stockItemId ? `Stock item updated: ${name}.` : `Stock item added: ${name}.`,
   );
+
+  if (ok && stockItemId) {
+    state.editingStockItemId = "";
+    render();
+  }
 }
 
 async function recordStockMovement(formData) {
@@ -1246,6 +1317,21 @@ function syncPostRenderUi() {
   void syncStockScannerUi();
 }
 
+function focusStockItemForm() {
+  window.requestAnimationFrame(() => {
+    const form = document.querySelector('form[data-form="add-stock-item"]');
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+    const firstField = form.querySelector('[name="name"]');
+    if (firstField instanceof HTMLElement) {
+      firstField.focus();
+    }
+  });
+}
+
 function focusStockMovementForm() {
   window.requestAnimationFrame(() => {
     const form = document.querySelector('form[data-form="add-stock-movement"]');
@@ -1259,6 +1345,25 @@ function focusStockMovementForm() {
       firstField.focus();
     }
   });
+}
+
+function cancelStockItemEdit() {
+  if (!state.editingStockItemId) {
+    return;
+  }
+
+  state.editingStockItemId = "";
+  render();
+}
+
+function cancelStockMovementEdit() {
+  if (!state.editingStockMovementId && !state.stockMovementSelectedItemId) {
+    return;
+  }
+
+  state.editingStockMovementId = "";
+  state.stockMovementSelectedItemId = "";
+  render();
 }
 
 async function syncStockScannerUi() {
@@ -1275,6 +1380,10 @@ async function syncStockScannerUi() {
 
 function getStockItemById(stockItemId) {
   return state.snapshot.stockItems.find((item) => item.id === stockItemId) || null;
+}
+
+function getEditingStockItem() {
+  return state.editingStockItemId ? getStockItemById(state.editingStockItemId) : null;
 }
 
 function getStockMovement(stockMovementId) {
@@ -2887,7 +2996,7 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
     </section>
     ${renderRecentStockActivitySection({ recentInbound, recentOutbound })}
     <section class="panel-grid">
-      ${renderStockItemPanel()}
+      ${renderStockItemPanel(viewerRole)}
       ${renderStockMovementPanel()}
     </section>
     ${renderStockQrPreviewPanel()}
@@ -2898,54 +3007,85 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
   `;
 }
 
-function renderStockItemPanel() {
+function renderStockItemPanel(viewerRole) {
+  const editingItem = viewerRole === "admin" ? getEditingStockItem() : null;
+  const isEditing = Boolean(editingItem);
+
   return `
     <article class="panel">
       <p class="eyebrow">Stock master</p>
-      <h3 class="panel-title">Add stock item</h3>
-      <p class="panel-subtitle">Create the item once with its order references, then log movements and artwork requests against it.</p>
+      <h3 class="panel-title">${isEditing ? "Edit stock item" : "Add stock item"}</h3>
+      <p class="panel-subtitle">
+        ${
+          isEditing
+            ? "Update the stock master record. Existing movement history stays linked to this item."
+            : "Create the item once with its order references, then log movements and artwork requests against it."
+        }
+      </p>
+      ${
+        isEditing
+          ? `
+            <div class="stock-edit-banner">
+              <span class="chip">Editing stock item</span>
+              <span>Last updated ${escapeHtml(formatDateTime(editingItem.updatedAt || editingItem.createdAt) || "recently")}.</span>
+            </div>
+          `
+          : ""
+      }
       <form data-form="add-stock-item">
+        <input name="stockItemId" type="hidden" value="${escapeHtml(editingItem?.id || "")}">
         <label>
           Stock description
-          <input name="name" type="text" required>
+          <input name="name" type="text" value="${escapeHtml(editingItem?.name || "")}" required>
         </label>
         <div class="form-grid">
           <label>
             Quote number
-            <input name="quoteNumber" type="text" required>
+            <input name="quoteNumber" type="text" value="${escapeHtml(editingItem?.quoteNumber || "")}" required>
           </label>
           <label>
             Sales order number
-            <input name="salesOrderNumber" type="text" placeholder="Optional">
+            <input name="salesOrderNumber" type="text" value="${escapeHtml(editingItem?.salesOrderNumber || "")}" placeholder="Optional">
           </label>
         </div>
         <div class="form-grid">
           <label>
             Invoice number
-            <input name="invoiceNumber" type="text" placeholder="Optional">
+            <input name="invoiceNumber" type="text" value="${escapeHtml(editingItem?.invoiceNumber || "")}" placeholder="Optional">
           </label>
           <label>
             PO number
-            <input name="poNumber" type="text" placeholder="Optional">
+            <input name="poNumber" type="text" value="${escapeHtml(editingItem?.poNumber || "")}" placeholder="Optional">
           </label>
         </div>
         <div class="form-grid">
           <label>
             Stock code
-            <input name="sku" type="text" placeholder="SKU-001">
+            <input name="sku" type="text" value="${escapeHtml(editingItem?.sku || "")}" placeholder="SKU-001">
           </label>
           <label>
             Unit
-            <input name="unit" type="text" value="units">
+            <input name="unit" type="text" value="${escapeHtml(editingItem?.unit || "units")}">
           </label>
         </div>
         <label>
           Notes
-          <textarea name="notes" placeholder="Material, finish, size, or any internal note"></textarea>
+          <textarea name="notes" placeholder="Material, finish, size, or any internal note">${escapeHtml(editingItem?.notes || "")}</textarea>
         </label>
-        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-          Add stock item
-        </button>
+        <div class="action-row">
+          <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+            ${isEditing ? "Save stock item" : "Add stock item"}
+          </button>
+          ${
+            isEditing
+              ? `
+                <button type="button" class="button button-ghost" data-action="cancel-edit-stock-item"${state.busy ? " disabled" : ""}>
+                  Cancel
+                </button>
+              `
+              : ""
+          }
+        </div>
       </form>
     </article>
   `;
@@ -4253,10 +4393,19 @@ function renderRecentStockItemBadge(movement) {
 
 function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
+  const isEditing = state.editingStockItemId === item.id;
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
-  const actions = [
+  const actions = [];
+
+  if (allowDelete) {
+    actions.push(
+      `<button class="button button-secondary" data-action="edit-stock-item" data-stock-item-id="${item.id}"${state.busy || isEditing ? " disabled" : ""}>${isEditing ? "Editing" : "Edit"}</button>`,
+    );
+  }
+
+  actions.push(
     `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
-  ];
+  );
 
   if (allowDelete) {
     actions.push(
@@ -4288,11 +4437,20 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
 function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
   const isOpen = Boolean(state.stockOpenItemCards[item.id]);
+  const isEditing = state.editingStockItemId === item.id;
   const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
-  const actions = [
+  const actions = [];
+
+  if (allowDelete) {
+    actions.push(
+      `<button class="button button-secondary" data-action="edit-stock-item" data-stock-item-id="${item.id}"${state.busy || isEditing ? " disabled" : ""}>${isEditing ? "Editing" : "Edit"}</button>`,
+    );
+  }
+
+  actions.push(
     `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
-  ];
+  );
 
   if (allowDelete) {
     actions.push(
