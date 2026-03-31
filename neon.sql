@@ -1718,6 +1718,119 @@ begin
 end;
 $$;
 
+drop function if exists public.update_stock_movement(uuid, uuid, uuid, text, integer, text, uuid, text);
+
+create or replace function public.update_stock_movement(
+  p_token uuid,
+  p_stock_movement_id uuid,
+  p_stock_item_id uuid,
+  p_movement_type text,
+  p_quantity integer,
+  p_supplier_name text default null,
+  p_driver_user_id uuid default null,
+  p_notes text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_existing private.stock_movements;
+  v_stock_item private.stock_items;
+  v_driver private.app_users;
+  v_movement_type text := lower(nullif(btrim(p_movement_type), ''));
+  v_quantity integer := coalesce(p_quantity, 0);
+  v_supplier_name text := coalesce(nullif(btrim(p_supplier_name), ''), '');
+  v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+  v_existing_effect integer := 0;
+  v_new_effect integer := 0;
+  v_old_on_hand integer := 0;
+  v_new_on_hand integer := 0;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'logistics') then
+    raise exception 'Permission denied';
+  end if;
+
+  if v_movement_type not in ('in', 'out') then
+    raise exception 'Movement type must be in or out.';
+  end if;
+
+  if v_quantity <= 0 then
+    raise exception 'Quantity must be greater than zero.';
+  end if;
+
+  select *
+  into v_existing
+  from private.stock_movements
+  where id = p_stock_movement_id;
+
+  if v_existing.id is null then
+    raise exception 'Stock movement not found.';
+  end if;
+
+  select *
+  into v_stock_item
+  from private.stock_items
+  where id = p_stock_item_id;
+
+  if v_stock_item.id is null then
+    raise exception 'Stock item not found.';
+  end if;
+
+  if v_movement_type = 'in' and v_supplier_name = '' then
+    raise exception 'Supplier is required for stock coming in.';
+  end if;
+
+  if v_movement_type = 'out' then
+    select *
+    into v_driver
+    from private.app_users
+    where id = p_driver_user_id
+      and role = 'driver'
+      and active;
+
+    if v_driver.id is null then
+      raise exception 'Driver is required for stock going out.';
+    end if;
+  end if;
+
+  v_existing_effect := case when v_existing.movement_type = 'in' then v_existing.quantity else -v_existing.quantity end;
+  v_new_effect := case when v_movement_type = 'in' then v_quantity else -v_quantity end;
+
+  if v_existing.stock_item_id = p_stock_item_id then
+    v_old_on_hand := private.stock_on_hand(v_existing.stock_item_id) - v_existing_effect + v_new_effect;
+    if v_old_on_hand < 0 then
+      raise exception 'Not enough stock on hand for that movement.';
+    end if;
+  else
+    v_old_on_hand := private.stock_on_hand(v_existing.stock_item_id) - v_existing_effect;
+    if v_old_on_hand < 0 then
+      raise exception 'Editing this movement would leave the original stock item below zero.';
+    end if;
+
+    v_new_on_hand := private.stock_on_hand(p_stock_item_id) + v_new_effect;
+    if v_new_on_hand < 0 then
+      raise exception 'Not enough stock on hand for that movement.';
+    end if;
+  end if;
+
+  update private.stock_movements
+  set stock_item_id = p_stock_item_id,
+      movement_type = v_movement_type,
+      quantity = v_quantity,
+      supplier_name = case when v_movement_type = 'in' then v_supplier_name else '' end,
+      driver_user_id = case when v_movement_type = 'out' then p_driver_user_id else null end,
+      notes = v_notes
+  where id = v_existing.id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
 drop function if exists public.create_artwork_request(uuid, uuid, integer, text, text);
 
 create or replace function public.create_artwork_request(

@@ -529,6 +529,19 @@ textarea {
   flex: 1 1 auto;
 }
 
+.stock-edit-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+  margin: 0 0 0.9rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(27, 106, 90, 0.1);
+  color: var(--muted);
+}
+
 .stock-disclosure {
   padding: 0;
   overflow: hidden;
@@ -562,6 +575,80 @@ textarea {
 
 .stock-disclosure-toggle {
   white-space: nowrap;
+}
+
+.recent-stock-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.recent-stock-column {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(27, 106, 90, 0.08);
+}
+
+.recent-stock-column-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.recent-stock-column-title,
+.recent-stock-entry-title {
+  margin: 0;
+}
+
+.recent-stock-column-note,
+.recent-stock-entry-summary {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+.recent-stock-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.recent-stock-entry {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(27, 106, 90, 0.08);
+}
+
+.recent-stock-entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.recent-stock-entry-copy {
+  min-width: 0;
+}
+
+.recent-stock-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.recent-stock-meta span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(27, 106, 90, 0.08);
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 table {
@@ -775,6 +862,10 @@ th {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.stock-item-activity {
+  margin-top: 0.45rem;
 }
 
 .qr-preview-body {
@@ -1003,7 +1094,8 @@ canvas {
   .panel-grid,
   .driver-grid,
   .scanner-grid,
-  .qr-preview-body {
+  .qr-preview-body,
+  .recent-stock-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1262,6 +1354,16 @@ canvas {
   .stock-search-controls {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .recent-stock-column,
+  .recent-stock-entry {
+    padding: 0.85rem;
+  }
+
+  .recent-stock-column-head,
+  .recent-stock-entry-head {
+    flex-direction: column;
   }
 
   .scanner-panel,

@@ -71,6 +71,9 @@ const RPC_DEFINITIONS = Object.freeze({
   record_stock_movement: {
     params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
   },
+  update_stock_movement: {
+    params: ["p_token", "p_stock_movement_id", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
+  },
   create_artwork_request: { params: ["p_token", "p_stock_item_id", "p_requested_quantity", "p_notes", "p_sent_to"] },
   create_order: {
     params: [

@@ -8,6 +8,7 @@ const STOCK_SCANNER_FORMATS = ["qr_code", "code_128"];
 const STOCK_LABEL_SKU_MAX_LENGTH = 10;
 const STOCK_LABEL_CODE_LENGTH = 8;
 const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const STOCK_RECENT_ACTIVITY_DAYS = 7;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZES = {
   globalEntries: 12,
@@ -39,6 +40,7 @@ const state = {
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
+  editingStockMovementId: "",
   stockMovementSelectedItemId: "",
   stockQrItemId: "",
   stockQrSvg: "",
@@ -169,6 +171,7 @@ async function refreshPublicState() {
   state.editingUserId = "";
   state.editingSupplierId = "";
   state.editingLocationId = "";
+  state.editingStockMovementId = "";
   state.stockMovementSelectedItemId = "";
   state.stockQrItemId = "";
   state.stockQrSvg = "";
@@ -206,6 +209,9 @@ async function refreshSnapshot() {
     }
     if (state.editingLocationId && !state.snapshot.locations.some((location) => location.id === state.editingLocationId)) {
       state.editingLocationId = "";
+    }
+    if (state.editingStockMovementId && !state.snapshot.stockMovements.some((movement) => movement.id === state.editingStockMovementId)) {
+      state.editingStockMovementId = "";
     }
     if (state.stockMovementSelectedItemId && !state.snapshot.stockItems.some((item) => item.id === state.stockMovementSelectedItemId)) {
       state.stockMovementSelectedItemId = "";
@@ -513,6 +519,29 @@ async function handleClick(event) {
 
   if (action === "cancel-edit-location" && currentUser.role === "admin") {
     state.editingLocationId = "";
+    render();
+    return;
+  }
+
+  if (action === "edit-stock-movement" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    const stockMovementId = String(button.dataset.stockMovementId || "");
+    const movement = getStockMovement(stockMovementId);
+    if (!movement) {
+      showFlash("That stock movement could not be found.", "error");
+      render();
+      return;
+    }
+
+    state.editingStockMovementId = stockMovementId;
+    state.stockMovementSelectedItemId = movement.stockItemId || "";
+    state.stockMovementsSectionOpen = true;
+    render();
+    focusStockMovementForm();
+    return;
+  }
+
+  if (action === "cancel-edit-stock-movement" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    state.editingStockMovementId = "";
     render();
     return;
   }
@@ -1075,6 +1104,7 @@ async function createStockItem(formData) {
 }
 
 async function recordStockMovement(formData) {
+  const stockMovementId = String(formData.get("stockMovementId") || "").trim();
   const stockItemId = String(formData.get("stockItemId") || "").trim();
   const movementType = String(formData.get("movementType") || "in").trim();
   const quantity = Number(formData.get("quantity"));
@@ -1100,10 +1130,11 @@ async function recordStockMovement(formData) {
     return;
   }
 
-  await runMutation(
-    "record_stock_movement",
+  const ok = await runMutation(
+    stockMovementId ? "update_stock_movement" : "record_stock_movement",
     {
       p_token: sessionToken,
+      ...(stockMovementId ? { p_stock_movement_id: stockMovementId } : {}),
       p_stock_item_id: stockItemId,
       p_movement_type: movementType,
       p_quantity: quantity,
@@ -1111,8 +1142,15 @@ async function recordStockMovement(formData) {
       p_driver_user_id: driverUserId || null,
       p_notes: notes,
     },
-    movementType === "in" ? "Stock receipt recorded." : "Stock issue recorded.",
+    stockMovementId
+      ? (movementType === "in" ? "Stock receipt updated." : "Stock issue updated.")
+      : (movementType === "in" ? "Stock receipt recorded." : "Stock issue recorded."),
   );
+
+  if (ok && stockMovementId) {
+    state.editingStockMovementId = "";
+    render();
+  }
 }
 
 async function requestArtwork(formData) {
@@ -1208,6 +1246,21 @@ function syncPostRenderUi() {
   void syncStockScannerUi();
 }
 
+function focusStockMovementForm() {
+  window.requestAnimationFrame(() => {
+    const form = document.querySelector('form[data-form="add-stock-movement"]');
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+    const firstField = form.querySelector('[name="stockItemId"]');
+    if (firstField instanceof HTMLElement) {
+      firstField.focus();
+    }
+  });
+}
+
 async function syncStockScannerUi() {
   if (!state.stockScannerOpen || state.currentPage !== "stock") {
     await stopStockScanner();
@@ -1222,6 +1275,59 @@ async function syncStockScannerUi() {
 
 function getStockItemById(stockItemId) {
   return state.snapshot.stockItems.find((item) => item.id === stockItemId) || null;
+}
+
+function getStockMovement(stockMovementId) {
+  return state.snapshot.stockMovements.find((movement) => movement.id === stockMovementId) || null;
+}
+
+function getEditingStockMovement() {
+  return state.editingStockMovementId ? getStockMovement(state.editingStockMovementId) : null;
+}
+
+function isRecentStockMovement(value, days = STOCK_RECENT_ACTIVITY_DAYS) {
+  const timestamp = Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+
+  return (Date.now() - timestamp) <= (days * 24 * 60 * 60 * 1000);
+}
+
+function getRecentStockMovements(movementType, limit = 6) {
+  const recentMovements = [];
+  const seenStockItemIds = new Set();
+
+  state.snapshot.stockMovements.forEach((movement) => {
+    if (movement.movementType !== movementType) {
+      return;
+    }
+
+    if (!isRecentStockMovement(movement.createdAt)) {
+      return;
+    }
+
+    if (seenStockItemIds.has(movement.stockItemId)) {
+      return;
+    }
+
+    seenStockItemIds.add(movement.stockItemId);
+    recentMovements.push(movement);
+  });
+
+  return recentMovements.slice(0, limit);
+}
+
+function getLatestStockMovementByItemId() {
+  const latestMovementByItemId = new Map();
+
+  state.snapshot.stockMovements.forEach((movement) => {
+    if (!latestMovementByItemId.has(movement.stockItemId)) {
+      latestMovementByItemId.set(movement.stockItemId, movement);
+    }
+  });
+
+  return latestMovementByItemId;
 }
 
 function normalizeStockSearchValue(value) {
@@ -2761,8 +2867,8 @@ function renderLogisticsPageContent() {
 
 function renderStockWorkspace({ viewerRole, title, subtitle }) {
   const stockMovements = state.snapshot.stockMovements;
-  const inboundCount = stockMovements.filter((movement) => movement.movementType === "in").length;
-  const outboundCount = stockMovements.filter((movement) => movement.movementType === "out").length;
+  const recentInbound = getRecentStockMovements("in");
+  const recentOutbound = getRecentStockMovements("out");
 
   return `
     <section class="hero-card">
@@ -2774,17 +2880,19 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
     <section class="metrics">
       ${renderMetric("Stock items", state.snapshot.stockItems.length)}
       ${renderMetric("On hand", getStockOnHandTotal())}
-      ${renderMetric("Stock in", inboundCount)}
-      ${renderMetric("Stock out", outboundCount)}
+      ${renderMetric("Movements", stockMovements.length)}
+      ${renderMetric("Recent arrivals", recentInbound.length)}
+      ${renderMetric("Recent shipments", recentOutbound.length)}
       ${renderMetric("Artwork requests", state.snapshot.artworkRequests.length)}
     </section>
+    ${renderRecentStockActivitySection({ recentInbound, recentOutbound })}
     <section class="panel-grid">
       ${renderStockItemPanel()}
       ${renderStockMovementPanel()}
     </section>
     ${renderStockQrPreviewPanel()}
     ${renderStockItemsSection(viewerRole)}
-    ${renderStockMovementsSection()}
+    ${renderStockMovementsSection(viewerRole)}
     ${renderArtworkRequestPanel(viewerRole)}
     ${renderArtworkRequestsSection()}
   `;
@@ -2844,61 +2952,99 @@ function renderStockItemPanel() {
 }
 
 function renderStockMovementPanel() {
+  const editingMovement = getEditingStockMovement();
+  const isEditing = Boolean(editingMovement);
+  const movementType = editingMovement?.movementType === "out" ? "out" : "in";
+  const isInbound = movementType === "in";
+  const selectedStockItemId = state.stockMovementSelectedItemId || editingMovement?.stockItemId || "";
+
   return `
     <article class="panel">
       <p class="eyebrow">Stock ledger</p>
-      <h3 class="panel-title">Log stock in or out</h3>
-      <p class="panel-subtitle">Every stock movement is timestamped and linked to the staff member who recorded it.</p>
+      <h3 class="panel-title">${isEditing ? "Edit stock movement" : "Log stock in or out"}</h3>
+      <p class="panel-subtitle">
+        ${
+          isEditing
+            ? "Update the selected movement. The original logged time and recorded-by details stay unchanged."
+            : "Every stock movement is timestamped and linked to the staff member who recorded it."
+        }
+      </p>
+      ${
+        isEditing
+          ? `
+            <div class="stock-edit-banner">
+              <span class="chip ${movementType === "in" ? "chip-success" : "chip-warning"}">
+                ${movementType === "in" ? "Editing receipt" : "Editing issue"}
+              </span>
+              <span>
+                Logged ${escapeHtml(formatDateTime(editingMovement.createdAt) || "")}
+                by ${escapeHtml(editingMovement.createdByName || "Unknown")}.
+              </span>
+            </div>
+          `
+          : ""
+      }
       <div class="action-row">
         <button type="button" class="button button-secondary" data-action="open-stock-scanner"${state.busy ? " disabled" : ""}>
           Scan QR
         </button>
-        <button type="button" class="button button-ghost" data-action="clear-stock-selection"${state.busy || !state.stockMovementSelectedItemId ? " disabled" : ""}>
-          Clear selection
-        </button>
+        ${
+          isEditing
+            ? `
+              <button type="button" class="button button-ghost" data-action="cancel-edit-stock-movement"${state.busy ? " disabled" : ""}>
+                Cancel edit
+              </button>
+            `
+            : `
+              <button type="button" class="button button-ghost" data-action="clear-stock-selection"${state.busy || !state.stockMovementSelectedItemId ? " disabled" : ""}>
+                Clear selection
+              </button>
+            `
+        }
       </div>
       ${renderStockScannerPanel()}
       <form data-form="add-stock-movement">
+        <input name="stockMovementId" type="hidden" value="${escapeHtml(editingMovement?.id || "")}">
         <div class="form-grid">
           <label>
             Stock item
             <select name="stockItemId" required>
-              ${renderStockItemOptions(state.stockMovementSelectedItemId)}
+              ${renderStockItemOptions(selectedStockItemId)}
             </select>
           </label>
           <label>
             Movement type
             <select name="movementType" required>
-              <option value="in">Stock in</option>
-              <option value="out">Stock out</option>
+              <option value="in"${movementType === "in" ? " selected" : ""}>Stock in</option>
+              <option value="out"${movementType === "out" ? " selected" : ""}>Stock out</option>
             </select>
           </label>
         </div>
         <div class="form-grid">
           <label>
             Quantity
-            <input name="quantity" type="number" min="1" step="1" required>
+            <input name="quantity" type="number" min="1" step="1" value="${escapeHtml(String(editingMovement?.quantity || ""))}" required>
           </label>
-          <label data-stock-supplier-field>
+          <label data-stock-supplier-field${isInbound ? "" : ' class="hidden"'}>
             Supplier
-            <input name="supplierName" type="text" placeholder="Supplier name">
+            <input name="supplierName" type="text" value="${escapeHtml(editingMovement?.supplierName || "")}" placeholder="Supplier name">
           </label>
-          <label data-stock-driver-field class="hidden">
+          <label data-stock-driver-field${isInbound ? ' class="hidden"' : ""}>
             Driver
             <select name="driverUserId">
-              ${renderDriverOptions("", true)}
+              ${renderDriverOptions(editingMovement?.driverUserId || "", true)}
             </select>
           </label>
         </div>
         <p class="field-note" data-stock-movement-note>
-          Record which supplier the stock arrived from.
+          ${isInbound ? "Record which supplier the stock arrived from." : "Record which driver the stock went out with."}
         </p>
         <label>
           Notes
-          <textarea name="notes" placeholder="Batch note, dispatch note, or anything the team should keep on record"></textarea>
+          <textarea name="notes" placeholder="Batch note, dispatch note, or anything the team should keep on record">${escapeHtml(editingMovement?.notes || "")}</textarea>
         </label>
         <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-          Save movement
+          ${isEditing ? "Save changes" : "Save movement"}
         </button>
       </form>
     </article>
@@ -2949,6 +3095,7 @@ function renderArtworkRequestPanel(viewerRole) {
 function renderStockItemsSection(viewerRole) {
   const allowDelete = viewerRole === "admin";
   const filteredItems = getFilteredStockItems();
+  const latestMovementByItemId = getLatestStockMovementByItemId();
   const totalItems = state.snapshot.stockItems.length;
 
   return `
@@ -3003,7 +3150,7 @@ function renderStockItemsSection(viewerRole) {
           <tbody>
             ${
               filteredItems.length
-                ? filteredItems.map((item) => renderStockItemRow(item, viewerRole)).join("")
+                ? filteredItems.map((item) => renderStockItemRow(item, viewerRole, latestMovementByItemId)).join("")
                 : `
                   <tr>
                     <td colspan="8">${totalItems ? "No stock items match this search." : "No stock items added yet."}</td>
@@ -3016,7 +3163,7 @@ function renderStockItemsSection(viewerRole) {
       <div class="stock-item-mobile-list">
         ${
           filteredItems.length
-            ? filteredItems.map((item) => renderStockItemCard(item, viewerRole)).join("")
+            ? filteredItems.map((item) => renderStockItemCard(item, viewerRole, latestMovementByItemId)).join("")
             : `<div class="empty-state">${escapeHtml(totalItems ? "No stock items match this search." : "No stock items added yet.")}</div>`
         }
       </div>
@@ -3024,11 +3171,94 @@ function renderStockItemsSection(viewerRole) {
   `;
 }
 
-function renderStockMovementsSection() {
+function renderRecentStockActivitySection({ recentInbound, recentOutbound }) {
+  return `
+    <section class="table-card">
+      <div class="table-toolbar">
+        <div class="stock-section-copy">
+          <p class="eyebrow">Recent activity</p>
+          <h3 class="panel-title">Recently arrived and shipped stock</h3>
+          <p class="panel-subtitle">
+            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_DAYS))} days, grouped by item.
+          </p>
+        </div>
+      </div>
+      <div class="recent-stock-grid">
+        ${renderRecentStockActivityColumn({
+          title: "Recently arrived",
+          subtitle: "Latest stock-in activity per item.",
+          emptyLabel: `No stock arrived in the last ${STOCK_RECENT_ACTIVITY_DAYS} days.`,
+          movements: recentInbound,
+        })}
+        ${renderRecentStockActivityColumn({
+          title: "Recently shipped",
+          subtitle: "Latest stock-out activity per item.",
+          emptyLabel: `No stock shipped in the last ${STOCK_RECENT_ACTIVITY_DAYS} days.`,
+          movements: recentOutbound,
+        })}
+      </div>
+    </section>
+  `;
+}
+
+function renderRecentStockActivityColumn({ title, subtitle, emptyLabel, movements }) {
+  const isInbound = title.toLowerCase().includes("arrived");
+
+  return `
+    <article class="recent-stock-column">
+      <div class="recent-stock-column-head">
+        <div>
+          <h4 class="recent-stock-column-title">${escapeHtml(title)}</h4>
+          <p class="recent-stock-column-note">${escapeHtml(subtitle)}</p>
+        </div>
+        <span class="chip ${isInbound ? "chip-success" : "chip-warning"}">${escapeHtml(String(movements.length))}</span>
+      </div>
+      ${
+        movements.length
+          ? `
+            <div class="recent-stock-list">
+              ${movements.map((movement) => renderRecentStockActivityEntry(movement)).join("")}
+            </div>
+          `
+          : `<p class="stock-results-note">${escapeHtml(emptyLabel)}</p>`
+      }
+    </article>
+  `;
+}
+
+function renderRecentStockActivityEntry(movement) {
+  const item = getStockItemById(movement.stockItemId);
+  const onHandLabel = item
+    ? `${Number(item.onHandQuantity || 0)} ${item.unit || movement.unit || "units"} on hand now`
+    : "";
+  const referenceSummary = getReferenceLines(movement).join(" | ") || "No order references";
+
+  return `
+    <article class="recent-stock-entry">
+      <div class="recent-stock-entry-head">
+        <div class="recent-stock-entry-copy">
+          <h5 class="recent-stock-entry-title">${escapeHtml(movement.itemName || "Unknown")}</h5>
+          <p class="recent-stock-entry-summary">${escapeHtml(referenceSummary)}</p>
+        </div>
+        <span class="chip ${movement.movementType === "in" ? "chip-success" : "chip-warning"}">
+          ${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}
+        </span>
+      </div>
+      <div class="recent-stock-meta">
+        <span>${escapeHtml(formatDateTime(movement.createdAt) || "")}</span>
+        <span>${escapeHtml(getStockMovementPartyLabel(movement))}</span>
+        ${onHandLabel ? `<span>${escapeHtml(onHandLabel)}</span>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderStockMovementsSection(viewerRole) {
   return renderStockDisclosure({
     sectionKey: "movements",
     eyebrow: "Stock history",
     title: "Movement ledger",
+    subtitle: "Use Edit to correct the item, movement type, quantity, party, or notes for an existing stock entry.",
     summary: `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}.`,
     open: state.stockMovementsSectionOpen,
     body: `
@@ -3043,15 +3273,16 @@ function renderStockMovementsSection() {
               <th>Supplier / driver</th>
               <th>Notes</th>
               <th>Recorded by</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             ${
               state.snapshot.stockMovements.length
-                ? state.snapshot.stockMovements.map((movement) => renderStockMovementRow(movement)).join("")
+                ? state.snapshot.stockMovements.map((movement) => renderStockMovementRow(movement, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="7">No stock movements logged yet.</td>
+                    <td colspan="8">No stock movements logged yet.</td>
                   </tr>
                 `
             }
@@ -4006,8 +4237,23 @@ function renderReferenceSummary(record, emptyLabel = "No order references") {
   return lines.map((line) => `<span class="muted">${escapeHtml(line)}</span>`).join("<br>");
 }
 
-function renderStockItemRow(item, viewerRole) {
+function renderRecentStockItemBadge(movement) {
+  if (!movement || !isRecentStockMovement(movement.createdAt)) {
+    return "";
+  }
+
+  return `
+    <div class="chip-row stock-item-activity">
+      <span class="chip ${movement.movementType === "in" ? "chip-success" : "chip-warning"}">
+        ${movement.movementType === "in" ? "Recent arrival" : "Recent shipment"}
+      </span>
+    </div>
+  `;
+}
+
+function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
+  const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
   const actions = [
     `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
   ];
@@ -4022,6 +4268,7 @@ function renderStockItemRow(item, viewerRole) {
     <tr>
       <td data-label="Item">
         <strong>${escapeHtml(item.name)}</strong>
+        ${activityBadge}
       </td>
       <td data-label="References">${renderReferenceSummary(item)}</td>
       <td data-label="Stock code">${escapeHtml(item.sku || "Not set")}</td>
@@ -4038,10 +4285,11 @@ function renderStockItemRow(item, viewerRole) {
   `;
 }
 
-function renderStockItemCard(item, viewerRole) {
+function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
   const isOpen = Boolean(state.stockOpenItemCards[item.id]);
   const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
+  const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
   const actions = [
     `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
   ];
@@ -4058,6 +4306,7 @@ function renderStockItemCard(item, viewerRole) {
         <div class="stock-item-mobile-copy">
           <h4 class="stock-item-mobile-title">${escapeHtml(item.name)}</h4>
           <p class="stock-item-mobile-summary">${escapeHtml(referenceSummary)}</p>
+          ${activityBadge}
         </div>
         <div class="stock-item-mobile-side">
           <span class="stock-item-mobile-onhand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(item.unit || "units")}</span>
@@ -4105,7 +4354,10 @@ function renderStockItemCard(item, viewerRole) {
   `;
 }
 
-function renderStockMovementRow(movement) {
+function renderStockMovementRow(movement, viewerRole) {
+  const canEdit = viewerRole === "admin" || viewerRole === "logistics";
+  const isEditing = state.editingStockMovementId === movement.id;
+
   return `
     <tr>
       <td data-label="Logged">${escapeHtml(formatDateTime(movement.createdAt) || "")}</td>
@@ -4119,6 +4371,24 @@ function renderStockMovementRow(movement) {
       <td data-label="Supplier / driver">${escapeHtml(getStockMovementPartyLabel(movement))}</td>
       <td data-label="Notes">${escapeHtml(movement.notes || "None")}</td>
       <td data-label="Recorded by">${escapeHtml(movement.createdByName || "Unknown")}</td>
+      <td data-label="Actions">
+        ${
+          canEdit
+            ? `
+              <div class="action-row">
+                <button
+                  class="button button-secondary"
+                  data-action="edit-stock-movement"
+                  data-stock-movement-id="${movement.id}"
+                  ${state.busy || isEditing ? " disabled" : ""}
+                >
+                  ${isEditing ? "Editing" : "Edit"}
+                </button>
+              </div>
+            `
+            : '<span class="muted">View only</span>'
+        }
+      </td>
     </tr>
   `;
 }
@@ -4250,10 +4520,21 @@ function renderSupplierOptions() {
 
 function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
   const drivers = getActiveDriverUsers();
+  const selectedDriver = selectedDriverId ? getUser(selectedDriverId) : null;
   const options = [];
 
   if (includeUnassigned) {
     options.push(`<option value=""${selectedDriverId ? "" : " selected"}>Unassigned</option>`);
+  }
+
+  if (
+    selectedDriver
+    && selectedDriver.role === "driver"
+    && !drivers.some((driver) => driver.id === selectedDriver.id)
+  ) {
+    options.push(
+      `<option value="${selectedDriver.id}" selected>${escapeHtml(selectedDriver.name)} (inactive)</option>`,
+    );
   }
 
   if (!drivers.length) {
