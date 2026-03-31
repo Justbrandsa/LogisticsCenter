@@ -179,7 +179,12 @@ create table if not exists private.orders (
   customer_name text not null,
   priority text not null check (priority in ('high', 'medium', 'low')),
   notes text not null default '',
+  driver_flag_type text check (driver_flag_type in ('not_collected', 'not_ready')),
+  driver_flag_note text not null default '',
+  driver_flagged_at timestamptz,
+  driver_flagged_by_user_id uuid references private.app_users(id) on delete set null,
   move_to_factory boolean not null default false,
+  factory_destination_location_id uuid references private.locations(id) on delete restrict,
   status text not null default 'active' check (status in ('active', 'completed')),
   scheduled_for date not null,
   original_scheduled_for date not null,
@@ -195,7 +200,12 @@ alter table private.orders add column if not exists factory_order_number text;
 alter table private.orders add column if not exists inhouse_order_number text;
 alter table private.orders add column if not exists invoice_number text;
 alter table private.orders add column if not exists po_number text;
+alter table private.orders add column if not exists driver_flag_type text;
+alter table private.orders add column if not exists driver_flag_note text;
+alter table private.orders add column if not exists driver_flagged_at timestamptz;
+alter table private.orders add column if not exists driver_flagged_by_user_id uuid references private.app_users(id) on delete set null;
 alter table private.orders add column if not exists move_to_factory boolean;
+alter table private.orders add column if not exists factory_destination_location_id uuid;
 
 update private.orders
 set entry_type = 'delivery'
@@ -217,6 +227,10 @@ set move_to_factory = false
 where move_to_factory is null;
 
 update private.orders
+set factory_destination_location_id = null
+where move_to_factory = false;
+
+update private.orders
 set invoice_number = ''
 where invoice_number is null;
 
@@ -224,25 +238,48 @@ update private.orders
 set po_number = ''
 where po_number is null;
 
+update private.orders
+set driver_flag_note = ''
+where driver_flag_note is null;
+
 alter table private.orders alter column driver_user_id drop not null;
 alter table private.orders alter column entry_type set default 'delivery';
 alter table private.orders alter column factory_order_number set default '';
 alter table private.orders alter column inhouse_order_number set default '';
 alter table private.orders alter column invoice_number set default '';
 alter table private.orders alter column po_number set default '';
+alter table private.orders alter column driver_flag_note set default '';
 alter table private.orders alter column move_to_factory set default false;
 alter table private.orders alter column entry_type set not null;
 alter table private.orders alter column factory_order_number set not null;
 alter table private.orders alter column inhouse_order_number set not null;
 alter table private.orders alter column invoice_number set not null;
 alter table private.orders alter column po_number set not null;
+alter table private.orders alter column driver_flag_note set not null;
 alter table private.orders alter column move_to_factory set not null;
+
+alter table private.orders
+  drop constraint if exists orders_factory_destination_location_id_fkey;
+
+alter table private.orders
+  add constraint orders_factory_destination_location_id_fkey
+  foreign key (factory_destination_location_id) references private.locations(id) on delete restrict;
+
+alter table private.orders
+  drop constraint if exists orders_driver_flag_type_check;
+
+alter table private.orders
+  add constraint orders_driver_flag_type_check
+  check (driver_flag_type in ('not_collected', 'not_ready') or driver_flag_type is null);
 
 create index if not exists orders_driver_scheduled_idx
   on private.orders (driver_user_id, scheduled_for);
 
 create index if not exists orders_status_scheduled_idx
   on private.orders (status, scheduled_for);
+
+create index if not exists orders_factory_destination_idx
+  on private.orders (factory_destination_location_id);
 
 create table if not exists private.stock_items (
   id uuid primary key default public.gen_random_uuid(),
@@ -690,6 +727,7 @@ declare
   v_artwork_requests jsonb := '[]'::jsonb;
 begin
   v_actor := private.require_user(p_token);
+  perform private.roll_forward_open_orders(v_today);
 
   if v_actor.role = 'admin' then
     select coalesce(
@@ -756,6 +794,9 @@ begin
           'orderNumber', o.order_number,
           'entryType', o.entry_type,
           'moveToFactory', o.move_to_factory,
+          'factoryDestinationLocationId', o.factory_destination_location_id,
+          'factoryDestinationName', coalesce(f.name, ''),
+          'factoryDestinationAddress', coalesce(f.address, ''),
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
           'salesOrderNumber', o.factory_order_number,
@@ -773,6 +814,11 @@ begin
           'locationContactNumber', l.contact_number,
           'priority', o.priority,
           'notes', o.notes,
+          'driverFlagType', o.driver_flag_type,
+          'driverFlagNote', o.driver_flag_note,
+          'driverFlaggedAt', o.driver_flagged_at,
+          'driverFlaggedByUserId', o.driver_flagged_by_user_id,
+          'driverFlaggedByName', coalesce(g.name, ''),
           'status', o.status,
           'scheduledFor', o.scheduled_for,
           'originalScheduledFor', o.original_scheduled_for,
@@ -794,6 +840,8 @@ begin
     from private.orders o
     left join private.app_users d on d.id = o.driver_user_id
     join private.locations l on l.id = o.location_id
+    left join private.locations f on f.id = o.factory_destination_location_id
+    left join private.app_users g on g.id = o.driver_flagged_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     ;
   else
@@ -856,6 +904,9 @@ begin
           'orderNumber', o.order_number,
           'entryType', o.entry_type,
           'moveToFactory', o.move_to_factory,
+          'factoryDestinationLocationId', o.factory_destination_location_id,
+          'factoryDestinationName', coalesce(f.name, ''),
+          'factoryDestinationAddress', coalesce(f.address, ''),
           'factoryOrderNumber', o.factory_order_number,
           'inhouseOrderNumber', o.inhouse_order_number,
           'salesOrderNumber', o.factory_order_number,
@@ -873,6 +924,11 @@ begin
           'locationContactNumber', l.contact_number,
           'priority', o.priority,
           'notes', o.notes,
+          'driverFlagType', o.driver_flag_type,
+          'driverFlagNote', o.driver_flag_note,
+          'driverFlaggedAt', o.driver_flagged_at,
+          'driverFlaggedByUserId', o.driver_flagged_by_user_id,
+          'driverFlaggedByName', coalesce(g.name, ''),
           'status', o.status,
           'scheduledFor', o.scheduled_for,
           'originalScheduledFor', o.original_scheduled_for,
@@ -893,6 +949,8 @@ begin
     into v_orders
     from private.orders o
     join private.locations l on l.id = o.location_id
+    left join private.locations f on f.id = o.factory_destination_location_id
+    left join private.app_users g on g.id = o.driver_flagged_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     where o.driver_user_id = v_actor.id
     ;
@@ -1981,6 +2039,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean, uuid);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -1993,7 +2052,8 @@ create or replace function public.create_order(
   p_po_number text default null,
   p_allow_duplicate boolean default false,
   p_notice text default null,
-  p_move_to_factory boolean default false
+  p_move_to_factory boolean default false,
+  p_factory_destination_location_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -2004,6 +2064,7 @@ declare
   v_actor private.app_users;
   v_driver private.app_users;
   v_location private.locations;
+  v_factory_destination private.locations;
   v_today date := private.today_local();
   v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
   v_quote_number text := nullif(btrim(p_quote_number), '');
@@ -2012,6 +2073,7 @@ declare
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
+  v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
 begin
   v_actor := private.require_user(p_token);
 
@@ -2053,6 +2115,24 @@ begin
     raise exception 'Only collection entries can be marked to move stock to a factory.';
   end if;
 
+  if v_move_to_factory and v_factory_destination_location_id is null then
+    raise exception 'Select which factory the collected stock should go to.';
+  end if;
+
+  if v_move_to_factory then
+    select *
+    into v_factory_destination
+    from private.locations
+    where id = v_factory_destination_location_id
+      and location_type in ('factory', 'both');
+
+    if v_factory_destination.id is null then
+      raise exception 'Factory destination not found.';
+    end if;
+  else
+    v_factory_destination_location_id := null;
+  end if;
+
   if p_driver_user_id is not null
      and exists (
        select 1
@@ -2077,6 +2157,7 @@ begin
     priority,
     notes,
     move_to_factory,
+    factory_destination_location_id,
     scheduled_for,
     original_scheduled_for,
     created_by_user_id
@@ -2093,6 +2174,7 @@ begin
     'medium',
     v_notice,
     v_move_to_factory,
+    v_factory_destination_location_id,
     v_today,
     v_today,
     v_actor.id
@@ -2172,6 +2254,109 @@ begin
 end;
 $$;
 
+create or replace function public.set_order_priority(
+  p_token uuid,
+  p_order_id uuid,
+  p_priority text default 'medium'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_order private.orders;
+  v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role <> 'admin' then
+    raise exception 'Permission denied';
+  end if;
+
+  if v_priority not in ('high', 'medium', 'low') then
+    raise exception 'Choose a valid priority.';
+  end if;
+
+  select *
+  into v_order
+  from private.orders
+  where id = p_order_id;
+
+  if v_order.id is null then
+    raise exception 'Order not found.';
+  end if;
+
+  if v_order.status <> 'active' then
+    raise exception 'Only active entries can change priority.';
+  end if;
+
+  update private.orders
+  set priority = v_priority,
+      updated_at = now()
+  where id = p_order_id;
+
+  return jsonb_build_object('ok', true, 'priority', v_priority);
+end;
+$$;
+
+create or replace function public.set_order_flag(
+  p_token uuid,
+  p_order_id uuid,
+  p_flag_type text default null,
+  p_note text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_order private.orders;
+  v_flag_type text := lower(nullif(btrim(p_flag_type), ''));
+  v_note text := coalesce(nullif(btrim(p_note), ''), '');
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'driver') then
+    raise exception 'Permission denied';
+  end if;
+
+  select *
+  into v_order
+  from private.orders
+  where id = p_order_id;
+
+  if v_order.id is null then
+    raise exception 'Order not found.';
+  end if;
+
+  if v_order.status <> 'active' then
+    raise exception 'Only active entries can be flagged.';
+  end if;
+
+  if v_actor.role = 'driver' and v_order.driver_user_id is distinct from v_actor.id then
+    raise exception 'Drivers can only flag their own assigned orders.';
+  end if;
+
+  if v_flag_type is not null and v_flag_type not in ('not_collected', 'not_ready') then
+    raise exception 'Choose a valid follow-up reason.';
+  end if;
+
+  update private.orders
+  set driver_flag_type = v_flag_type,
+      driver_flag_note = case when v_flag_type is null then '' else v_note end,
+      driver_flagged_at = case when v_flag_type is null then null else now() end,
+      driver_flagged_by_user_id = case when v_flag_type is null then null else v_actor.id end,
+      updated_at = now()
+  where id = p_order_id;
+
+  return jsonb_build_object('ok', true, 'flagType', coalesce(v_flag_type, ''));
+end;
+$$;
+
 create or replace function public.complete_order(
   p_token uuid,
   p_order_id uuid
@@ -2202,7 +2387,12 @@ begin
 
   update private.orders
   set status = 'completed',
-      completed_at = now()
+      completed_at = now(),
+      driver_flag_type = null,
+      driver_flag_note = '',
+      driver_flagged_at = null,
+      driver_flagged_by_user_id = null,
+      updated_at = now()
   where id = p_order_id
     and status <> 'completed';
 

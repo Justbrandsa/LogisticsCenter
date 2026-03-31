@@ -10,6 +10,17 @@ const STOCK_LABEL_CODE_LENGTH = 8;
 const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const STOCK_RECENT_ACTIVITY_DAYS = 7;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ORDER_FLAG_LABELS = Object.freeze({
+  not_collected: "Not collected",
+  not_ready: "Not yet ready",
+});
+const DEFAULT_ORDER_PRIORITY = "medium";
+const PRIORITY_STOP_VALUE = "high";
+const ORDER_PRIORITY_LEVELS = Object.freeze({
+  high: 0,
+  medium: 1,
+  low: 2,
+});
 const PAGE_SIZES = {
   globalEntries: 12,
   assignments: 12,
@@ -20,6 +31,7 @@ const HUB = {
   label: "Johannesburg Dispatch Hub",
   lat: -26.2041,
   lng: 28.0473,
+  source: "hub",
 };
 
 const appEl = document.getElementById("app");
@@ -61,6 +73,13 @@ const state = {
   stockScannerZoomMin: 1,
   stockScannerZoomMax: 1,
   stockScannerZoomStep: 0.1,
+  assignmentDriverFilter: "",
+  flaggingOrderId: "",
+  driverRouteOrigin: null,
+  driverRouteOriginLoading: false,
+  driverRouteOriginAttempted: false,
+  driverRouteOriginError: "",
+  driverRouteOriginUserId: "",
   pagination: {
     globalEntries: 1,
     assignments: 1,
@@ -95,6 +114,9 @@ let stockScannerStarting = false;
 let stockScannerStopRequested = false;
 let stockScannerDetector = null;
 let stockScannerVideoTrack = null;
+let routeMap = null;
+let routeMapContainer = null;
+let routeMapLayers = null;
 
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
@@ -184,6 +206,9 @@ async function refreshPublicState() {
   state.stockScannerStatus = "";
   state.stockScannerPendingItemId = "";
   state.stockScannerPendingCode = "";
+  state.assignmentDriverFilter = "";
+  state.flaggingOrderId = "";
+  resetDriverRouteOrigin();
   void stopStockScanner();
   render();
 
@@ -204,6 +229,11 @@ async function refreshSnapshot() {
   try {
     const data = await callRpc("get_app_snapshot", { p_token: sessionToken });
     state.snapshot = normalizeSnapshot(data);
+    if (!state.snapshot.user || state.snapshot.user.role !== "driver") {
+      resetDriverRouteOrigin();
+    } else if (state.driverRouteOriginUserId && state.driverRouteOriginUserId !== state.snapshot.user.id) {
+      resetDriverRouteOrigin();
+    }
     if (state.editingUserId && !state.snapshot.users.some((user) => user.id === state.editingUserId)) {
       state.editingUserId = "";
     }
@@ -231,6 +261,19 @@ async function refreshSnapshot() {
     if (state.stockScannerPendingItemId && !state.snapshot.stockItems.some((item) => item.id === state.stockScannerPendingItemId)) {
       state.stockScannerPendingItemId = "";
       state.stockScannerPendingCode = "";
+    }
+    if (state.flaggingOrderId) {
+      const flaggedOrder = state.snapshot.orders.find((order) => order.id === state.flaggingOrderId && order.status === "active");
+      if (!flaggedOrder) {
+        state.flaggingOrderId = "";
+      }
+    }
+    if (
+      state.assignmentDriverFilter
+      && state.assignmentDriverFilter !== "unassigned"
+      && !state.snapshot.users.some((user) => user.id === state.assignmentDriverFilter && user.role === "driver")
+    ) {
+      state.assignmentDriverFilter = "";
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -317,6 +360,14 @@ function createEmptySnapshot() {
   };
 }
 
+function resetDriverRouteOrigin() {
+  state.driverRouteOrigin = null;
+  state.driverRouteOriginLoading = false;
+  state.driverRouteOriginAttempted = false;
+  state.driverRouteOriginError = "";
+  state.driverRouteOriginUserId = "";
+}
+
 function normalizePublicState(data) {
   return {
     today: data?.today || "",
@@ -391,6 +442,10 @@ async function handleSubmit(event) {
 
   if (formId === "add-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     await createOrder(formData, currentUser);
+  }
+
+  if (formId === "flag-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    await saveOrderFlag(formData);
   }
 
   if (formId === "add-stock-item" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
@@ -713,6 +768,34 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "toggle-order-priority" && currentUser.role === "admin") {
+    await toggleOrderPriority(String(button.dataset.orderId || "").trim());
+    return;
+  }
+
+  if (action === "toggle-order-flag" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    const orderId = String(button.dataset.orderId || "").trim();
+    const order = getOrder(orderId);
+    if (!order || order.status !== "active") {
+      return;
+    }
+
+    state.flaggingOrderId = state.flaggingOrderId === orderId ? "" : orderId;
+    render();
+    return;
+  }
+
+  if (action === "cancel-order-flag" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    state.flaggingOrderId = "";
+    render();
+    return;
+  }
+
+  if (action === "clear-order-flag" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    await clearOrderFlag(String(button.dataset.orderId || "").trim());
+    return;
+  }
+
   if (action === "complete-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
     await runMutation(
       "complete_order",
@@ -722,11 +805,18 @@ async function handleClick(event) {
   }
 
   if (action === "delete-order" && currentUser.role === "admin") {
+    const orderReference = String(button.dataset.orderReference || "this entry").trim();
+    const confirmed = window.confirm(`Delete ${orderReference}? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
     await runMutation(
       "delete_order",
       { p_token: sessionToken, p_order_id: button.dataset.orderId },
       "Order deleted.",
     );
+    return;
   }
 }
 
@@ -743,10 +833,17 @@ function handleChange(event) {
     }
   }
 
+  if (target.matches("[data-assignment-filter]") && target instanceof HTMLSelectElement) {
+    state.assignmentDriverFilter = target.value;
+    state.pagination.assignments = 1;
+    render();
+    return;
+  }
+
   const orderForm = target.closest('form[data-form="add-order"]');
   if (
     orderForm instanceof HTMLFormElement
-    && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]'))
+    && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]') || target.matches('[name="moveToFactory"]'))
   ) {
     syncMoveToFactoryField(orderForm);
   }
@@ -786,7 +883,18 @@ function handleInput(event) {
 }
 
 function handleKeyDown(event) {
-  if (event.key !== "Escape" || state.busy || state.currentPage !== "stock") {
+  if (event.key !== "Escape" || state.busy) {
+    return;
+  }
+
+  if (state.flaggingOrderId) {
+    event.preventDefault();
+    state.flaggingOrderId = "";
+    render();
+    return;
+  }
+
+  if (state.currentPage !== "stock") {
     return;
   }
 
@@ -1050,10 +1158,17 @@ async function createOrder(formData, currentUser) {
   const poNumber = String(formData.get("poNumber") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
+  const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
   const allowDuplicate = formData.get("allowDuplicate") === "on";
 
   if (!locationId || !entryType || !quoteNumber) {
     showFlash("Pickup location, entry type, and quote number are required.", "error");
+    render();
+    return;
+  }
+
+  if (moveToFactory && !factoryDestinationLocationId) {
+    showFlash("Select which factory the collected stock should go to.", "error");
     render();
     return;
   }
@@ -1071,6 +1186,7 @@ async function createOrder(formData, currentUser) {
       p_po_number: poNumber,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
+      p_factory_destination_location_id: moveToFactory ? factoryDestinationLocationId : null,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
     },
     driverUserId ? "Entry added to the driver list." : "Entry created in the unassigned queue.",
@@ -1107,6 +1223,89 @@ async function saveOrderAssignment(button, currentUser) {
       ? `Entry assigned to ${selectedLabel}.`
       : "Entry moved to the unassigned queue.",
   );
+}
+
+async function toggleOrderPriority(orderId) {
+  if (!orderId) {
+    return;
+  }
+
+  const order = getOrder(orderId);
+  if (!order || order.status !== "active") {
+    return;
+  }
+
+  const nextPriority = isPriorityOrder(order) ? DEFAULT_ORDER_PRIORITY : PRIORITY_STOP_VALUE;
+
+  await runMutation(
+    "set_order_priority",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_priority: nextPriority,
+    },
+    nextPriority === PRIORITY_STOP_VALUE
+      ? `${order.reference || "Entry"} marked as a priority stop.`
+      : `Priority cleared for ${order.reference || "the entry"}.`,
+  );
+}
+
+async function saveOrderFlag(formData) {
+  const orderId = String(formData.get("orderId") || "").trim();
+  const flagType = String(formData.get("flagType") || "").trim();
+  const note = String(formData.get("flagNote") || "").trim();
+  const order = getOrder(orderId);
+
+  if (!orderId || !flagType) {
+    showFlash("Choose why this entry is being flagged.", "error");
+    render();
+    return;
+  }
+
+  const ok = await runMutation(
+    "set_order_flag",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_flag_type: flagType,
+      p_note: note || null,
+    },
+    `Follow-up saved for ${order?.reference || "the entry"}.`,
+  );
+
+  if (ok) {
+    state.flaggingOrderId = "";
+    render();
+  }
+}
+
+async function clearOrderFlag(orderId) {
+  if (!orderId) {
+    return;
+  }
+
+  const order = getOrder(orderId);
+  if (!order) {
+    return;
+  }
+
+  const ok = await runMutation(
+    "set_order_flag",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_flag_type: null,
+      p_note: null,
+    },
+    `Follow-up cleared for ${order.reference || "the entry"}.`,
+  );
+
+  if (ok) {
+    if (state.flaggingOrderId === orderId) {
+      state.flaggingOrderId = "";
+    }
+    render();
+  }
 }
 
 async function createStockItem(formData) {
@@ -1262,6 +1461,7 @@ async function requestArtwork(formData) {
 }
 
 function render() {
+  destroyDriverRouteMap();
   renderHeader();
   renderPageNavigation();
 
@@ -1300,6 +1500,7 @@ function render() {
 
   appEl.innerHTML = renderDriverScreen();
   syncPostRenderUi();
+  ensureDriverRouteOrigin();
   drawDriverRoute(state.snapshot.user.id);
 }
 
@@ -3634,15 +3835,18 @@ function renderDriverPageContent() {
     ${renderFlash()}
     <section class="metrics">
       ${renderMetric("Active stops", plan.stops.length)}
+      ${renderMetric("Priority stops", plan.priorityStopCount)}
       ${renderMetric("Estimated km", plan.totalKm.toFixed(1))}
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
     <section class="route-canvas-card">
-      <p class="eyebrow">Route sketch</p>
-      <h3 class="panel-title">Dispatch hub to optimized stop sequence</h3>
+      <p class="eyebrow">Route map</p>
+      <h3 class="panel-title">${escapeHtml(getDriverRouteHeading(currentUser.id))}</h3>
       <div class="route-canvas-wrap">
-        <canvas id="route-canvas" width="900" height="340"></canvas>
+        <div id="route-map" class="route-map" aria-label="${escapeHtml(getDriverRouteAriaLabel(currentUser.id))}"></div>
+        <canvas id="route-canvas" class="route-canvas-fallback hidden" width="900" height="340"></canvas>
       </div>
+      <p id="route-map-status" class="route-map-status hidden"></p>
     </section>
     <section class="driver-grid">
       ${
@@ -3944,6 +4148,12 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
         <input type="checkbox" name="moveToFactory" disabled>
         Move collected stock to a factory
       </label>
+      <label class="hidden" data-move-to-factory-destination>
+        Destination factory
+        <select name="factoryDestinationLocationId">
+          ${renderFactoryLocationOptions()}
+        </select>
+      </label>
       <p class="field-note" data-move-to-factory-note>
         Switch the entry type to Collection to enable factory transfer.
       </p>
@@ -3972,17 +4182,24 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
 }
 
 function renderAssignmentManager(viewerRole) {
-  const activeOrders = [...getActiveOrders()].sort(orderAssignmentSort);
-  const page = getPaginationData(activeOrders, "assignments", PAGE_SIZES.assignments);
+  const filteredOrders = getFilteredAssignmentOrders();
+  const page = getPaginationData(filteredOrders, "assignments", PAGE_SIZES.assignments);
 
   return `
     <section class="table-card">
       <div class="table-toolbar">
-        <div>
+        <div class="stock-section-copy">
           <p class="eyebrow">Assignments</p>
           <h3 class="panel-title">Active entry allocation</h3>
           <p class="panel-subtitle">Unassigned entries appear first. Move work onto a driver list when the route is ready, or return it to the queue.</p>
+          <p class="stock-results-note">${escapeHtml(getAssignmentFilterSummary(filteredOrders.length))}</p>
         </div>
+        <label class="assignment-filter">
+          Filter by driver
+          <select data-assignment-filter>
+            ${renderAssignmentFilterOptions(state.assignmentDriverFilter)}
+          </select>
+        </label>
       </div>
       <div class="table-scroll">
         <table class="responsive-stack">
@@ -4002,7 +4219,7 @@ function renderAssignmentManager(viewerRole) {
                 ? page.items.map((order) => renderAssignmentRow(order, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="6">No active entries available for assignment.</td>
+                    <td colspan="6">No active entries match this driver filter.</td>
                   </tr>
                 `
             }
@@ -4018,6 +4235,7 @@ function renderGlobalOrdersSection(viewerRole) {
   const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
   const page = getPaginationData(sortedOrders, "globalEntries", PAGE_SIZES.globalEntries);
   const canExport = viewerRole === "admin" || viewerRole === "sales";
+  const canDelete = viewerRole === "admin";
 
   return `
     <section class="table-card">
@@ -4025,7 +4243,13 @@ function renderGlobalOrdersSection(viewerRole) {
         <div>
           <p class="eyebrow">Global List</p>
           <h3 class="panel-title">All visible entries</h3>
-          <p class="panel-subtitle">This table combines every visible entry across the driver-separated lists.</p>
+          <p class="panel-subtitle">
+            ${
+              canDelete
+                ? "This table combines every visible entry across the driver-separated lists. Admins can remove entries here if needed."
+                : "This table combines every visible entry across the driver-separated lists."
+            }
+          </p>
         </div>
         ${
           canExport
@@ -4072,15 +4296,16 @@ function renderGlobalOrdersSection(viewerRole) {
               <th>Status</th>
               <th>Notice</th>
               <th>Created</th>
+              ${canDelete ? "<th>Actions</th>" : ""}
             </tr>
           </thead>
           <tbody>
             ${
               page.items.length
-                ? page.items.map((order) => renderGlobalOrderRow(order)).join("")
+                ? page.items.map((order) => renderGlobalOrderRow(order, viewerRole)).join("")
                 : `
                   <tr>
-                    <td colspan="10">No entries available yet.</td>
+                    <td colspan="${canDelete ? "11" : "10"}">No entries available yet.</td>
                   </tr>
                 `
             }
@@ -4109,6 +4334,11 @@ function renderDriverListOverview(viewerRole) {
             <div class="chip-row">
               <span class="chip">${plan.totalOrders} entries</span>
               <span class="chip">${plan.totalKm.toFixed(1)} km</span>
+              ${
+                plan.priorityStopCount
+                  ? `<span class="chip chip-priority-high">${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? "" : "s"}</span>`
+                  : ""
+              }
               ${
                 duplicateCount
                   ? `<span class="chip chip-warning">${duplicateCount} duplicate order${duplicateCount === 1 ? "" : "s"}</span>`
@@ -4191,12 +4421,19 @@ function renderCompletedOrders(driverUserId) {
   `;
 }
 
-function renderGlobalOrderRow(order) {
+function renderGlobalOrderRow(order, viewerRole) {
+  const canDelete = viewerRole === "admin";
+
   return `
     <tr>
       <td data-label="Reference">${escapeHtml(order.reference)}</td>
       <td data-label="Order references">${renderReferenceSummary(order)}</td>
-      <td data-label="Type">${renderTypeChip(order.entryType)}</td>
+      <td data-label="Type">
+        <div class="chip-row">
+          ${renderTypeChip(order.entryType)}
+          ${renderOrderPriorityChip(order)}
+        </div>
+      </td>
       <td data-label="Move to factory">${renderMoveToFactoryValue(order)}</td>
       <td data-label="Driver">${renderDriverAssignmentValue(order)}</td>
       <td data-label="Pickup location">
@@ -4207,6 +4444,25 @@ function renderGlobalOrderRow(order) {
       <td data-label="Status">${renderStatusChip(order.status)}</td>
       <td data-label="Notice">${renderOrderNotice(order, "None")}</td>
       <td data-label="Created">${escapeHtml(formatDateTime(order.createdAt))}</td>
+      ${
+        canDelete
+          ? `
+            <td data-label="Actions">
+              <div class="action-row">
+                <button
+                  class="button button-danger"
+                  data-action="delete-order"
+                  data-order-id="${order.id}"
+                  data-order-reference="${escapeHtml(order.reference)}"
+                  ${state.busy ? " disabled" : ""}
+                >
+                  Delete
+                </button>
+              </div>
+            </td>
+          `
+          : ""
+      }
     </tr>
   `;
 }
@@ -4219,7 +4475,9 @@ function renderAssignmentRow(order, viewerRole) {
         ${renderReferenceSummary(order)}
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
+          ${renderOrderPriorityChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
+          ${renderOrderFlagChip(order)}
         </div>
         ${renderOrderNotice(order)}
       </td>
@@ -4571,12 +4829,16 @@ function renderArtworkRequestRow(request) {
 function renderStopCard(stop, index, viewerRole) {
   const allowComplete = viewerRole === "admin" || viewerRole === "driver";
   const allowDelete = viewerRole === "admin";
+  const allowFlag = viewerRole === "admin" || viewerRole === "driver";
+  const allowPriority = viewerRole === "admin";
+  const allowNavigate = viewerRole === "admin" || viewerRole === "driver";
+  const navigationUrl = allowNavigate ? getGoogleMapsNavigateUrl(stop.location) : "";
   const legLabel = stop.hasCoordinates && stop.legKm !== null
     ? `${stop.legKm.toFixed(1)} km leg`
     : "Coordinates pending";
 
   return `
-    <article class="stop-card">
+    <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}">
       <div class="stop-header">
         <div>
           <p class="eyebrow">Stop ${index + 1}</p>
@@ -4584,31 +4846,68 @@ function renderStopCard(stop, index, viewerRole) {
           <p class="stop-address">${escapeHtml(stop.location.address)}</p>
         </div>
         <div class="chip-row">
+          ${stop.isPriority ? '<span class="chip chip-priority-high">Priority stop</span>' : ""}
           <span class="chip">${legLabel}</span>
           <span class="chip">${stop.orders.length} entr${stop.orders.length === 1 ? "y" : "ies"}</span>
         </div>
       </div>
+      ${
+        navigationUrl
+          ? `
+            <div class="action-row stop-actions">
+              <a
+                class="button button-primary"
+                href="${escapeHtml(navigationUrl)}"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Navigate
+              </a>
+            </div>
+          `
+          : ""
+      }
       <div class="stop-orders">
         ${stop.orders
-          .map(
-            (order) => `
-              <div class="order-card">
+          .map((order) => {
+            const isFlagging = state.flaggingOrderId === order.id;
+            const canFlag = allowFlag && order.status === "active";
+            const isPriority = isPriorityOrder(order);
+
+            return `
+              <div class="order-card${isPriority ? " order-card-priority" : ""}">
                 <strong>${escapeHtml(order.reference)}</strong>
                 <div class="order-meta">
                   ${getReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
                 </div>
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
+                  ${renderOrderPriorityChip(order)}
                   ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
+                  ${renderOrderFlagChip(order)}
                   <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
                   ${renderStatusChip(order.status)}
                 </div>
                 ${renderOrderNotice(order)}
                 <p>${escapeHtml(order.locationName || stop.location.name)}<br>${escapeHtml(order.locationAddress || stop.location.address)}</p>
                 ${
-                  allowComplete || allowDelete
+                  allowComplete || allowDelete || canFlag || allowPriority
                     ? `
                       <div class="action-row">
+                        ${
+                          allowPriority
+                            ? `
+                              <button
+                                class="button ${isPriority ? "button-secondary" : "button-primary"}"
+                                data-action="toggle-order-priority"
+                                data-order-id="${order.id}"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                ${isPriority ? "Clear priority" : "Make priority"}
+                              </button>
+                            `
+                            : ""
+                        }
                         ${
                           allowComplete
                             ? `
@@ -4619,9 +4918,23 @@ function renderStopCard(stop, index, viewerRole) {
                             : ""
                         }
                         ${
+                          canFlag
+                            ? `
+                              <button
+                                class="button button-ghost"
+                                data-action="toggle-order-flag"
+                                data-order-id="${order.id}"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                ${isFlagging ? "Cancel flag" : order.driverFlagType ? "Update flag" : "Flag issue"}
+                              </button>
+                            `
+                            : ""
+                        }
+                        ${
                           allowDelete
                             ? `
-                              <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}"${state.busy ? " disabled" : ""}>
+                              <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(order.reference)}"${state.busy ? " disabled" : ""}>
                                 Delete
                               </button>
                             `
@@ -4631,9 +4944,10 @@ function renderStopCard(stop, index, viewerRole) {
                     `
                     : ""
                 }
+                ${isFlagging ? renderOrderFlagForm(order) : ""}
               </div>
-            `,
-          )
+            `;
+          })
           .join("")}
       </div>
     </article>
@@ -4647,6 +4961,123 @@ function renderTypeChip(entryType) {
 function renderStatusChip(status) {
   const statusClass = status === "completed" ? "chip-success" : "chip-type";
   return `<span class="chip ${statusClass}">${capitalize(status || "active")}</span>`;
+}
+
+function getGoogleMapsNavigateUrl(location) {
+  const destination = getStopNavigationDestination(location);
+  if (!destination) {
+    return "";
+  }
+
+  const params = new URLSearchParams({
+    api: "1",
+    destination,
+    travelmode: "driving",
+    dir_action: "navigate",
+  });
+
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+function getStopNavigationDestination(location) {
+  const coordinates = getCoordinates(location);
+  if (coordinates) {
+    return `${coordinates.lat},${coordinates.lng}`;
+  }
+
+  const name = String(location?.name || "").trim();
+  const address = String(location?.address || "").trim();
+  return [name, address].filter(Boolean).join(", ");
+}
+
+function getOrderPriority(order) {
+  const priority = String(order?.priority || DEFAULT_ORDER_PRIORITY).trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(ORDER_PRIORITY_LEVELS, priority) ? priority : DEFAULT_ORDER_PRIORITY;
+}
+
+function getOrderPriorityRank(order) {
+  return ORDER_PRIORITY_LEVELS[getOrderPriority(order)] ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY];
+}
+
+function isPriorityOrder(order) {
+  return getOrderPriority(order) === PRIORITY_STOP_VALUE;
+}
+
+function renderOrderPriorityChip(order) {
+  return isPriorityOrder(order) ? '<span class="chip chip-priority-high">Priority stop</span>' : "";
+}
+
+function renderOrderFlagChip(order) {
+  const label = getOrderFlagLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  return `<span class="chip chip-warning">Follow-up: ${escapeHtml(label)}</span>`;
+}
+
+function renderOrderFlagForm(order) {
+  const hasFlag = Boolean(getOrderFlagLabel(order));
+  const savedAt = formatDateTime(order?.driverFlaggedAt);
+  const savedBy = String(order?.driverFlaggedByName || "").trim();
+  const detailParts = [];
+
+  if (hasFlag) {
+    detailParts.push(`Current flag: ${getOrderFlagLabel(order)}.`);
+    if (savedAt || savedBy) {
+      detailParts.push(`Last updated ${[savedAt, savedBy ? `by ${savedBy}` : ""].filter(Boolean).join(" ")}.`);
+    }
+  } else {
+    detailParts.push("Choose what happened at this stop and add any note the office should see.");
+  }
+
+  return `
+    <form class="order-flag-form" data-form="flag-order">
+      <input name="orderId" type="hidden" value="${escapeHtml(order.id)}">
+      <label>
+        Follow-up reason
+        <select name="flagType" required>
+          ${renderOrderFlagTypeOptions(order?.driverFlagType || "")}
+        </select>
+      </label>
+      <label>
+        Driver note
+        <textarea name="flagNote" placeholder="What happened at this stop?">${escapeHtml(order?.driverFlagNote || "")}</textarea>
+      </label>
+      <p class="field-note">${escapeHtml(detailParts.join(" "))}</p>
+      <div class="action-row">
+        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+          ${hasFlag ? "Save follow-up" : "Log follow-up"}
+        </button>
+        <button type="button" class="button button-ghost" data-action="cancel-order-flag"${state.busy ? " disabled" : ""}>
+          Cancel
+        </button>
+        ${
+          hasFlag
+            ? `
+              <button
+                type="button"
+                class="button button-secondary"
+                data-action="clear-order-flag"
+                data-order-id="${order.id}"
+                ${state.busy ? " disabled" : ""}
+              >
+                Clear flag
+              </button>
+            `
+            : ""
+        }
+      </div>
+    </form>
+  `;
+}
+
+function renderOrderFlagTypeOptions(selectedFlagType = "") {
+  return Object.entries(ORDER_FLAG_LABELS)
+    .map(
+      ([value, label]) => `<option value="${value}"${value === selectedFlagType ? " selected" : ""}>${escapeHtml(label)}</option>`,
+    )
+    .join("");
 }
 
 function renderMoveToFactoryValue(order) {
@@ -4674,6 +5105,10 @@ function renderSupplierOptions() {
   return state.snapshot.suppliers
     .map((supplier) => `<option value="${supplier.id}">${escapeHtml(supplier.name)}</option>`)
     .join("");
+}
+
+function getFactoryLocations() {
+  return state.snapshot.locations.filter((location) => ["factory", "both"].includes(location.locationType));
 }
 
 function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
@@ -4706,6 +5141,60 @@ function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
       ),
     )
     .join("");
+}
+
+function getAssignmentDriverFilterOptions() {
+  const counts = new Map();
+  let unassignedCount = 0;
+
+  getActiveOrders().forEach((order) => {
+    if (order.driverUserId) {
+      counts.set(order.driverUserId, (counts.get(order.driverUserId) || 0) + 1);
+    } else {
+      unassignedCount += 1;
+    }
+  });
+
+  const drivers = getDriverUsers()
+    .slice()
+    .sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "en-ZA"));
+
+  return {
+    totalCount: getActiveOrders().length,
+    unassignedCount,
+    options: drivers.map((driver) => ({
+      id: driver.id,
+      name: driver.active ? driver.name : `${driver.name} (inactive)`,
+      count: counts.get(driver.id) || 0,
+    })),
+  };
+}
+
+function renderAssignmentFilterOptions(selectedDriverId = "") {
+  const { totalCount, unassignedCount, options } = getAssignmentDriverFilterOptions();
+
+  return [
+    `<option value=""${selectedDriverId ? "" : " selected"}>All drivers (${totalCount})</option>`,
+    `<option value="unassigned"${selectedDriverId === "unassigned" ? " selected" : ""}>Unassigned (${unassignedCount})</option>`,
+    ...options.map(
+      (driver) => `<option value="${driver.id}"${driver.id === selectedDriverId ? " selected" : ""}>${escapeHtml(driver.name)} (${driver.count})</option>`,
+    ),
+  ].join("");
+}
+
+function renderFactoryLocationOptions(selectedLocationId = "") {
+  const factories = getFactoryLocations();
+  if (!factories.length) {
+    return '<option value="">Create a factory location first</option>';
+  }
+
+  return [
+    `<option value=""${selectedLocationId ? "" : " selected"}>Select a factory</option>`,
+    ...factories.map((location) => {
+      const typeLabel = location.locationType === "both" ? " (Both)" : "";
+      return `<option value="${location.id}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(location.name)}${typeLabel}</option>`;
+    }),
+  ].join("");
 }
 
 function renderStockItemOptions(selectedStockItemId = "") {
@@ -4769,6 +5258,10 @@ function getLocation(locationId) {
   return state.snapshot.locations.find((location) => location.id === locationId) || null;
 }
 
+function getOrder(orderId) {
+  return state.snapshot.orders.find((order) => order.id === orderId) || null;
+}
+
 function getSupplier(supplierId) {
   return state.snapshot.suppliers.find((supplier) => supplier.id === supplierId) || null;
 }
@@ -4791,6 +5284,41 @@ function getActiveOrders() {
 
 function getUnassignedActiveOrders() {
   return getActiveOrders().filter((order) => !order.driverUserId);
+}
+
+function getFilteredAssignmentOrders() {
+  const filterValue = String(state.assignmentDriverFilter || "").trim();
+  const activeOrders = getActiveOrders();
+
+  if (!filterValue) {
+    return activeOrders.sort(orderAssignmentSort);
+  }
+
+  if (filterValue === "unassigned") {
+    return activeOrders.filter((order) => !order.driverUserId).sort(orderAssignmentSort);
+  }
+
+  return activeOrders.filter((order) => order.driverUserId === filterValue).sort(orderAssignmentSort);
+}
+
+function getAssignmentFilterSummary(filteredCount) {
+  const filterValue = String(state.assignmentDriverFilter || "").trim();
+
+  if (!filterValue) {
+    return `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"}. Unassigned work still appears first.`;
+  }
+
+  if (filterValue === "unassigned") {
+    return filteredCount
+      ? `Showing ${filteredCount} unassigned active entr${filteredCount === 1 ? "y" : "ies"}.`
+      : "No unassigned active entries right now.";
+  }
+
+  const driver = getUser(filterValue);
+  const driverName = driver?.name || "that driver";
+  return filteredCount
+    ? `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"} for ${driverName}.`
+    : `No active entries are currently assigned to ${driverName}.`;
 }
 
 function getStockOnHandTotal() {
@@ -4819,6 +5347,111 @@ function getCompletedOrders(driverUserId = "") {
   });
 }
 
+function getRouteOrigin(driverUserId) {
+  const currentUser = state.snapshot.user;
+  if (
+    currentUser
+    && currentUser.role === "driver"
+    && currentUser.id === driverUserId
+    && state.driverRouteOrigin
+  ) {
+    return state.driverRouteOrigin;
+  }
+
+  return HUB;
+}
+
+function getDriverRouteHeading(driverUserId) {
+  return getRouteOrigin(driverUserId).source === "driver"
+    ? "Your location to optimized stop sequence"
+    : "Dispatch hub to optimized stop sequence";
+}
+
+function getDriverRouteAriaLabel(driverUserId) {
+  return getRouteOrigin(driverUserId).source === "driver"
+    ? "Map of your current location and optimized stop sequence"
+    : "Map of the dispatch hub and optimized stop sequence";
+}
+
+function ensureDriverRouteOrigin() {
+  const currentUser = state.snapshot.user;
+  if (
+    !currentUser
+    || currentUser.role !== "driver"
+    || state.driverRouteOrigin
+    || state.driverRouteOriginLoading
+    || state.driverRouteOriginAttempted
+  ) {
+    return;
+  }
+
+  if (!navigator.geolocation) {
+    state.driverRouteOriginAttempted = true;
+    state.driverRouteOriginError = "Driver location is unavailable in this browser, so Johannesburg dispatch is still being used as the route start.";
+    return;
+  }
+
+  state.driverRouteOriginLoading = true;
+  state.driverRouteOriginUserId = currentUser.id;
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const activeUser = state.snapshot.user;
+      if (!activeUser || activeUser.role !== "driver" || activeUser.id !== currentUser.id) {
+        return;
+      }
+
+      state.driverRouteOrigin = {
+        label: `${activeUser.name || "Driver"} location`,
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        source: "driver",
+      };
+      state.driverRouteOriginLoading = false;
+      state.driverRouteOriginAttempted = true;
+      state.driverRouteOriginError = "";
+      state.driverRouteOriginUserId = activeUser.id;
+      render();
+    },
+    (error) => {
+      const activeUser = state.snapshot.user;
+      if (!activeUser || activeUser.role !== "driver" || activeUser.id !== currentUser.id) {
+        return;
+      }
+
+      state.driverRouteOrigin = null;
+      state.driverRouteOriginLoading = false;
+      state.driverRouteOriginAttempted = true;
+      state.driverRouteOriginError = getDriverRouteOriginError(error);
+      state.driverRouteOriginUserId = activeUser.id;
+      render();
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 300000,
+    },
+  );
+}
+
+function getDriverRouteOriginError(error) {
+  if (error && typeof error === "object" && "code" in error) {
+    if (error.code === 1) {
+      return "Location access is off, so Johannesburg dispatch is still being used as the route start.";
+    }
+
+    if (error.code === 2) {
+      return "Your location could not be read, so Johannesburg dispatch is still being used as the route start.";
+    }
+
+    if (error.code === 3) {
+      return "Location lookup timed out, so Johannesburg dispatch is still being used as the route start.";
+    }
+  }
+
+  return "Driver location is unavailable right now, so Johannesburg dispatch is still being used as the route start.";
+}
+
 function countActiveStops() {
   const activeStopKeys = new Set(
     getActiveOrders()
@@ -4843,7 +5476,8 @@ function countDuplicateOrders(driverUserId) {
 function getRoutePlan(driverUserId) {
   const activeOrders = getOrdersForDriver(driverUserId)
     .filter((order) => order.status === "active")
-    .sort(orderDisplaySort);
+    .sort(orderRouteSort);
+  const routeOrigin = getRouteOrigin(driverUserId);
 
   const grouped = new Map();
 
@@ -4863,22 +5497,36 @@ function getRoutePlan(driverUserId) {
         lat: coordinates?.lat ?? null,
         lng: coordinates?.lng ?? null,
         hasCoordinates: Boolean(coordinates),
+        priorityRank: getOrderPriorityRank(order),
+        isPriority: isPriorityOrder(order),
       });
     }
 
-    grouped.get(location.id).orders.push(order);
+    const stop = grouped.get(location.id);
+    stop.orders.push(order);
+    stop.priorityRank = Math.min(stop.priorityRank, getOrderPriorityRank(order));
+    stop.isPriority = stop.isPriority || isPriorityOrder(order);
   });
 
-  const stops = Array.from(grouped.values());
-  const orderedStops = optimizeRoute(stops.filter((stop) => stop.hasCoordinates), {
-    lat: HUB.lat,
-    lng: HUB.lng,
-  });
-  const unroutedStops = stops.filter((stop) => !stop.hasCoordinates);
+  const stops = Array.from(grouped.values()).map((stop) => ({
+    ...stop,
+    orders: [...stop.orders].sort(orderRouteSort),
+  }));
+  const priorityRouteableStops = stops.filter((stop) => stop.hasCoordinates && stop.isPriority);
+  const standardRouteableStops = stops.filter((stop) => stop.hasCoordinates && !stop.isPriority);
+  const priorityOrderedStops = optimizeRoute(priorityRouteableStops, routeOrigin);
+  const standardRouteStart = priorityOrderedStops.length
+    ? priorityOrderedStops[priorityOrderedStops.length - 1]
+    : routeOrigin;
+  const standardOrderedStops = optimizeRoute(standardRouteableStops, standardRouteStart);
+  const routeableStops = priorityOrderedStops.concat(standardOrderedStops);
+  const unroutedStops = stops
+    .filter((stop) => !stop.hasCoordinates)
+    .sort(stopDisplaySort);
 
   const enrichedStops = [];
-  let currentPoint = { lat: HUB.lat, lng: HUB.lng };
-  orderedStops.forEach((stop) => {
+  let currentPoint = routeOrigin;
+  routeableStops.forEach((stop) => {
     enrichedStops.push({
       ...stop,
       legKm: haversineKm(currentPoint, stop),
@@ -4893,8 +5541,10 @@ function getRoutePlan(driverUserId) {
   });
 
   return {
+    origin: routeOrigin,
     totalOrders: activeOrders.length,
-    totalKm: totalRouteDistance(orderedStops, { lat: HUB.lat, lng: HUB.lng }),
+    totalKm: totalRouteDistance(routeableStops, routeOrigin),
+    priorityStopCount: stops.filter((stop) => stop.isPriority).length,
     stops: enrichedStops,
   };
 }
@@ -4985,20 +5635,124 @@ function haversineKm(pointA, pointB) {
 }
 
 function drawDriverRoute(driverUserId) {
-  const canvas = document.getElementById("route-canvas");
-  if (!(canvas instanceof HTMLCanvasElement)) {
-    return;
-  }
-
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return;
-  }
-
   const plan = getRoutePlan(driverUserId);
   const routeableStops = plan.stops.filter((stop) => stop.hasCoordinates);
+  if (drawDriverRouteMap(plan, routeableStops)) {
+    return;
+  }
+
+  drawDriverRouteFallback(plan, routeableStops);
+}
+
+function drawDriverRouteMap(plan, routeableStops) {
+  const Leaflet = window.L;
+  const mapEl = document.getElementById("route-map");
+  const canvas = document.getElementById("route-canvas");
+  const routeOrigin = plan.origin || HUB;
+
+  if (!Leaflet || !(mapEl instanceof HTMLElement)) {
+    return false;
+  }
+
+  mapEl.classList.remove("hidden");
+  if (canvas instanceof HTMLCanvasElement) {
+    canvas.classList.add("hidden");
+  }
+
+  if (routeMap && routeMapContainer !== mapEl) {
+    destroyDriverRouteMap();
+  }
+
+  if (!routeMap) {
+    routeMap = Leaflet.map(mapEl, {
+      zoomControl: true,
+      scrollWheelZoom: false,
+    });
+    routeMapContainer = mapEl;
+    Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(routeMap);
+    routeMapLayers = Leaflet.layerGroup().addTo(routeMap);
+  } else if (!routeMapLayers) {
+    routeMapLayers = Leaflet.layerGroup().addTo(routeMap);
+    routeMapContainer = mapEl;
+  }
+
+  routeMapLayers.clearLayers();
+
+  const bounds = [[routeOrigin.lat, routeOrigin.lng]];
+  const routePoints = [[routeOrigin.lat, routeOrigin.lng]];
+
+  if (routeableStops.length) {
+    routeableStops.forEach((stop) => {
+      routePoints.push([stop.lat, stop.lng]);
+      bounds.push([stop.lat, stop.lng]);
+    });
+
+    Leaflet.polyline(routePoints, {
+      color: "#155e52",
+      weight: 4,
+      opacity: 0.82,
+    }).addTo(routeMapLayers);
+  }
+
+  Leaflet.marker([routeOrigin.lat, routeOrigin.lng], {
+    icon: buildDriverRouteMarkerIcon("H", true),
+  })
+    .addTo(routeMapLayers)
+    .bindPopup(buildDriverRouteOriginPopup(plan));
+
+  routeableStops.forEach((stop, index) => {
+    Leaflet.marker([stop.lat, stop.lng], {
+      icon: buildDriverRouteMarkerIcon(String(index + 1), false),
+    })
+      .addTo(routeMapLayers)
+      .bindPopup(buildDriverRouteStopPopup(stop, index));
+  });
+
+  if (bounds.length > 1) {
+    routeMap.fitBounds(bounds, { padding: [36, 36] });
+  } else {
+    routeMap.setView([routeOrigin.lat, routeOrigin.lng], routeOrigin.source === "driver" ? 11 : 9);
+  }
+
+  setDriverRouteStatus(getDriverRouteStatus(plan, routeableStops));
+  window.requestAnimationFrame(() => {
+    routeMap?.invalidateSize();
+  });
+
+  return true;
+}
+
+function drawDriverRouteFallback(plan, routeableStops) {
+  const canvas = document.getElementById("route-canvas");
+  const mapEl = document.getElementById("route-map");
+  const routeOrigin = plan.origin || HUB;
+  const statusParts = [];
+  if (!window.L) {
+    statusParts.push("Live map unavailable right now, so the route sketch fallback is shown instead.");
+  }
+  statusParts.push(getDriverRouteStatus(plan, routeableStops));
+  const fallbackStatus = statusParts.filter(Boolean).join(" ");
+
+  if (mapEl instanceof HTMLElement) {
+    mapEl.classList.add("hidden");
+  }
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    setDriverRouteStatus(fallbackStatus);
+    return;
+  }
+
+  canvas.classList.remove("hidden");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    setDriverRouteStatus(fallbackStatus);
+    return;
+  }
+
   const points = [
-    { label: HUB.label, lat: HUB.lat, lng: HUB.lng, isHub: true },
+    { label: routeOrigin.label, lat: routeOrigin.lat, lng: routeOrigin.lng, isHub: true },
     ...routeableStops.map((stop, index) => ({
       label: `${index + 1}. ${stop.location.name}`,
       lat: stop.lat,
@@ -5015,6 +5769,7 @@ function drawDriverRoute(driverUserId) {
     context.fillStyle = "#5b665e";
     context.font = "16px Trebuchet MS";
     context.fillText("No mapped route to draw yet.", 32, 40);
+    setDriverRouteStatus(fallbackStatus);
     return;
   }
 
@@ -5073,6 +5828,111 @@ function drawDriverRoute(driverUserId) {
     context.font = "14px Trebuchet MS";
     context.fillText("Stops without coordinates are excluded from the map.", 32, canvas.height - 24);
   }
+
+  setDriverRouteStatus(fallbackStatus);
+}
+
+function destroyDriverRouteMap() {
+  if (routeMap) {
+    routeMap.remove();
+  }
+  routeMap = null;
+  routeMapContainer = null;
+  routeMapLayers = null;
+}
+
+function setDriverRouteStatus(message) {
+  const statusEl = document.getElementById("route-map-status");
+  if (!(statusEl instanceof HTMLElement)) {
+    return;
+  }
+
+  statusEl.textContent = message || "";
+  statusEl.classList.toggle("hidden", !message);
+}
+
+function getDriverRouteStatus(plan, routeableStops) {
+  const originMessage = getDriverRouteOriginStatus(plan.origin);
+  const priorityMessage = plan.priorityStopCount
+    ? `${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? " is" : "s are"} highlighted first when coordinates are available.`
+    : "";
+  if (!plan.stops.length) {
+    return [originMessage, priorityMessage, "No active entries are assigned to you right now."].filter(Boolean).join(" ");
+  }
+
+  const missingCoordinatesCount = plan.stops.length - routeableStops.length;
+  if (!routeableStops.length) {
+    return [originMessage, priorityMessage, "These stops still need coordinates before they can appear on the live map."].filter(Boolean).join(" ");
+  }
+
+  if (missingCoordinatesCount) {
+    return [
+      originMessage,
+      priorityMessage,
+      `${missingCoordinatesCount} stop${missingCoordinatesCount === 1 ? "" : "s"} without coordinates ${missingCoordinatesCount === 1 ? "is" : "are"} excluded from the mapped route.`,
+    ].filter(Boolean).join(" ");
+  }
+
+  return [
+    originMessage,
+    priorityMessage,
+    `Numbered markers follow the optimized stop order from the ${plan.origin?.source === "driver" ? "driver location" : "dispatch hub"}.`,
+  ].filter(Boolean).join(" ");
+}
+
+function buildDriverRouteMarkerIcon(label, isHub) {
+  const Leaflet = window.L;
+  return Leaflet.divIcon({
+    className: "route-map-marker-shell",
+    html: `<span class="route-map-marker ${isHub ? "route-map-marker-hub" : "route-map-marker-stop"}">${escapeHtml(label)}</span>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -18],
+  });
+}
+
+function getDriverRouteOriginStatus(routeOrigin) {
+  if (routeOrigin?.source === "driver") {
+    return "Route starts from the driver's current location.";
+  }
+
+  return state.driverRouteOriginError || "";
+}
+
+function buildDriverRouteOriginPopup(plan) {
+  const routeOrigin = plan.origin || HUB;
+  const stopLabel = `${plan.stops.length} stop${plan.stops.length === 1 ? "" : "s"}`;
+  const totalKmLabel = plan.totalKm ? `${plan.totalKm.toFixed(1)} km planned` : "Route starts here";
+  return `
+    <div class="route-map-popup">
+      <p class="eyebrow">${escapeHtml(routeOrigin.source === "driver" ? "Driver location" : "Dispatch hub")}</p>
+      <h4>${escapeHtml(routeOrigin.label)}</h4>
+      <p>${escapeHtml(stopLabel)}</p>
+      <p class="muted">${escapeHtml(totalKmLabel)}</p>
+    </div>
+  `;
+}
+
+function buildDriverRouteStopPopup(stop, index) {
+  const entryLabel = `${stop.orders.length} entr${stop.orders.length === 1 ? "y" : "ies"}`;
+  const references = stop.orders
+    .map((order) => order.reference)
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+  const extraReferences = stop.orders.length > 3 ? ` +${stop.orders.length - 3} more` : "";
+  const legLabel = stop.legKm != null ? `${stop.legKm.toFixed(1)} km from the previous stop` : "Coordinates pending";
+
+  return `
+    <div class="route-map-popup">
+      <p class="eyebrow">Stop ${escapeHtml(String(index + 1))}</p>
+      <h4>${escapeHtml(stop.location.name)}</h4>
+      <p>${escapeHtml(stop.location.address || "Address not set")}</p>
+      <p>${escapeHtml(entryLabel)}</p>
+      ${references ? `<p class="muted">Refs: ${escapeHtml(references)}${escapeHtml(extraReferences)}</p>` : ""}
+      <p class="muted">${escapeHtml(legLabel)}</p>
+    </div>
+  `;
 }
 
 function orderDisplaySort(left, right) {
@@ -5089,6 +5949,15 @@ function orderDisplaySort(left, right) {
   return right.createdAt.localeCompare(left.createdAt);
 }
 
+function orderRouteSort(left, right) {
+  const priorityCompare = getOrderPriorityRank(left) - getOrderPriorityRank(right);
+  if (priorityCompare) {
+    return priorityCompare;
+  }
+
+  return orderDisplaySort(left, right);
+}
+
 function orderAssignmentSort(left, right) {
   const leftAssigned = Boolean(left.driverUserId);
   const rightAssigned = Boolean(right.driverUserId);
@@ -5097,6 +5966,18 @@ function orderAssignmentSort(left, right) {
   }
 
   return orderDisplaySort(left, right);
+}
+
+function stopDisplaySort(left, right) {
+  const priorityCompare = (left.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY])
+    - (right.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY]);
+  if (priorityCompare) {
+    return priorityCompare;
+  }
+
+  const leftName = String(left?.location?.name || "").toLowerCase();
+  const rightName = String(right?.location?.name || "").toLowerCase();
+  return leftName.localeCompare(rightName);
 }
 
 function getPaginationData(items, pageKey, pageSize) {
@@ -5302,8 +6183,13 @@ function renderOrderNotice(order, emptyLabel = "") {
 function getOrderNoticeLines(order) {
   const lines = [];
   const notice = String(order?.notes || "").trim();
+  const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
   const rolloverNotice = getRolloverNoticeText(order);
+
+  if (driverFlag) {
+    lines.push(driverFlag);
+  }
 
   if (notice) {
     lines.push(notice);
@@ -5324,8 +6210,43 @@ function getOrderNoticeText(order) {
   return getOrderNoticeLines(order).join(" | ");
 }
 
+function getOrderFlagLabel(order) {
+  return getOrderFlagTypeLabel(order?.driverFlagType);
+}
+
+function getOrderFlagTypeLabel(flagType) {
+  return ORDER_FLAG_LABELS[String(flagType || "").trim()] || "";
+}
+
+function getOrderFlagNoticeText(order) {
+  const label = getOrderFlagLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  const note = String(order?.driverFlagNote || "").trim();
+  const flaggedAt = formatDateTime(order?.driverFlaggedAt);
+  const flaggedBy = String(order?.driverFlaggedByName || "").trim();
+  const parts = [`Driver follow-up: ${label}.`];
+
+  if (note) {
+    parts.push(note);
+  }
+
+  if (flaggedAt || flaggedBy) {
+    parts.push(`Logged ${[flaggedAt, flaggedBy ? `by ${flaggedBy}` : ""].filter(Boolean).join(" ")}.`);
+  }
+
+  return parts.join(" ");
+}
+
 function getMoveToFactoryLabel(order) {
-  return order?.moveToFactory ? "Yes" : "";
+  if (!order?.moveToFactory) {
+    return "";
+  }
+
+  const destinationName = String(order?.factoryDestinationName || "").trim();
+  return destinationName ? `Yes: ${destinationName}` : "Yes";
 }
 
 function getMoveToFactoryText(order) {
@@ -5334,7 +6255,10 @@ function getMoveToFactoryText(order) {
     return "";
   }
 
-  return "Move collected stock to a factory.";
+  const destinationName = String(order?.factoryDestinationName || "").trim();
+  return destinationName
+    ? `Move collected stock to ${destinationName}.`
+    : "Move collected stock to a factory.";
 }
 
 function getDriverDisplayName(order) {
@@ -5369,20 +6293,37 @@ function getRolloverNoticeText(order) {
 function syncMoveToFactoryField(form) {
   const entryTypeField = form.querySelector('[name="entryType"]');
   const moveToFactoryField = form.querySelector('[name="moveToFactory"]');
+  const destinationField = form.querySelector("[data-move-to-factory-destination]");
+  const destinationSelect = form.querySelector('[name="factoryDestinationLocationId"]');
   const noteEl = form.querySelector("[data-move-to-factory-note]");
 
   if (
     !(entryTypeField instanceof HTMLSelectElement)
     || !(moveToFactoryField instanceof HTMLInputElement)
+    || !(destinationField instanceof HTMLElement)
+    || !(destinationSelect instanceof HTMLSelectElement)
     || !(noteEl instanceof HTMLElement)
   ) {
     return;
   }
 
   const isCollection = entryTypeField.value === "collection";
+  const hasFactoryOptions = Array.from(destinationSelect.options).some((option) => option.value);
   moveToFactoryField.disabled = !isCollection;
   if (!isCollection) {
     moveToFactoryField.checked = false;
+    destinationSelect.value = "";
+  }
+
+  const showDestination = isCollection && moveToFactoryField.checked;
+  destinationField.classList.toggle("hidden", !showDestination);
+  destinationSelect.required = showDestination;
+
+  if (!showDestination) {
+    noteEl.textContent = isCollection
+      ? "Check this when the collected stock must be moved to a factory."
+      : "Switch the entry type to Collection to enable factory transfer.";
+    return;
   }
 
   if (!isCollection) {
@@ -5390,7 +6331,9 @@ function syncMoveToFactoryField(form) {
     return;
   }
 
-  noteEl.textContent = "Check this when the collected stock must be moved to a factory.";
+  noteEl.textContent = hasFactoryOptions
+    ? "Select which factory the collected stock should go to."
+    : "No factory destinations are available yet. Add a factory or Both location first.";
 }
 
 function syncStockMovementFields(form) {

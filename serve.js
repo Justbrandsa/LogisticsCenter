@@ -91,9 +91,12 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
+      "p_factory_destination_location_id",
     ],
   },
   assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
+  set_order_priority: { params: ["p_token", "p_order_id", "p_priority"] },
+  set_order_flag: { params: ["p_token", "p_order_id", "p_flag_type", "p_note"] },
   complete_order: { params: ["p_token", "p_order_id"] },
   delete_order: { params: ["p_token", "p_order_id"] },
 });
@@ -727,8 +730,13 @@ function buildOrdersCsv(orders) {
 function buildOrderNoticeText(order) {
   const lines = [];
   const notice = String(order?.notes || "").trim();
+  const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
   const carryOverCount = Number(order?.carryOverCount || 0);
+
+  if (driverFlag) {
+    lines.push(driverFlag);
+  }
 
   if (notice) {
     lines.push(notice);
@@ -753,8 +761,44 @@ function buildOrderNoticeText(order) {
   return lines.join(" | ");
 }
 
+function getOrderFlagNoticeText(order) {
+  const label = getOrderFlagLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  const note = String(order?.driverFlagNote || "").trim();
+  const flaggedAt = String(order?.driverFlaggedAt || "").trim();
+  const flaggedBy = String(order?.driverFlaggedByName || "").trim();
+  const parts = [`Driver follow-up: ${label}.`];
+
+  if (note) {
+    parts.push(note);
+  }
+
+  if (flaggedAt || flaggedBy) {
+    parts.push(`Logged ${[flaggedAt, flaggedBy ? `by ${flaggedBy}` : ""].filter(Boolean).join(" ")}.`);
+  }
+
+  return parts.join(" ");
+}
+
+function getOrderFlagLabel(order) {
+  const labels = {
+    not_collected: "Not collected",
+    not_ready: "Not yet ready",
+  };
+
+  return labels[String(order?.driverFlagType || "").trim()] || "";
+}
+
 function getMoveToFactoryLabel(order) {
-  return order?.moveToFactory ? "Yes" : "";
+  if (!order?.moveToFactory) {
+    return "";
+  }
+
+  const destinationName = String(order?.factoryDestinationName || "").trim();
+  return destinationName ? `Yes: ${destinationName}` : "Yes";
 }
 
 function getMoveToFactoryText(order) {
@@ -763,7 +807,10 @@ function getMoveToFactoryText(order) {
     return "";
   }
 
-  return "Move collected stock to a factory.";
+  const destinationName = String(order?.factoryDestinationName || "").trim();
+  return destinationName
+    ? `Move collected stock to ${destinationName}.`
+    : "Move collected stock to a factory.";
 }
 
 async function sendViaMicrosoftGraph(config, message) {
