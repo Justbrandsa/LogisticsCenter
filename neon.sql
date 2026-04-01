@@ -192,6 +192,8 @@ create table if not exists private.orders (
   created_by_user_id uuid not null references private.app_users(id) on delete restrict,
   created_at timestamptz not null default now(),
   completed_at timestamptz,
+  completion_type text,
+  completed_by_user_id uuid references private.app_users(id) on delete set null,
   updated_at timestamptz not null default now()
 );
 
@@ -206,6 +208,8 @@ alter table private.orders add column if not exists driver_flagged_at timestampt
 alter table private.orders add column if not exists driver_flagged_by_user_id uuid references private.app_users(id) on delete set null;
 alter table private.orders add column if not exists move_to_factory boolean;
 alter table private.orders add column if not exists factory_destination_location_id uuid;
+alter table private.orders add column if not exists completion_type text;
+alter table private.orders add column if not exists completed_by_user_id uuid references private.app_users(id) on delete set null;
 
 update private.orders
 set entry_type = 'delivery'
@@ -242,6 +246,19 @@ update private.orders
 set driver_flag_note = ''
 where driver_flag_note is null;
 
+update private.orders
+set completion_type = case
+      when move_to_factory then 'factory'
+      else 'office'
+    end
+where status = 'completed'
+  and completion_type is null;
+
+update private.orders
+set completion_type = null,
+    completed_by_user_id = null
+where status <> 'completed';
+
 alter table private.orders alter column driver_user_id drop not null;
 alter table private.orders alter column entry_type set default 'delivery';
 alter table private.orders alter column factory_order_number set default '';
@@ -271,6 +288,13 @@ alter table private.orders
 alter table private.orders
   add constraint orders_driver_flag_type_check
   check (driver_flag_type in ('not_collected', 'not_ready') or driver_flag_type is null);
+
+alter table private.orders
+  drop constraint if exists orders_completion_type_check;
+
+alter table private.orders
+  add constraint orders_completion_type_check
+  check (completion_type in ('office', 'factory') or completion_type is null);
 
 create index if not exists orders_driver_scheduled_idx
   on private.orders (driver_user_id, scheduled_for);
@@ -352,6 +376,44 @@ create index if not exists stock_movements_item_created_idx
 
 create index if not exists stock_movements_driver_created_idx
   on private.stock_movements (driver_user_id, created_at desc);
+
+with seedable_stock_items as (
+  select
+    s.id,
+    regexp_replace(lower(btrim(s.unit)), '\s*units?$', '')::integer as quantity,
+    s.created_by_user_id,
+    s.created_at
+  from private.stock_items s
+  where lower(btrim(s.unit)) ~ '^\d+\s*(unit|units)?$'
+    and not exists (
+      select 1
+      from private.stock_movements m
+      where m.stock_item_id = s.id
+    )
+)
+insert into private.stock_movements (
+  stock_item_id,
+  movement_type,
+  quantity,
+  supplier_name,
+  notes,
+  created_by_user_id,
+  created_at
+)
+select
+  id,
+  'in',
+  quantity,
+  'Opening stock',
+  'Opening stock backfilled from the item unit value.',
+  created_by_user_id,
+  created_at
+from seedable_stock_items
+where quantity > 0;
+
+update private.stock_items
+set unit = 'units'
+where lower(btrim(unit)) ~ '^\d+\s*(unit|units)?$';
 
 create table if not exists private.artwork_requests (
   id uuid primary key default public.gen_random_uuid(),
@@ -736,7 +798,7 @@ begin
     )
     into v_users
     from private.app_users u;
-  elsif v_actor.role in ('sales', 'logistics') then
+  elsif v_actor.role in ('sales', 'logistics', 'driver') then
     select coalesce(
       jsonb_agg(private.build_user_json(u) order by lower(u.name)),
       '[]'::jsonb
@@ -819,6 +881,9 @@ begin
           'driverFlaggedAt', o.driver_flagged_at,
           'driverFlaggedByUserId', o.driver_flagged_by_user_id,
           'driverFlaggedByName', coalesce(g.name, ''),
+          'completionType', o.completion_type,
+          'completedByUserId', o.completed_by_user_id,
+          'completedByName', coalesce(h.name, ''),
           'status', o.status,
           'scheduledFor', o.scheduled_for,
           'originalScheduledFor', o.original_scheduled_for,
@@ -842,6 +907,7 @@ begin
     join private.locations l on l.id = o.location_id
     left join private.locations f on f.id = o.factory_destination_location_id
     left join private.app_users g on g.id = o.driver_flagged_by_user_id
+    left join private.app_users h on h.id = o.completed_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     ;
   else
@@ -929,6 +995,9 @@ begin
           'driverFlaggedAt', o.driver_flagged_at,
           'driverFlaggedByUserId', o.driver_flagged_by_user_id,
           'driverFlaggedByName', coalesce(g.name, ''),
+          'completionType', o.completion_type,
+          'completedByUserId', o.completed_by_user_id,
+          'completedByName', coalesce(h.name, ''),
           'status', o.status,
           'scheduledFor', o.scheduled_for,
           'originalScheduledFor', o.original_scheduled_for,
@@ -951,6 +1020,7 @@ begin
     join private.locations l on l.id = o.location_id
     left join private.locations f on f.id = o.factory_destination_location_id
     left join private.app_users g on g.id = o.driver_flagged_by_user_id
+    left join private.app_users h on h.id = o.completed_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     where o.driver_user_id = v_actor.id
     ;
@@ -1567,6 +1637,8 @@ $$;
 
 drop function if exists public.create_stock_item(uuid, text, text, text, text);
 drop function if exists public.create_stock_item(uuid, text, text, text, text, text, text, text);
+drop function if exists public.create_stock_item(uuid, text, text, text, text, text, text, text, text);
+drop function if exists public.create_stock_item(uuid, text, text, text, text, text, text, text, integer, text);
 
 create or replace function public.create_stock_item(
   p_token uuid,
@@ -1577,6 +1649,7 @@ create or replace function public.create_stock_item(
   p_sales_order_number text default null,
   p_po_number text default null,
   p_unit text default null,
+  p_initial_quantity integer default null,
   p_notes text default null
 )
 returns jsonb
@@ -1593,7 +1666,9 @@ declare
   v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_unit text := coalesce(nullif(btrim(p_unit), ''), 'units');
+  v_initial_quantity integer := coalesce(p_initial_quantity, 0);
   v_notes text := coalesce(nullif(btrim(p_notes), ''), '');
+  v_stock_item_id uuid;
 begin
   v_actor := private.require_user(p_token);
 
@@ -1607,6 +1682,10 @@ begin
 
   if v_quote_number is null then
     raise exception 'Quote number is required.';
+  end if;
+
+  if v_initial_quantity <= 0 then
+    raise exception 'Opening stock quantity must be greater than zero.';
   end if;
 
   if exists (
@@ -1647,9 +1726,27 @@ begin
     v_unit,
     v_notes,
     v_actor.id
+  )
+  returning id into v_stock_item_id;
+
+  insert into private.stock_movements (
+    stock_item_id,
+    movement_type,
+    quantity,
+    supplier_name,
+    notes,
+    created_by_user_id
+  )
+  values (
+    v_stock_item_id,
+    'in',
+    v_initial_quantity,
+    'Opening stock',
+    'Opening stock logged when the item was created.',
+    v_actor.id
   );
 
-  return jsonb_build_object('ok', true);
+  return jsonb_build_object('ok', true, 'stockItemId', v_stock_item_id);
 end;
 $$;
 
@@ -2205,7 +2302,7 @@ declare
 begin
   v_actor := private.require_user(p_token);
 
-  if v_actor.role not in ('admin', 'sales') then
+  if v_actor.role not in ('admin', 'sales', 'driver') then
     raise exception 'Permission denied';
   end if;
 
@@ -2220,6 +2317,20 @@ begin
 
   if v_order.status <> 'active' then
     raise exception 'Only active entries can be reassigned.';
+  end if;
+
+  if v_actor.role = 'driver' then
+    if v_order.driver_user_id is distinct from v_actor.id then
+      raise exception 'Drivers can only transfer their own assigned entries.';
+    end if;
+
+    if p_driver_user_id is null then
+      raise exception 'Drivers must transfer the entry to another driver.';
+    end if;
+
+    if p_driver_user_id = v_actor.id then
+      raise exception 'Choose another driver for the transfer.';
+    end if;
   end if;
 
   if p_driver_user_id is not null then
@@ -2247,7 +2358,8 @@ begin
   end if;
 
   update private.orders
-  set driver_user_id = p_driver_user_id
+  set driver_user_id = p_driver_user_id,
+      updated_at = now()
   where id = p_order_id;
 
   return jsonb_build_object('ok', true);
@@ -2357,9 +2469,13 @@ begin
 end;
 $$;
 
+drop function if exists public.complete_order(uuid, uuid);
+drop function if exists public.complete_order(uuid, uuid, text);
+
 create or replace function public.complete_order(
   p_token uuid,
-  p_order_id uuid
+  p_order_id uuid,
+  p_completion_type text default null
 )
 returns jsonb
 language plpgsql
@@ -2369,8 +2485,13 @@ as $$
 declare
   v_actor private.app_users;
   v_order private.orders;
+  v_completion_type text := lower(coalesce(nullif(btrim(p_completion_type), ''), 'office'));
 begin
   v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'driver') then
+    raise exception 'Permission denied';
+  end if;
 
   select *
   into v_order
@@ -2385,9 +2506,23 @@ begin
     raise exception 'Drivers can only complete their own assigned orders.';
   end if;
 
+  if v_order.status = 'completed' then
+    return jsonb_build_object('ok', true);
+  end if;
+
+  if v_completion_type not in ('office', 'factory') then
+    raise exception 'Choose a valid completion action.';
+  end if;
+
+  if v_completion_type = 'factory' and not v_order.move_to_factory then
+    raise exception 'Only factory-transfer entries can be marked as dropped at the factory.';
+  end if;
+
   update private.orders
   set status = 'completed',
       completed_at = now(),
+      completion_type = v_completion_type,
+      completed_by_user_id = v_actor.id,
       driver_flag_type = null,
       driver_flag_note = '',
       driver_flagged_at = null,
@@ -2396,7 +2531,7 @@ begin
   where id = p_order_id
     and status <> 'completed';
 
-  return jsonb_build_object('ok', true);
+  return jsonb_build_object('ok', true, 'completionType', v_completion_type);
 end;
 $$;
 

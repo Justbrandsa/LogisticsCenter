@@ -15,6 +15,10 @@ const ORDER_FLAG_LABELS = Object.freeze({
   not_collected: "Not collected",
   not_ready: "Not yet ready",
 });
+const ORDER_COMPLETION_LABELS = Object.freeze({
+  office: "Dropped at office",
+  factory: "Dropped at factory",
+});
 const DEFAULT_ORDER_PRIORITY = "medium";
 const PRIORITY_STOP_VALUE = "high";
 const ORDER_PRIORITY_LEVELS = Object.freeze({
@@ -77,6 +81,7 @@ const state = {
   stockScannerZoomStep: 0.1,
   assignmentDriverFilter: "",
   flaggingOrderId: "",
+  transferringOrderId: "",
   lastSnapshotRefreshAt: loadLastSnapshotRefreshAt(),
   driverRouteOrigin: null,
   driverRouteOriginLoading: false,
@@ -232,6 +237,7 @@ async function refreshPublicState() {
   state.stockScannerPendingCode = "";
   state.assignmentDriverFilter = "";
   state.flaggingOrderId = "";
+  state.transferringOrderId = "";
   resetDriverRouteOrigin();
   void stopStockScanner();
   render();
@@ -293,6 +299,12 @@ async function refreshSnapshot(options = {}) {
       const flaggedOrder = state.snapshot.orders.find((order) => order.id === state.flaggingOrderId && order.status === "active");
       if (!flaggedOrder) {
         state.flaggingOrderId = "";
+      }
+    }
+    if (state.transferringOrderId) {
+      const transferringOrder = state.snapshot.orders.find((order) => order.id === state.transferringOrderId && order.status === "active");
+      if (!transferringOrder) {
+        state.transferringOrderId = "";
       }
     }
     if (
@@ -876,6 +888,7 @@ async function handleClick(event) {
       return;
     }
 
+    state.transferringOrderId = "";
     state.flaggingOrderId = state.flaggingOrderId === orderId ? "" : orderId;
     render();
     return;
@@ -892,12 +905,43 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "toggle-transfer-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    const orderId = String(button.dataset.orderId || "").trim();
+    const order = getOrder(orderId);
+    if (!order || order.status !== "active" || !getTransferDriverChoices(order).length) {
+      return;
+    }
+
+    state.flaggingOrderId = "";
+    state.transferringOrderId = state.transferringOrderId === orderId ? "" : orderId;
+    render();
+    return;
+  }
+
+  if (action === "cancel-transfer-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    state.transferringOrderId = "";
+    render();
+    return;
+  }
+
+  if (action === "save-transfer-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    await saveOrderTransfer(button, currentUser);
+    return;
+  }
+
   if (action === "complete-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    const completionType = String(button.dataset.completionType || "").trim() || "office";
+    const completionLabel = getOrderCompletionTypeLabel(completionType).toLowerCase() || "completed";
     await runMutation(
       "complete_order",
-      { p_token: sessionToken, p_order_id: button.dataset.orderId },
-      "Order marked as completed.",
+      {
+        p_token: sessionToken,
+        p_order_id: button.dataset.orderId,
+        p_completion_type: completionType,
+      },
+      `Entry marked as ${completionLabel}.`,
     );
+    return;
   }
 
   if (action === "delete-order" && currentUser.role === "admin") {
@@ -1321,6 +1365,49 @@ async function saveOrderAssignment(button, currentUser) {
   );
 }
 
+async function saveOrderTransfer(button, currentUser) {
+  const orderId = String(button.dataset.orderId || "").trim();
+  if (!orderId) {
+    return;
+  }
+
+  const order = getOrder(orderId);
+  if (!order || order.status !== "active") {
+    return;
+  }
+
+  const driverField = document.querySelector(`[data-transfer-driver][data-order-id="${orderId}"]`);
+  if (!(driverField instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const driverUserId = String(driverField.value || "").trim();
+  const selectedLabel = driverField.selectedOptions[0]?.textContent?.trim() || "the selected driver";
+  if (!driverUserId) {
+    showFlash("Select another driver first.", "error");
+    render();
+    return;
+  }
+
+  const ok = await runMutation(
+    "assign_order",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_driver_user_id: driverUserId,
+      p_allow_duplicate: false,
+    },
+    currentUser.role === "driver"
+      ? `Entry transferred to ${selectedLabel}.`
+      : `Entry reassigned to ${selectedLabel}.`,
+  );
+
+  if (ok) {
+    state.transferringOrderId = "";
+    render();
+  }
+}
+
 async function toggleOrderPriority(orderId) {
   if (!orderId) {
     return;
@@ -1407,13 +1494,16 @@ async function clearOrderFlag(orderId) {
 async function createStockItem(formData) {
   const stockItemId = String(formData.get("stockItemId") || "").trim();
   const currentUser = state.snapshot.user;
+  const editingItem = stockItemId ? getStockItemById(stockItemId) : null;
   const name = String(formData.get("name") || "").trim();
   const sku = String(formData.get("sku") || "").trim();
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
   const poNumber = String(formData.get("poNumber") || "").trim();
-  const unit = String(formData.get("unit") || "").trim();
+  const initialQuantityValue = String(formData.get("initialQuantity") || "").trim();
+  const initialQuantity = Number.parseInt(initialQuantityValue, 10);
+  const unitLabel = getStockUnitLabel(editingItem);
   const notes = String(formData.get("notes") || "").trim();
 
   if (stockItemId && currentUser?.role !== "admin") {
@@ -1434,6 +1524,12 @@ async function createStockItem(formData) {
     return;
   }
 
+  if (!stockItemId && (!Number.isInteger(initialQuantity) || initialQuantity <= 0)) {
+    showFlash("Opening stock must be greater than zero.", "error");
+    render();
+    return;
+  }
+
   const ok = await runMutation(
     stockItemId ? "update_stock_item" : "create_stock_item",
     stockItemId
@@ -1446,7 +1542,7 @@ async function createStockItem(formData) {
           p_invoice_number: invoiceNumber,
           p_sales_order_number: salesOrderNumber,
           p_po_number: poNumber,
-          p_unit: unit || "units",
+          p_unit: unitLabel,
           p_notes: notes,
         }
       : {
@@ -1457,7 +1553,8 @@ async function createStockItem(formData) {
           p_invoice_number: invoiceNumber,
           p_sales_order_number: salesOrderNumber,
           p_po_number: poNumber,
-          p_unit: unit || "units",
+          p_unit: unitLabel,
+          p_initial_quantity: initialQuantity,
           p_notes: notes,
         },
     stockItemId ? `Stock item updated: ${name}.` : `Stock item added: ${name}.`,
@@ -1689,6 +1786,19 @@ function getStockMovement(stockMovementId) {
 
 function getEditingStockMovement() {
   return state.editingStockMovementId ? getStockMovement(state.editingStockMovementId) : null;
+}
+
+function getStockUnitLabel(record) {
+  const rawUnit = String(record?.unit || "").trim();
+  if (!rawUnit) {
+    return "units";
+  }
+
+  if (/^\d+(?:\s*units?)?$/i.test(rawUnit)) {
+    return "units";
+  }
+
+  return rawUnit;
 }
 
 function isRecentStockMovement(value, days = STOCK_RECENT_ACTIVITY_DAYS) {
@@ -3318,6 +3428,7 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
 function renderStockItemPanel(viewerRole) {
   const editingItem = viewerRole === "admin" ? getEditingStockItem() : null;
   const isEditing = Boolean(editingItem);
+  const onHandValue = Number(editingItem?.onHandQuantity || 0);
 
   return `
     <article class="panel">
@@ -3327,7 +3438,7 @@ function renderStockItemPanel(viewerRole) {
         ${
           isEditing
             ? "Update the stock master record. Existing movement history stays linked to this item."
-            : "Create the item once with its order references, then log movements and artwork requests against it."
+            : "Create the item once with its opening stock and order references, then log movements and artwork requests against it."
         }
       </p>
       ${
@@ -3371,11 +3482,29 @@ function renderStockItemPanel(viewerRole) {
             Stock code
             <input name="sku" type="text" value="${escapeHtml(editingItem?.sku || "")}" placeholder="SKU-001">
           </label>
-          <label>
-            Unit
-            <input name="unit" type="text" value="${escapeHtml(editingItem?.unit || "units")}">
-          </label>
+          ${
+            isEditing
+              ? `
+                <label>
+                  On hand now
+                  <input type="text" value="${escapeHtml(String(onHandValue))}" disabled>
+                </label>
+              `
+              : `
+                <label>
+                  Opening stock
+                  <input name="initialQuantity" type="number" min="1" step="1" inputmode="numeric" placeholder="0" required>
+                </label>
+              `
+          }
         </div>
+        <p class="field-note">
+          ${
+            isEditing
+              ? "Use the stock movement form to add or remove quantity."
+              : "Adding the item records this quantity as stock in right away."
+          }
+        </p>
         <label>
           Notes
           <textarea name="notes" placeholder="Material, finish, size, or any internal note">${escapeHtml(editingItem?.notes || "")}</textarea>
@@ -3589,7 +3718,6 @@ function renderStockItemsSection(viewerRole) {
               <th>References</th>
               <th>Stock code</th>
               <th>Unit</th>
-              <th>On hand</th>
               <th>Notes</th>
               <th>Updated</th>
               <th>Actions</th>
@@ -3601,7 +3729,7 @@ function renderStockItemsSection(viewerRole) {
                 ? filteredItems.map((item) => renderStockItemRow(item, viewerRole, latestMovementByItemId)).join("")
                 : `
                   <tr>
-                    <td colspan="8">${totalItems ? "No stock items match this search." : "No stock items added yet."}</td>
+                    <td colspan="7">${totalItems ? "No stock items match this search." : "No stock items added yet."}</td>
                   </tr>
                 `
             }
@@ -3676,8 +3804,9 @@ function renderRecentStockActivityColumn({ title, subtitle, emptyLabel, movement
 
 function renderRecentStockActivityEntry(movement) {
   const item = getStockItemById(movement.stockItemId);
+  const unitLabel = getStockUnitLabel(item || movement);
   const onHandLabel = item
-    ? `${Number(item.onHandQuantity || 0)} ${item.unit || movement.unit || "units"} on hand now`
+    ? `${Number(item.onHandQuantity || 0)} ${unitLabel} on hand now`
     : "";
   const referenceSummary = getReferenceLines(movement).join(" | ") || "No order references";
 
@@ -3689,7 +3818,7 @@ function renderRecentStockActivityEntry(movement) {
           <p class="recent-stock-entry-summary">${escapeHtml(referenceSummary)}</p>
         </div>
         <span class="chip ${movement.movementType === "in" ? "chip-success" : "chip-warning"}">
-          ${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}
+          ${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(unitLabel)}
         </span>
       </div>
       <div class="recent-stock-meta">
@@ -4509,7 +4638,10 @@ function renderCompletedOrders(driverUserId) {
                           <td data-label="Reference">${escapeHtml(order.reference)}</td>
                           <td data-label="Order references">${renderReferenceSummary(order)}</td>
                           <td data-label="Type">${renderTypeChip(order.entryType)}</td>
-                          <td data-label="Completed">${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}</td>
+                          <td data-label="Completed">
+                            ${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}<br>
+                            <span class="muted">${escapeHtml(getOrderCompletionLabel(order) || "Completed")}</span>
+                          </td>
                         </tr>
                       `,
                     )
@@ -4786,8 +4918,7 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
       </td>
       <td data-label="References">${renderReferenceSummary(item)}</td>
       <td data-label="Stock code">${escapeHtml(item.sku || "Not set")}</td>
-      <td data-label="Unit">${escapeHtml(item.unit || "units")}</td>
-      <td data-label="On hand">${escapeHtml(String(item.onHandQuantity || 0))}</td>
+      <td data-label="Unit">${escapeHtml(String(item.onHandQuantity || 0))}</td>
       <td data-label="Notes">${escapeHtml(item.notes || "None")}</td>
       <td data-label="Updated">${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
       <td data-label="Actions">
@@ -4805,6 +4936,7 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
   const isEditing = state.editingStockItemId === item.id;
   const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
+  const unitLabel = getStockUnitLabel(item);
   const actions = [];
 
   if (allowDelete) {
@@ -4832,7 +4964,7 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
           ${activityBadge}
         </div>
         <div class="stock-item-mobile-side">
-          <span class="stock-item-mobile-onhand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(item.unit || "units")}</span>
+          <span class="stock-item-mobile-onhand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(unitLabel)}</span>
           <button
             type="button"
             class="button button-ghost stock-item-mobile-toggle"
@@ -4880,6 +5012,7 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
 function renderStockMovementRow(movement, viewerRole) {
   const canEdit = viewerRole === "admin" || viewerRole === "logistics";
   const isEditing = state.editingStockMovementId === movement.id;
+  const unitLabel = getStockUnitLabel(movement);
 
   return `
     <tr>
@@ -4890,7 +5023,7 @@ function renderStockMovementRow(movement, viewerRole) {
         ${renderReferenceSummary(movement)}
       </td>
       <td data-label="Type">${movement.movementType === "in" ? '<span class="chip chip-success">Stock in</span>' : '<span class="chip chip-warning">Stock out</span>'}</td>
-      <td data-label="Quantity">${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(movement.unit || "units")}</td>
+      <td data-label="Quantity">${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(unitLabel)}</td>
       <td data-label="Supplier / driver">${escapeHtml(getStockMovementPartyLabel(movement))}</td>
       <td data-label="Notes">${escapeHtml(movement.notes || "None")}</td>
       <td data-label="Recorded by">${escapeHtml(movement.createdByName || "Unknown")}</td>
@@ -4938,6 +5071,7 @@ function renderStopCard(stop, index, viewerRole) {
   const allowDelete = viewerRole === "admin";
   const allowFlag = viewerRole === "admin" || viewerRole === "driver";
   const allowPriority = viewerRole === "admin";
+  const allowTransfer = viewerRole === "admin" || viewerRole === "driver";
   const allowNavigate = viewerRole === "admin" || viewerRole === "driver";
   const navigationUrl = allowNavigate ? getGoogleMapsNavigateUrl(stop.location) : "";
   const legLabel = stop.hasCoordinates && stop.legKm !== null
@@ -4978,8 +5112,12 @@ function renderStopCard(stop, index, viewerRole) {
         ${stop.orders
           .map((order) => {
             const isFlagging = state.flaggingOrderId === order.id;
+            const isTransferring = state.transferringOrderId === order.id;
             const canFlag = allowFlag && order.status === "active";
+            const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
             const isPriority = isPriorityOrder(order);
+            const canDropAtOffice = allowComplete && order.status === "active";
+            const canDropAtFactory = allowComplete && order.status === "active" && order.moveToFactory;
 
             return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
@@ -5016,10 +5154,45 @@ function renderStopCard(stop, index, viewerRole) {
                             : ""
                         }
                         ${
-                          allowComplete
+                          canTransfer
                             ? `
-                              <button class="button button-secondary" data-action="complete-order" data-order-id="${order.id}"${state.busy ? " disabled" : ""}>
-                                Complete
+                              <button
+                                class="button button-secondary"
+                                data-action="toggle-transfer-order"
+                                data-order-id="${order.id}"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                ${isTransferring ? "Cancel transfer" : "Transfer"}
+                              </button>
+                            `
+                            : ""
+                        }
+                        ${
+                          canDropAtOffice
+                            ? `
+                              <button
+                                class="button button-primary"
+                                data-action="complete-order"
+                                data-order-id="${order.id}"
+                                data-completion-type="office"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                Dropped at office
+                              </button>
+                            `
+                            : ""
+                        }
+                        ${
+                          canDropAtFactory
+                            ? `
+                              <button
+                                class="button button-secondary"
+                                data-action="complete-order"
+                                data-order-id="${order.id}"
+                                data-completion-type="factory"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                Dropped at factory
                               </button>
                             `
                             : ""
@@ -5051,6 +5224,7 @@ function renderStopCard(stop, index, viewerRole) {
                     `
                     : ""
                 }
+                ${isTransferring ? renderOrderTransferForm(order) : ""}
                 ${isFlagging ? renderOrderFlagForm(order) : ""}
               </div>
             `;
@@ -5179,12 +5353,81 @@ function renderOrderFlagForm(order) {
   `;
 }
 
+function renderOrderTransferForm(order) {
+  const transferDrivers = getTransferDriverChoices(order);
+  if (!transferDrivers.length) {
+    return "";
+  }
+
+  const currentDriverName = getDriverDisplayName(order);
+
+  return `
+    <div class="order-flag-form">
+      <label>
+        Transfer to driver
+        <select data-transfer-driver data-order-id="${order.id}">
+          ${transferDrivers.map((driver, index) => `
+            <option value="${driver.id}"${index === 0 ? " selected" : ""}>${escapeHtml(driver.name)}</option>
+          `).join("")}
+        </select>
+      </label>
+      <p class="field-note">
+        Move this active entry from ${escapeHtml(currentDriverName)} to another active driver.
+      </p>
+      <div class="action-row">
+        <button
+          type="button"
+          class="button button-primary"
+          data-action="save-transfer-order"
+          data-order-id="${order.id}"
+          ${state.busy ? " disabled" : ""}
+        >
+          Transfer item
+        </button>
+        <button
+          type="button"
+          class="button button-ghost"
+          data-action="cancel-transfer-order"
+          ${state.busy ? " disabled" : ""}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 function renderOrderFlagTypeOptions(selectedFlagType = "") {
   return Object.entries(ORDER_FLAG_LABELS)
     .map(
       ([value, label]) => `<option value="${value}"${value === selectedFlagType ? " selected" : ""}>${escapeHtml(label)}</option>`,
     )
     .join("");
+}
+
+function getOrderCompletionTypeLabel(completionType) {
+  return ORDER_COMPLETION_LABELS[String(completionType || "").trim()] || "";
+}
+
+function getOrderCompletionLabel(order) {
+  return getOrderCompletionTypeLabel(order?.completionType);
+}
+
+function getOrderCompletionNoticeText(order) {
+  const label = getOrderCompletionLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  const completedAt = formatDateTime(order?.completedAt);
+  const completedBy = String(order?.completedByName || "").trim();
+  const parts = [`Completion: ${label}.`];
+
+  if (completedAt || completedBy) {
+    parts.push(`Logged ${[completedAt, completedBy ? `by ${completedBy}` : ""].filter(Boolean).join(" ")}.`);
+  }
+
+  return parts.join(" ");
 }
 
 function renderMoveToFactoryValue(order) {
@@ -5359,6 +5602,15 @@ function getDriverUsers() {
 
 function getActiveDriverUsers() {
   return getDriverUsers().filter((user) => user.active);
+}
+
+function getTransferDriverChoices(order) {
+  const currentDriverId = String(order?.driverUserId || "").trim();
+  return state.snapshot.users.filter((user) => (
+    user.role === "driver"
+    && user.active
+    && user.id !== currentDriverId
+  ));
 }
 
 function getLocation(locationId) {
@@ -6292,6 +6544,7 @@ function getOrderNoticeLines(order) {
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
+  const completion = getOrderCompletionNoticeText(order);
   const rolloverNotice = getRolloverNoticeText(order);
 
   if (driverFlag) {
@@ -6304,6 +6557,10 @@ function getOrderNoticeLines(order) {
 
   if (moveToFactory) {
     lines.push(moveToFactory);
+  }
+
+  if (completion) {
+    lines.push(completion);
   }
 
   if (rolloverNotice) {

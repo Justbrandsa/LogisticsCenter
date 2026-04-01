@@ -66,7 +66,7 @@ const RPC_DEFINITIONS = Object.freeze({
   },
   delete_location: { params: ["p_token", "p_location_id"] },
   create_stock_item: {
-    params: ["p_token", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
+    params: ["p_token", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_initial_quantity", "p_notes"],
   },
   update_stock_item: {
     params: ["p_token", "p_stock_item_id", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
@@ -98,7 +98,7 @@ const RPC_DEFINITIONS = Object.freeze({
   assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
   set_order_priority: { params: ["p_token", "p_order_id", "p_priority"] },
   set_order_flag: { params: ["p_token", "p_order_id", "p_flag_type", "p_note"] },
-  complete_order: { params: ["p_token", "p_order_id"] },
+  complete_order: { params: ["p_token", "p_order_id", "p_completion_type"] },
   delete_order: { params: ["p_token", "p_order_id"] },
 });
 
@@ -109,6 +109,45 @@ const liveReloadClients = new Set();
 let liveReloadWatcherStarted = false;
 let liveReloadTimer = null;
 let liveReloadPendingFile = "";
+
+function getStockUnitLabel(record) {
+  const rawUnit = String(record?.unit || "").trim();
+  if (!rawUnit) {
+    return "units";
+  }
+
+  if (/^\d+(?:\s*units?)?$/i.test(rawUnit)) {
+    return "units";
+  }
+
+  return rawUnit;
+}
+
+function getOrderCompletionLabel(order) {
+  const labels = {
+    office: "Dropped at office",
+    factory: "Dropped at factory",
+  };
+
+  return labels[String(order?.completionType || "").trim()] || "";
+}
+
+function getOrderCompletionText(order) {
+  const label = getOrderCompletionLabel(order);
+  if (!label) {
+    return "";
+  }
+
+  const completedAt = String(order?.completedAt || "").trim();
+  const completedBy = String(order?.completedByName || "").trim();
+  const parts = [`Completion: ${label}.`];
+
+  if (completedAt || completedBy) {
+    parts.push(`Logged ${[completedAt, completedBy ? `by ${completedBy}` : ""].filter(Boolean).join(" ")}.`);
+  }
+
+  return parts.join(" ");
+}
 
 function startServer() {
   startLiveReloadWatcher();
@@ -482,7 +521,7 @@ function createMailer() {
         `Item: ${stockItem.name}`,
         `SKU: ${stockItem.sku || "Not set"}`,
         `Requested quantity: ${requestedQuantity}`,
-        `Unit: ${stockItem.unit || "units"}`,
+        `Unit: ${getStockUnitLabel(stockItem)}`,
         `Current on hand: ${Number(stockItem.onHandQuantity || 0)}`,
         `Notes: ${notes || "None"}`,
       ].join("\n");
@@ -745,6 +784,7 @@ function buildOrderNoticeText(order) {
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
+  const completion = getOrderCompletionText(order);
   const carryOverCount = Number(order?.carryOverCount || 0);
 
   if (driverFlag) {
@@ -757,6 +797,10 @@ function buildOrderNoticeText(order) {
 
   if (moveToFactory) {
     lines.push(moveToFactory);
+  }
+
+  if (completion) {
+    lines.push(completion);
   }
 
   if (carryOverCount > 0) {
