@@ -33,6 +33,7 @@ const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
+const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const MIME = {
   ".css": "text/css; charset=UTF-8",
   ".html": "text/html; charset=UTF-8",
@@ -221,6 +222,7 @@ async function routeRequest(request, response) {
       const functionName = cleanPath.slice("/api/rpc/".length);
       const payload = await readJsonBody(request);
       const data = await database.call(functionName, payload?.parameters || {});
+      await maybeSendCarryOverEmail(functionName, data);
       sendJson(response, 200, { data });
       return;
     }
@@ -335,6 +337,29 @@ function createDatabase() {
       }
     },
   };
+}
+
+async function maybeSendCarryOverEmail(functionName, payload) {
+  if (!ROLLOVER_EMAIL_FUNCTIONS.has(functionName)) {
+    return;
+  }
+
+  if (!mailer.getStatus().configured) {
+    return;
+  }
+
+  const rollover = functionName === "get_app_snapshot" ? payload?.rollover : payload;
+  const updatedOrders = Number(rollover?.updatedOrders || 0);
+
+  if (updatedOrders <= 0) {
+    return;
+  }
+
+  try {
+    await mailer.sendCarryOverEmail(rollover);
+  } catch (error) {
+    console.error("Failed to send carry-over email.", error);
+  }
 }
 
 function createMailer() {
@@ -489,6 +514,44 @@ function createMailer() {
         sentTo: status.to,
         sentFrom: status.from,
         subject,
+      };
+    },
+    async sendCarryOverEmail(rollover) {
+      if (!status.configured) {
+        throw createHttpError(503, status.reason || "Email delivery is not configured.");
+      }
+
+      const carriedOrders = Array.isArray(rollover?.carriedOrders)
+        ? rollover.carriedOrders.filter(Boolean)
+        : [];
+      const count = Number(rollover?.updatedOrders || carriedOrders.length || 0);
+
+      if (count <= 0) {
+        return {
+          ok: true,
+          skipped: true,
+          count: 0,
+        };
+      }
+
+      const dateStamp = String(rollover?.today || "").trim() || new Date().toISOString().slice(0, 10);
+      const itemLabel = count === 1 ? "item" : "items";
+      const subject = `Route Ledger carry-over ${dateStamp} (${count} ${itemLabel})`;
+      const text = buildCarryOverEmailText(rollover);
+
+      await sendMessage({
+        from: status.from,
+        to: status.to,
+        subject,
+        text,
+      });
+
+      return {
+        ok: true,
+        sentTo: status.to,
+        sentFrom: status.from,
+        subject,
+        count,
       };
     },
     async sendArtworkRequest(token, payload) {
@@ -816,6 +879,175 @@ function buildOrderNoticeText(order) {
   }
 
   return lines.join(" | ");
+}
+
+function buildCarryOverEmailText(rollover) {
+  const carriedOrders = Array.isArray(rollover?.carriedOrders)
+    ? rollover.carriedOrders.filter(Boolean)
+    : [];
+  const count = Number(rollover?.updatedOrders || carriedOrders.length || 0);
+  const scheduledFor = String(rollover?.today || "").trim();
+  const groups = groupCarryOverOrdersByDriver(carriedOrders);
+  const lines = [
+    "The drivers list rolled open items forward to the next day.",
+    "",
+    `New scheduled date: ${scheduledFor || "Unknown"}`,
+    `Items carried over: ${count}`,
+  ];
+
+  if (!groups.length) {
+    lines.push("", "No item breakdown was returned with the rollover.");
+    return lines.join("\n");
+  }
+
+  groups.forEach((group) => {
+    lines.push("");
+    lines.push(`Driver: ${group.driverName} (${group.orders.length})`);
+    group.orders.forEach((order) => {
+      lines.push(`- ${buildCarryOverEmailOrderLine(order)}`);
+    });
+  });
+
+  return lines.join("\n");
+}
+
+function groupCarryOverOrdersByDriver(orders) {
+  const groups = [];
+  const groupedByDriver = new Map();
+
+  orders.forEach((order) => {
+    const driverName = String(order?.driverName || "").trim() || "Unassigned";
+    let group = groupedByDriver.get(driverName);
+
+    if (!group) {
+      group = {
+        driverName,
+        orders: [],
+      };
+      groupedByDriver.set(driverName, group);
+      groups.push(group);
+    }
+
+    group.orders.push(order);
+  });
+
+  return groups;
+}
+
+function buildCarryOverEmailOrderLine(order) {
+  const lineParts = [];
+  const reference = String(order?.reference || "").trim();
+  const customerName = String(order?.customerName || "").trim();
+  const entryType = getOrderEntryTypeLabel(order?.entryType);
+  const locationName = String(order?.locationName || "").trim();
+  const quoteNumber = String(order?.quoteNumber || "").trim();
+  const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
+  const invoiceNumber = String(order?.invoiceNumber || "").trim();
+  const poNumber = String(order?.poNumber || "").trim();
+  const scheduleText = buildCarryOverScheduleText(order);
+  const noticeText = buildCarryOverEmailNoticeText(order);
+
+  if (reference) {
+    lineParts.push(reference);
+  }
+
+  if (customerName) {
+    lineParts.push(`Customer: ${customerName}`);
+  }
+
+  if (entryType) {
+    lineParts.push(entryType);
+  }
+
+  if (locationName) {
+    lineParts.push(`Location: ${locationName}`);
+  }
+
+  if (quoteNumber && quoteNumber !== reference) {
+    lineParts.push(`Quote: ${quoteNumber}`);
+  }
+
+  if (salesOrderNumber && salesOrderNumber !== reference && salesOrderNumber !== quoteNumber) {
+    lineParts.push(`Sales order: ${salesOrderNumber}`);
+  }
+
+  if (invoiceNumber) {
+    lineParts.push(`Invoice: ${invoiceNumber}`);
+  }
+
+  if (poNumber) {
+    lineParts.push(`PO: ${poNumber}`);
+  }
+
+  if (scheduleText) {
+    lineParts.push(scheduleText);
+  }
+
+  if (noticeText) {
+    lineParts.push(noticeText);
+  }
+
+  return lineParts.join(" | ");
+}
+
+function buildCarryOverScheduleText(order) {
+  const previousScheduledFor = String(order?.previousScheduledFor || "").trim();
+  const scheduledFor = String(order?.scheduledFor || "").trim();
+  const carryOverCount = Number(order?.carryOverCount || 0);
+  const dayLabel = carryOverCount === 1 ? "day" : "days";
+
+  if (previousScheduledFor && scheduledFor && carryOverCount > 0) {
+    return `Moved ${previousScheduledFor} -> ${scheduledFor} (${carryOverCount} ${dayLabel} total)`;
+  }
+
+  if (scheduledFor && carryOverCount > 0) {
+    return `Moved to ${scheduledFor} (${carryOverCount} ${dayLabel} total)`;
+  }
+
+  if (previousScheduledFor && scheduledFor) {
+    return `Moved ${previousScheduledFor} -> ${scheduledFor}`;
+  }
+
+  if (scheduledFor) {
+    return `Moved to ${scheduledFor}`;
+  }
+
+  return "";
+}
+
+function buildCarryOverEmailNoticeText(order) {
+  const parts = [];
+  const flagNotice = getOrderFlagNoticeText(order);
+  const note = String(order?.notes || "").trim();
+  const moveToFactory = getMoveToFactoryText(order);
+
+  if (flagNotice) {
+    parts.push(flagNotice);
+  }
+
+  if (note) {
+    parts.push(`Notice: ${note}`);
+  }
+
+  if (moveToFactory) {
+    parts.push(moveToFactory);
+  }
+
+  return parts.join(" ");
+}
+
+function getOrderEntryTypeLabel(entryType) {
+  const normalized = String(entryType || "").trim().toLowerCase();
+
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized === "collection"
+    ? "Collection"
+    : normalized === "delivery"
+      ? "Delivery"
+      : normalized;
 }
 
 function getOrderFlagNoticeText(order) {

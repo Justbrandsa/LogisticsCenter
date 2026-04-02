@@ -8,6 +8,7 @@ Route Ledger is a Neon-backed browser app for managing driver-separated pickup a
 - The local Node server executes the allowed PostgreSQL RPC functions against Neon.
 - Admin and sales users can download the global list as CSV, send it to `admin3@giftwrap.co.za`, or run a test email.
 - Microsoft Graph delivery sends from `artwork3@giftwrap.co.za` once `mail-config.js` or the `MAIL_*` environment variables are configured.
+- When active driver-list items roll forward to a new day, the server emails a grouped carry-over breakdown to the configured `MAIL_TO` recipient.
 - The UI now uses role-based dynamic page navigation instead of one long scrolling screen.
 
 ## Files

@@ -626,23 +626,150 @@ end;
 $$;
 
 create or replace function private.roll_forward_open_orders(p_today date default private.today_local())
-returns integer
+returns jsonb
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  v_rows integer := 0;
+  v_result jsonb := jsonb_build_object(
+    'today', p_today,
+    'updatedOrders', 0,
+    'carriedOrders', '[]'::jsonb
+  );
 begin
-  update private.orders
-  set scheduled_for = p_today,
-      carry_over_count = carry_over_count + greatest((p_today - scheduled_for), 1),
-      updated_at = now()
-  where status = 'active'
-    and scheduled_for < p_today;
+  with carried_orders as (
+    select
+      o.id,
+      concat('ORD-', o.order_number) as reference,
+      o.order_number,
+      o.entry_type,
+      o.move_to_factory,
+      o.factory_destination_location_id,
+      coalesce(f.name, '') as factory_destination_name,
+      coalesce(f.address, '') as factory_destination_address,
+      o.factory_order_number,
+      o.inhouse_order_number,
+      o.factory_order_number as sales_order_number,
+      o.inhouse_order_number as quote_number,
+      o.invoice_number,
+      o.po_number,
+      o.customer_name,
+      o.driver_user_id,
+      coalesce(d.name, '') as driver_name,
+      o.location_id,
+      l.name as location_name,
+      l.address as location_address,
+      l.location_type,
+      l.contact_person as location_contact_person,
+      l.contact_number as location_contact_number,
+      o.priority,
+      o.notes,
+      o.driver_flag_type,
+      o.driver_flag_note,
+      o.driver_flagged_at,
+      o.driver_flagged_by_user_id,
+      coalesce(g.name, '') as driver_flagged_by_name,
+      o.status,
+      o.scheduled_for as previous_scheduled_for,
+      p_today as scheduled_for,
+      o.original_scheduled_for,
+      o.carry_over_count + greatest((p_today - o.scheduled_for), 1) as carry_over_count,
+      o.created_by_user_id,
+      c.name as created_by_name,
+      c.role as created_by_role,
+      o.created_at,
+      o.completed_at,
+      o.completion_type,
+      o.completed_by_user_id,
+      coalesce(h.name, '') as completed_by_name
+    from private.orders o
+    left join private.app_users d on d.id = o.driver_user_id
+    join private.locations l on l.id = o.location_id
+    left join private.locations f on f.id = o.factory_destination_location_id
+    left join private.app_users g on g.id = o.driver_flagged_by_user_id
+    left join private.app_users h on h.id = o.completed_by_user_id
+    join private.app_users c on c.id = o.created_by_user_id
+    where o.status = 'active'
+      and o.scheduled_for < p_today
+  ),
+  updated_orders as (
+    update private.orders o
+    set scheduled_for = p_today,
+        carry_over_count = o.carry_over_count + greatest((p_today - o.scheduled_for), 1),
+        updated_at = now()
+    from carried_orders carried
+    where o.id = carried.id
+    returning
+      jsonb_build_object(
+        'id', carried.id,
+        'reference', carried.reference,
+        'orderNumber', carried.order_number,
+        'entryType', carried.entry_type,
+        'moveToFactory', carried.move_to_factory,
+        'factoryDestinationLocationId', carried.factory_destination_location_id,
+        'factoryDestinationName', carried.factory_destination_name,
+        'factoryDestinationAddress', carried.factory_destination_address,
+        'factoryOrderNumber', carried.factory_order_number,
+        'inhouseOrderNumber', carried.inhouse_order_number,
+        'salesOrderNumber', carried.sales_order_number,
+        'quoteNumber', carried.quote_number,
+        'invoiceNumber', carried.invoice_number,
+        'poNumber', carried.po_number,
+        'customerName', carried.customer_name,
+        'driverUserId', carried.driver_user_id,
+        'driverName', carried.driver_name,
+        'locationId', carried.location_id,
+        'locationName', carried.location_name,
+        'locationAddress', carried.location_address,
+        'locationType', carried.location_type,
+        'locationContactPerson', carried.location_contact_person,
+        'locationContactNumber', carried.location_contact_number,
+        'priority', carried.priority,
+        'notes', carried.notes,
+        'driverFlagType', carried.driver_flag_type,
+        'driverFlagNote', carried.driver_flag_note,
+        'driverFlaggedAt', carried.driver_flagged_at,
+        'driverFlaggedByUserId', carried.driver_flagged_by_user_id,
+        'driverFlaggedByName', carried.driver_flagged_by_name,
+        'completionType', carried.completion_type,
+        'completedByUserId', carried.completed_by_user_id,
+        'completedByName', carried.completed_by_name,
+        'status', carried.status,
+        'previousScheduledFor', carried.previous_scheduled_for,
+        'scheduledFor', carried.scheduled_for,
+        'originalScheduledFor', carried.original_scheduled_for,
+        'carryOverCount', carried.carry_over_count,
+        'createdByUserId', carried.created_by_user_id,
+        'createdByName', carried.created_by_name,
+        'createdByRole', carried.created_by_role,
+        'createdAt', carried.created_at,
+        'completedAt', carried.completed_at
+      ) as order_json,
+      carried.driver_name,
+      carried.location_name,
+      carried.order_number
+  )
+  select jsonb_build_object(
+    'today', p_today,
+    'updatedOrders', count(*),
+    'carriedOrders',
+      coalesce(
+        jsonb_agg(order_json order by lower(driver_name), lower(location_name), order_number),
+        '[]'::jsonb
+      )
+  )
+  into v_result
+  from updated_orders;
 
-  get diagnostics v_rows = row_count;
-  return v_rows;
+  return coalesce(
+    v_result,
+    jsonb_build_object(
+      'today', p_today,
+      'updatedOrders', 0,
+      'carriedOrders', '[]'::jsonb
+    )
+  );
 end;
 $$;
 
@@ -761,12 +888,16 @@ set search_path = ''
 as $$
 declare
   v_today date := private.today_local();
-  v_rows integer;
+  v_rollover jsonb;
 begin
-  v_rows := private.roll_forward_open_orders(v_today);
-  return jsonb_build_object(
-    'today', v_today,
-    'updatedOrders', v_rows
+  v_rollover := private.roll_forward_open_orders(v_today);
+  return coalesce(
+    v_rollover,
+    jsonb_build_object(
+      'today', v_today,
+      'updatedOrders', 0,
+      'carriedOrders', '[]'::jsonb
+    )
   );
 end;
 $$;
@@ -780,6 +911,11 @@ as $$
 declare
   v_actor private.app_users;
   v_today date := private.today_local();
+  v_rollover jsonb := jsonb_build_object(
+    'today', v_today,
+    'updatedOrders', 0,
+    'carriedOrders', '[]'::jsonb
+  );
   v_users jsonb := '[]'::jsonb;
   v_suppliers jsonb := '[]'::jsonb;
   v_locations jsonb := '[]'::jsonb;
@@ -789,7 +925,7 @@ declare
   v_artwork_requests jsonb := '[]'::jsonb;
 begin
   v_actor := private.require_user(p_token);
-  perform private.roll_forward_open_orders(v_today);
+  v_rollover := private.roll_forward_open_orders(v_today);
 
   if v_actor.role = 'admin' then
     select coalesce(
@@ -1112,6 +1248,11 @@ begin
 
   return jsonb_build_object(
     'today', v_today,
+    'rollover', coalesce(v_rollover, jsonb_build_object(
+      'today', v_today,
+      'updatedOrders', 0,
+      'carriedOrders', '[]'::jsonb
+    )),
     'user', private.build_user_json(v_actor),
     'users', v_users,
     'suppliers', v_suppliers,
