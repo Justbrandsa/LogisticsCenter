@@ -9,7 +9,7 @@ const STOCK_SCANNER_FORMATS = ["qr_code", "code_128"];
 const STOCK_LABEL_SKU_MAX_LENGTH = 10;
 const STOCK_LABEL_CODE_LENGTH = 8;
 const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const STOCK_RECENT_ACTIVITY_DAYS = 7;
+const STOCK_RECENT_ACTIVITY_HOURS = 24;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ORDER_FLAG_LABELS = Object.freeze({
   not_collected: "Not collected",
@@ -82,6 +82,7 @@ const state = {
   assignmentDriverFilter: "",
   flaggingOrderId: "",
   transferringOrderId: "",
+  driverOpenStops: {},
   lastSnapshotRefreshAt: loadLastSnapshotRefreshAt(),
   driverRouteOrigin: null,
   driverRouteOriginLoading: false,
@@ -125,6 +126,9 @@ let stockScannerVideoTrack = null;
 let routeMap = null;
 let routeMapContainer = null;
 let routeMapLayers = null;
+let adminDriverMap = null;
+let adminDriverMapContainer = null;
+let adminDriverMapLayers = null;
 let snapshotAutoRefreshTimer = 0;
 
 document.addEventListener("submit", handleSubmit);
@@ -785,13 +789,27 @@ async function handleClick(event) {
     return;
   }
 
-  if (action === "clear-stock-search" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+  if (action === "toggle-stop-card") {
+    const stopCardKey = String(button.dataset.stopCardKey || "").trim();
+    if (!stopCardKey) {
+      return;
+    }
+
+    state.driverOpenStops = {
+      ...state.driverOpenStops,
+      [stopCardKey]: !isStopCardOpen(stopCardKey),
+    };
+    render();
+    return;
+  }
+
+  if (action === "clear-stock-search" && (currentUser.role === "admin" || currentUser.role === "logistics" || currentUser.role === "sales")) {
     state.stockSearchQuery = "";
     render();
     return;
   }
 
-  if (action === "toggle-stock-section" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+  if (action === "toggle-stock-section" && (currentUser.role === "admin" || currentUser.role === "logistics" || currentUser.role === "sales")) {
     const section = String(button.dataset.stockSection || "");
     if (section === "movements") {
       state.stockMovementsSectionOpen = !state.stockMovementsSectionOpen;
@@ -804,7 +822,7 @@ async function handleClick(event) {
     return;
   }
 
-  if (action === "toggle-stock-item-card" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+  if (action === "toggle-stock-item-card" && (currentUser.role === "admin" || currentUser.role === "logistics" || currentUser.role === "sales")) {
     const stockItemId = String(button.dataset.stockItemId || "");
     if (stockItemId) {
       state.stockOpenItemCards = {
@@ -1296,6 +1314,8 @@ async function createOrder(formData, currentUser) {
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
   const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
   const poNumber = String(formData.get("poNumber") || "").trim();
+  const branding = String(formData.get("branding") || "").trim();
+  const stockDescription = String(formData.get("stockDescription") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
   const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
@@ -1303,6 +1323,12 @@ async function createOrder(formData, currentUser) {
 
   if (!locationId || !entryType || !quoteNumber) {
     showFlash("Pickup location, entry type, and quote number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!stockDescription) {
+    showFlash("Stock description is required so drivers know what to collect.", "error");
     render();
     return;
   }
@@ -1324,6 +1350,8 @@ async function createOrder(formData, currentUser) {
       p_sales_order_number: salesOrderNumber,
       p_invoice_number: invoiceNumber,
       p_po_number: poNumber,
+      p_branding: branding,
+      p_stock_description: stockDescription,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
       p_factory_destination_location_id: moveToFactory ? factoryDestinationLocationId : null,
@@ -1518,8 +1546,8 @@ async function createStockItem(formData) {
     return;
   }
 
-  if (!quoteNumber) {
-    showFlash("Quote number is required for QR-managed stock.", "error");
+  if (![quoteNumber, salesOrderNumber, invoiceNumber, poNumber].some(Boolean)) {
+    showFlash("Enter at least one quote, sales order, invoice, or PO number.", "error");
     render();
     return;
   }
@@ -1655,6 +1683,7 @@ async function requestArtwork(formData) {
 
 function render() {
   destroyDriverRouteMap();
+  destroyAdminDriverLocationMap();
   renderHeader();
   renderPageNavigation();
 
@@ -1709,6 +1738,11 @@ function syncPostRenderUi() {
   }
 
   void syncStockScannerUi();
+
+  const currentUser = state.snapshot.user;
+  if (currentUser?.role === "admin" && state.currentPage === "drivers") {
+    drawAdminDriverLocationMap();
+  }
 }
 
 function focusStockItemForm() {
@@ -1801,37 +1835,58 @@ function getStockUnitLabel(record) {
   return rawUnit;
 }
 
-function isRecentStockMovement(value, days = STOCK_RECENT_ACTIVITY_DAYS) {
+function isRecentStockMovement(value, hours = STOCK_RECENT_ACTIVITY_HOURS) {
   const timestamp = Date.parse(String(value || ""));
   if (!Number.isFinite(timestamp)) {
     return false;
   }
 
-  return (Date.now() - timestamp) <= (days * 24 * 60 * 60 * 1000);
+  return (Date.now() - timestamp) <= (hours * 60 * 60 * 1000);
 }
 
 function getRecentStockMovements(movementType, limit = 6) {
-  const recentMovements = [];
+  const recentMovements = state.snapshot.stockMovements
+    .filter((movement) => movement.movementType === movementType && isRecentStockMovement(movement.createdAt));
+
+  if (movementType === "in") {
+    const recentCreatedItems = state.snapshot.stockItems
+      .filter((item) => isRecentStockMovement(item.createdAt))
+      .map((item) => ({
+        id: `stock-created-${item.id}`,
+        stockItemId: item.id,
+        itemName: item.name,
+        sku: item.sku,
+        quoteNumber: item.quoteNumber,
+        invoiceNumber: item.invoiceNumber,
+        salesOrderNumber: item.salesOrderNumber,
+        poNumber: item.poNumber,
+        unit: item.unit,
+        movementType: "in",
+        quantity: Number(item.onHandQuantity || 0),
+        supplierName: "Stock item created",
+        driverUserId: "",
+        driverName: "",
+        notes: item.notes || "",
+        createdByUserId: "",
+        createdByName: "",
+        createdAt: item.createdAt,
+        activityKind: "created",
+      }));
+
+    recentMovements.push(...recentCreatedItems);
+  }
+
+  recentMovements.sort((left, right) => Date.parse(String(right.createdAt || "")) - Date.parse(String(left.createdAt || "")));
+
   const seenStockItemIds = new Set();
-
-  state.snapshot.stockMovements.forEach((movement) => {
-    if (movement.movementType !== movementType) {
-      return;
-    }
-
-    if (!isRecentStockMovement(movement.createdAt)) {
-      return;
-    }
-
+  return recentMovements.filter((movement) => {
     if (seenStockItemIds.has(movement.stockItemId)) {
-      return;
+      return false;
     }
 
     seenStockItemIds.add(movement.stockItemId);
-    recentMovements.push(movement);
-  });
-
-  return recentMovements.slice(0, limit);
+    return true;
+  }).slice(0, limit);
 }
 
 function getLatestStockMovementByItemId() {
@@ -2303,12 +2358,17 @@ function buildStockQrPayload(item) {
     return preferredSku;
   }
 
+  const referenceValues = getStockReferenceValues(item);
+  if (referenceValues.length) {
+    return referenceValues[0];
+  }
+
   const uuidHex = getStockItemUuidHex(item);
   if (uuidHex) {
     return encodeStockLabelCode(BigInt(`0x${uuidHex.slice(-10)}`), STOCK_LABEL_CODE_LENGTH);
   }
 
-  return normalizeStockLabelText(item?.quoteNumber || item?.id || "STOCK");
+  return normalizeStockLabelText(item?.id || item?.name || "STOCK");
 }
 
 function parseStockQrPayload(rawValue) {
@@ -2323,7 +2383,7 @@ function parseStockQrPayload(rawValue) {
 
   const normalizedValue = normalizeStockLabelText(value);
   const matchedItem = state.snapshot.stockItems.find((item) => (
-    buildStockQrPayload(item) === normalizedValue
+    getStockLookupValues(item).includes(normalizedValue)
       || buildLegacyStockLabelCode(item) === normalizedValue
   ));
   if (matchedItem) {
@@ -2348,6 +2408,40 @@ function parseStockQrPayload(rawValue) {
   }
 
   return null;
+}
+
+function getStockReferenceValues(record) {
+  const values = [
+    record?.quoteNumber,
+    record?.salesOrderNumber,
+    record?.invoiceNumber,
+    record?.poNumber,
+  ]
+    .map((value) => normalizeStockLabelText(value))
+    .filter(Boolean);
+
+  return values.filter((value, index) => values.indexOf(value) === index);
+}
+
+function getStockLookupValues(record) {
+  const values = [];
+  const sku = normalizeStockLabelText(record?.sku || "");
+  if (sku) {
+    values.push(sku);
+  }
+
+  getStockReferenceValues(record).forEach((value) => {
+    if (!values.includes(value)) {
+      values.push(value);
+    }
+  });
+
+  const qrPayload = normalizeStockLabelText(buildStockQrPayload(record));
+  if (qrPayload && !values.includes(qrPayload)) {
+    values.push(qrPayload);
+  }
+
+  return values;
 }
 
 function normalizeStockLabelText(value) {
@@ -2668,7 +2762,8 @@ function trimCanvasText(context, text, maxWidth) {
 }
 
 function getStockLabelCaption(item) {
-  return String(item?.sku || item?.quoteNumber || item?.name || "Stock item").trim();
+  const firstReference = getStockReferenceValues(item)[0] || "";
+  return String(item?.sku || firstReference || item?.name || "Stock item").trim();
 }
 
 function loadSvgImage(svg) {
@@ -2812,6 +2907,7 @@ function getNavigationItems(role) {
       { id: "dashboard", label: "Dashboard" },
       { id: "entries", label: "Global List" },
       { id: "assignments", label: "Assignments" },
+      { id: "stock", label: "Stock" },
       { id: "drivers", label: "Driver Lists" },
     ];
   }
@@ -3087,12 +3183,13 @@ function renderSalesScreen() {
           <p class="eyebrow">Sales scope</p>
           <h3>Live entry control</h3>
           <p class="muted">
-            You can view driver lists, create new entries, and email or download the global CSV, but duplicate active
-            orders are still blocked for sales users.
+            You can view driver lists, review incoming stock, create new entries, and email or download the global CSV,
+            but sales users still cannot override duplicate checks or send a driver back to a completed stop.
           </p>
           <div class="chip-row">
             <span class="chip chip-role-sales">Sales</span>
             <span class="chip">${countOrdersCreatedByCurrentUser()} created by you</span>
+            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
           </div>
         </div>
         <div class="sidebar-card">
@@ -3100,7 +3197,7 @@ function renderSalesScreen() {
           <p class="muted">
             ${state.mailConfigured ? `CSV email is ready for ${escapeHtml(state.mailTo)}.` : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}
           </p>
-          <p class="muted">Sales users can test email delivery, but they still cannot bypass the duplicate active-order rule.</p>
+          <p class="muted">Sales users can test email delivery, but they still cannot bypass duplicate checks or send a driver back to a stop they already completed today.</p>
         </div>
       </aside>
       <div class="content">
@@ -3192,7 +3289,7 @@ function renderAdminPageContent() {
       <section class="panel">
         <p class="eyebrow">Global List</p>
         <h3 class="panel-title">Create a new entry</h3>
-        <p class="panel-subtitle">Leave the driver unassigned to queue work for later dispatch. Admins can still override the duplicate rule when assigning to a driver.</p>
+        <p class="panel-subtitle">Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today.</p>
         ${renderEntryForm(state.snapshot.user, true)}
       </section>
       ${renderGlobalOrdersSection("admin")}
@@ -3256,7 +3353,7 @@ function renderAdminPageContent() {
       <section class="hero-card">
         <p class="eyebrow">Driver lists</p>
         <h2>Separated route views by driver</h2>
-        <p>Each driver page groups active entries by pickup location and keeps the optimized route visible.</p>
+        <p>Each driver page groups active entries by pickup location and now includes the latest recorded driver positions on a map.</p>
       </section>
       ${renderFlash()}
       ${renderDriverListOverview("admin")}
@@ -3303,7 +3400,7 @@ function renderSalesPageContent() {
       <section class="panel">
         <p class="eyebrow">Global List</p>
         <h3 class="panel-title">Create a new entry</h3>
-        <p class="panel-subtitle">Leave the driver unassigned to hold the work for later dispatch. Duplicate protection still applies when a driver is selected.</p>
+        <p class="panel-subtitle">Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.</p>
         ${renderEntryForm(state.snapshot.user, false)}
       </section>
       ${renderGlobalOrdersSection("sales")}
@@ -3325,6 +3422,14 @@ function renderSalesPageContent() {
       </section>
       ${renderAssignmentManager("sales")}
     `;
+  }
+
+  if (state.currentPage === "stock") {
+    return renderStockWorkspace({
+      viewerRole: "sales",
+      title: "Read-only stock visibility",
+      subtitle: "Review live stock that has arrived and the current on-hand view without leaving the sales workspace.",
+    });
   }
 
   if (state.currentPage === "drivers") {
@@ -3355,6 +3460,7 @@ function renderSalesPageContent() {
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Create new work and email, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Assign queued work to drivers and rebalance active entries.", "assignments")}
+      ${renderPageSummaryCard("Stock", "Review what has arrived in stock without changing logistics records.", "stock")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
@@ -3393,6 +3499,8 @@ function renderLogisticsPageContent() {
 }
 
 function renderStockWorkspace({ viewerRole, title, subtitle }) {
+  const canManageStock = viewerRole === "admin" || viewerRole === "logistics";
+  const canSeeArtwork = canManageStock;
   const stockMovements = state.snapshot.stockMovements;
   const recentInbound = getRecentStockMovements("in");
   const recentOutbound = getRecentStockMovements("out");
@@ -3410,18 +3518,41 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
       ${renderMetric("Movements", stockMovements.length)}
       ${renderMetric("Recent arrivals", recentInbound.length)}
       ${renderMetric("Recent shipments", recentOutbound.length)}
-      ${renderMetric("Artwork requests", state.snapshot.artworkRequests.length)}
+      ${canSeeArtwork ? renderMetric("Artwork requests", state.snapshot.artworkRequests.length) : ""}
     </section>
     ${renderRecentStockActivitySection({ recentInbound, recentOutbound })}
-    <section class="panel-grid">
-      ${renderStockItemPanel(viewerRole)}
-      ${renderStockMovementPanel()}
-    </section>
-    ${renderStockQrPreviewPanel()}
+    ${
+      canManageStock
+        ? `
+          <section class="panel-grid">
+            ${renderStockItemPanel(viewerRole)}
+            ${renderStockMovementPanel()}
+          </section>
+          ${renderStockQrPreviewPanel()}
+        `
+        : `
+          <section class="panel-grid">
+            ${renderStockReadOnlyPanel()}
+          </section>
+        `
+    }
     ${renderStockItemsSection(viewerRole)}
     ${renderStockMovementsSection(viewerRole)}
-    ${renderArtworkRequestPanel(viewerRole)}
-    ${renderArtworkRequestsSection()}
+    ${canSeeArtwork ? renderArtworkRequestPanel(viewerRole) : ""}
+    ${canSeeArtwork ? renderArtworkRequestsSection() : ""}
+  `;
+}
+
+function renderStockReadOnlyPanel() {
+  return `
+    <article class="panel">
+      <p class="eyebrow">Sales visibility</p>
+      <h3 class="panel-title">Incoming stock overview</h3>
+      <p class="panel-subtitle">
+        Sales can search the live stock register, review recent arrivals, and open the movement ledger without changing logistics data.
+      </p>
+      <p class="field-note">Use the Recent arrivals section below to see what has come in most recently.</p>
+    </article>
   `;
 }
 
@@ -3460,7 +3591,7 @@ function renderStockItemPanel(viewerRole) {
         <div class="form-grid">
           <label>
             Quote number
-            <input name="quoteNumber" type="text" value="${escapeHtml(editingItem?.quoteNumber || "")}" required>
+            <input name="quoteNumber" type="text" value="${escapeHtml(editingItem?.quoteNumber || "")}" placeholder="Optional">
           </label>
           <label>
             Sales order number
@@ -3477,6 +3608,7 @@ function renderStockItemPanel(viewerRole) {
             <input name="poNumber" type="text" value="${escapeHtml(editingItem?.poNumber || "")}" placeholder="Optional">
           </label>
         </div>
+        <p class="field-note">Enter at least one quote, sales order, invoice, or PO number for this stock item.</p>
         <div class="form-grid">
           <label>
             Stock code
@@ -3671,6 +3803,7 @@ function renderArtworkRequestPanel(viewerRole) {
 
 function renderStockItemsSection(viewerRole) {
   const allowDelete = viewerRole === "admin";
+  const readOnlyView = viewerRole === "sales";
   const filteredItems = getFilteredStockItems();
   const latestMovementByItemId = getLatestStockMovementByItemId();
   const totalItems = state.snapshot.stockItems.length;
@@ -3683,7 +3816,9 @@ function renderStockItemsSection(viewerRole) {
           <h3 class="panel-title">On-hand summary</h3>
           <p class="panel-subtitle">
             ${
-              allowDelete
+              readOnlyView
+                ? "Sales can search the live stock register and see which items have arrived, but only admin or logistics can change stock records."
+                : allowDelete
                 ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
                 : "Each item stays linked to its movement and artwork history for traceability."
             }
@@ -3755,21 +3890,21 @@ function renderRecentStockActivitySection({ recentInbound, recentOutbound }) {
           <p class="eyebrow">Recent activity</p>
           <h3 class="panel-title">Recently arrived and shipped stock</h3>
           <p class="panel-subtitle">
-            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_DAYS))} days, grouped by item.
+            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_HOURS))} hours, including newly created stock items, grouped by item.
           </p>
         </div>
       </div>
       <div class="recent-stock-grid">
         ${renderRecentStockActivityColumn({
           title: "Recently arrived",
-          subtitle: "Latest stock-in activity per item.",
-          emptyLabel: `No stock arrived in the last ${STOCK_RECENT_ACTIVITY_DAYS} days.`,
+          subtitle: "Latest stock-in activity and newly created items per stock line.",
+          emptyLabel: `No stock arrived or was created in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
           movements: recentInbound,
         })}
         ${renderRecentStockActivityColumn({
           title: "Recently shipped",
           subtitle: "Latest stock-out activity per item.",
-          emptyLabel: `No stock shipped in the last ${STOCK_RECENT_ACTIVITY_DAYS} days.`,
+          emptyLabel: `No stock shipped in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
           movements: recentOutbound,
         })}
       </div>
@@ -3805,10 +3940,17 @@ function renderRecentStockActivityColumn({ title, subtitle, emptyLabel, movement
 function renderRecentStockActivityEntry(movement) {
   const item = getStockItemById(movement.stockItemId);
   const unitLabel = getStockUnitLabel(item || movement);
+  const isCreatedActivity = movement.activityKind === "created";
   const onHandLabel = item
     ? `${Number(item.onHandQuantity || 0)} ${unitLabel} on hand now`
     : "";
   const referenceSummary = getReferenceLines(movement).join(" | ") || "No order references";
+  const quantityLabel = isCreatedActivity
+    ? "New item"
+    : `${Number(movement.quantity || 0)} ${unitLabel}`;
+  const partyLabel = isCreatedActivity
+    ? "Stock item created"
+    : getStockMovementPartyLabel(movement);
 
   return `
     <article class="recent-stock-entry">
@@ -3818,12 +3960,12 @@ function renderRecentStockActivityEntry(movement) {
           <p class="recent-stock-entry-summary">${escapeHtml(referenceSummary)}</p>
         </div>
         <span class="chip ${movement.movementType === "in" ? "chip-success" : "chip-warning"}">
-          ${escapeHtml(String(movement.quantity || 0))} ${escapeHtml(unitLabel)}
+          ${escapeHtml(quantityLabel)}
         </span>
       </div>
       <div class="recent-stock-meta">
         <span>${escapeHtml(formatDateTime(movement.createdAt) || "")}</span>
-        <span>${escapeHtml(getStockMovementPartyLabel(movement))}</span>
+        <span>${escapeHtml(partyLabel)}</span>
         ${onHandLabel ? `<span>${escapeHtml(onHandLabel)}</span>` : ""}
       </div>
     </article>
@@ -3831,11 +3973,14 @@ function renderRecentStockActivityEntry(movement) {
 }
 
 function renderStockMovementsSection(viewerRole) {
+  const canEdit = viewerRole === "admin" || viewerRole === "logistics";
   return renderStockDisclosure({
     sectionKey: "movements",
     eyebrow: "Stock history",
     title: "Movement ledger",
-    subtitle: "Use Edit to correct the item, movement type, quantity, party, or notes for an existing stock entry.",
+    subtitle: canEdit
+      ? "Use Edit to correct the item, movement type, quantity, party, or notes for an existing stock entry."
+      : "Review the stock-in and stock-out history without changing logistics records.",
     summary: `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}.`,
     open: state.stockMovementsSectionOpen,
     body: `
@@ -4087,7 +4232,7 @@ function renderDriverPageContent() {
     <section class="driver-grid">
       ${
         plan.stops.length
-          ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver")).join("")
+          ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver", currentUser.id)).join("")
           : `
             <div class="empty-state">
               No active entries are assigned to you right now. When work is loaded for you, it will appear here.
@@ -4380,6 +4525,14 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           <input name="poNumber" type="text" placeholder="Optional">
         </label>
       </div>
+      <label>
+        Stock description
+        <textarea name="stockDescription" placeholder="What stock should the driver collect for this entry?" required></textarea>
+      </label>
+      <label>
+        Branding
+        <input name="branding" type="text" placeholder="Optional">
+      </label>
       <label class="inline-check">
         <input type="checkbox" name="moveToFactory" disabled>
         Move collected stock to a factory
@@ -4402,10 +4555,10 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           ? `
             <label class="inline-check">
               <input type="checkbox" name="allowDuplicate">
-              Allow a duplicate active order for this driver
+              Admin override for duplicate or return stop
             </label>
             <p class="field-note">
-              This only bypasses the block when the same driver already has another active entry with the same quote number.
+              This only lets admins send a driver back to a stop they already completed today, or keep two active entries with the same quote number on that driver's list.
             </p>
           `
           : ""
@@ -4585,7 +4738,7 @@ function renderDriverListOverview(viewerRole) {
           <p class="panel-subtitle">Active pickup route sequence.</p>
           ${
             plan.stops.length
-              ? plan.stops.map((stop, index) => renderStopCard(stop, index, viewerRole)).join("")
+              ? plan.stops.map((stop, index) => renderStopCard(stop, index, viewerRole, driver.id)).join("")
               : '<div class="empty-state">No active work on this driver list.</div>'
           }
         </article>
@@ -4602,10 +4755,37 @@ function renderDriverListOverview(viewerRole) {
           <p class="panel-subtitle">Each page groups active entries by driver and pickup location.</p>
         </div>
       </div>
+      ${viewerRole === "admin" ? renderAdminDriverLocationSection() : ""}
       <div class="panel-grid">
         ${content || '<div class="empty-state">No driver accounts have been created yet.</div>'}
       </div>
       ${renderPaginationControls("driverLists", page)}
+    </section>
+  `;
+}
+
+function renderAdminDriverLocationSection() {
+  const totalDrivers = getDriverUsers().length;
+  const mappedDrivers = getDriversWithRecordedPositions().length;
+  const awaitingDrivers = Math.max(totalDrivers - mappedDrivers, 0);
+
+  return `
+    <section class="route-canvas-card admin-driver-map-card">
+      <div class="table-toolbar">
+        <div>
+          <p class="eyebrow">Driver locations</p>
+          <h3 class="panel-title">Last recorded driver positions</h3>
+          <p class="panel-subtitle">Markers update from the most recent location the driver allowed Route Ledger to record.</p>
+        </div>
+        <div class="chip-row">
+          <span class="chip">${mappedDrivers} mapped</span>
+          <span class="chip">${awaitingDrivers} awaiting location</span>
+        </div>
+      </div>
+      <div class="route-canvas-wrap">
+        <div id="admin-driver-location-map" class="route-map" aria-label="Map of drivers and their last recorded positions"></div>
+      </div>
+      <p id="admin-driver-location-status" class="route-map-status hidden"></p>
     </section>
   `;
 }
@@ -4739,7 +4919,7 @@ function renderAssignmentRow(order, viewerRole) {
               ? `
                 <label class="inline-check assignment-inline">
                   <input type="checkbox" data-assignment-allow-duplicate data-order-id="${order.id}">
-                  Allow duplicate
+                  Admin override
                 </label>
               `
               : ""
@@ -4890,6 +5070,7 @@ function renderRecentStockItemBadge(movement) {
 
 function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
+  const allowQr = viewerRole === "admin" || viewerRole === "logistics";
   const isEditing = state.editingStockItemId === item.id;
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
   const actions = [];
@@ -4900,9 +5081,11 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
     );
   }
 
-  actions.push(
-    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
-  );
+  if (allowQr) {
+    actions.push(
+      `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
+    );
+  }
 
   if (allowDelete) {
     actions.push(
@@ -4922,9 +5105,15 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
       <td data-label="Notes">${escapeHtml(item.notes || "None")}</td>
       <td data-label="Updated">${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
       <td data-label="Actions">
-        <div class="action-row">
-          ${actions.join("")}
-        </div>
+        ${
+          actions.length
+            ? `
+              <div class="action-row">
+                ${actions.join("")}
+              </div>
+            `
+            : '<span class="muted">View only</span>'
+        }
       </td>
     </tr>
   `;
@@ -4932,6 +5121,7 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
 
 function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
+  const allowQr = viewerRole === "admin" || viewerRole === "logistics";
   const isOpen = Boolean(state.stockOpenItemCards[item.id]);
   const isEditing = state.editingStockItemId === item.id;
   const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
@@ -4945,9 +5135,11 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
     );
   }
 
-  actions.push(
-    `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
-  );
+  if (allowQr) {
+    actions.push(
+      `<button class="button button-secondary" data-action="open-stock-qr" data-stock-item-id="${item.id}"${state.busy ? " disabled" : ""}>QR</button>`,
+    );
+  }
 
   if (allowDelete) {
     actions.push(
@@ -4999,7 +5191,7 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
                 </div>
               </div>
               <div class="action-row">
-                ${actions.join("")}
+                ${actions.length ? actions.join("") : '<span class="muted">View only</span>'}
               </div>
             </div>
           `
@@ -5066,36 +5258,38 @@ function renderArtworkRequestRow(request) {
   `;
 }
 
-function renderStopCard(stop, index, viewerRole) {
+function renderStopCard(stop, index, viewerRole, driverUserId = "") {
   const allowComplete = viewerRole === "admin" || viewerRole === "driver";
   const allowDelete = viewerRole === "admin";
   const allowFlag = viewerRole === "admin" || viewerRole === "driver";
   const allowPriority = viewerRole === "admin";
   const allowTransfer = viewerRole === "admin" || viewerRole === "driver";
-  const allowNavigate = viewerRole === "admin" || viewerRole === "driver";
+  const allowNavigate = viewerRole === "admin" || viewerRole === "driver" || viewerRole === "sales";
   const navigationUrl = allowNavigate ? getGoogleMapsNavigateUrl(stop.location) : "";
+  const stopCardKey = buildStopCardKey(driverUserId, stop.id);
+  const isOpen = isStopCardOpen(stopCardKey);
   const legLabel = stop.hasCoordinates && stop.legKm !== null
     ? `${stop.legKm.toFixed(1)} km leg`
     : "Coordinates pending";
 
   return `
-    <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}">
+    <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
       <div class="stop-header">
         <div>
           <p class="eyebrow">Stop ${index + 1}</p>
           <h4 class="stop-title">${escapeHtml(stop.location.name)}</h4>
-          <p class="stop-address">${escapeHtml(stop.location.address)}</p>
+          ${isOpen ? `<p class="stop-address">${escapeHtml(stop.location.address)}</p>` : ""}
         </div>
         <div class="chip-row">
           ${stop.isPriority ? '<span class="chip chip-priority-high">Priority stop</span>' : ""}
           <span class="chip">${legLabel}</span>
-          <span class="chip">${stop.orders.length} entr${stop.orders.length === 1 ? "y" : "ies"}</span>
+          <span class="chip">${stop.orders.length} order${stop.orders.length === 1 ? "" : "s"}</span>
         </div>
       </div>
-      ${
-        navigationUrl
-          ? `
-            <div class="action-row stop-actions">
+      <div class="action-row stop-actions">
+        ${
+          navigationUrl
+            ? `
               <a
                 class="button button-primary"
                 href="${escapeHtml(navigationUrl)}"
@@ -5104,11 +5298,23 @@ function renderStopCard(stop, index, viewerRole) {
               >
                 Navigate
               </a>
-            </div>
-          `
-          : ""
-      }
-      <div class="stop-orders">
+            `
+            : ""
+        }
+        <button
+          type="button"
+          class="button button-ghost"
+          data-action="toggle-stop-card"
+          data-stop-card-key="${escapeHtml(stopCardKey)}"
+          ${state.busy ? " disabled" : ""}
+        >
+          ${isOpen ? "Hide orders" : "Show orders"}
+        </button>
+      </div>
+      ${
+        isOpen
+          ? `
+            <div class="stop-orders">
         ${stop.orders
           .map((order) => {
             const isFlagging = state.flaggingOrderId === order.id;
@@ -5230,7 +5436,10 @@ function renderStopCard(stop, index, viewerRole) {
             `;
           })
           .join("")}
-      </div>
+            </div>
+          `
+          : ""
+      }
     </article>
   `;
 }
@@ -5555,10 +5764,7 @@ function renderStockItemOptions(selectedStockItemId = "") {
   return state.snapshot.stockItems
     .map((item) => {
       const labelParts = [item.name];
-      const quoteNumber = String(item.quoteNumber || "").trim();
-      if (quoteNumber) {
-        labelParts.push(`Quote ${quoteNumber}`);
-      }
+      labelParts.push(...getReferenceLines(item));
       if (item.sku) {
         labelParts.push(item.sku);
       }
@@ -5602,6 +5808,20 @@ function getDriverUsers() {
 
 function getActiveDriverUsers() {
   return getDriverUsers().filter((user) => user.active);
+}
+
+function getDriversWithRecordedPositions() {
+  return getDriverUsers()
+    .map((driver) => {
+      const rawLat = driver.lastKnownLat;
+      const rawLng = driver.lastKnownLng;
+      return {
+        ...driver,
+        lat: rawLat === null || rawLat === "" ? Number.NaN : Number(rawLat),
+        lng: rawLng === null || rawLng === "" ? Number.NaN : Number(rawLng),
+      };
+    })
+    .filter((driver) => Number.isFinite(driver.lat) && Number.isFinite(driver.lng));
 }
 
 function getTransferDriverChoices(order) {
@@ -5732,6 +5952,22 @@ function getDriverRouteAriaLabel(driverUserId) {
     : "Map of the dispatch hub and optimized stop sequence";
 }
 
+async function recordDriverPosition(lat, lng) {
+  if (!sessionToken) {
+    return;
+  }
+
+  try {
+    await callRpc("record_driver_position", {
+      p_token: sessionToken,
+      p_lat: lat,
+      p_lng: lng,
+    });
+  } catch (error) {
+    console.error("Failed to record driver position.", error);
+  }
+}
+
 function ensureDriverRouteOrigin() {
   const currentUser = state.snapshot.user;
   if (
@@ -5770,6 +6006,7 @@ function ensureDriverRouteOrigin() {
       state.driverRouteOriginAttempted = true;
       state.driverRouteOriginError = "";
       state.driverRouteOriginUserId = activeUser.id;
+      void recordDriverPosition(position.coords.latitude, position.coords.longitude);
       render();
     },
     (error) => {
@@ -5830,6 +6067,18 @@ function countDuplicateOrders(driverUserId) {
     });
 
   return Object.values(counts).filter((count) => count > 1).length;
+}
+
+function buildStopCardKey(driverUserId, stopId) {
+  return [String(driverUserId || "").trim(), String(stopId || "").trim()].filter(Boolean).join(":");
+}
+
+function isStopCardOpen(stopCardKey) {
+  if (!stopCardKey) {
+    return true;
+  }
+
+  return state.driverOpenStops[stopCardKey] !== false;
 }
 
 function getRoutePlan(driverUserId) {
@@ -6200,6 +6449,141 @@ function destroyDriverRouteMap() {
   routeMapLayers = null;
 }
 
+function drawAdminDriverLocationMap() {
+  const Leaflet = window.L;
+  const mapEl = document.getElementById("admin-driver-location-map");
+  if (!(mapEl instanceof HTMLElement)) {
+    return;
+  }
+
+  if (!Leaflet) {
+    setAdminDriverLocationStatus("The live map is unavailable right now, but driver positions will still appear here once mapping loads.");
+    return;
+  }
+
+  if (adminDriverMap && adminDriverMapContainer !== mapEl) {
+    destroyAdminDriverLocationMap();
+  }
+
+  if (!adminDriverMap) {
+    adminDriverMap = Leaflet.map(mapEl, {
+      zoomControl: true,
+      scrollWheelZoom: false,
+    });
+    adminDriverMapContainer = mapEl;
+    Leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(adminDriverMap);
+    adminDriverMapLayers = Leaflet.layerGroup().addTo(adminDriverMap);
+  } else if (!adminDriverMapLayers) {
+    adminDriverMapLayers = Leaflet.layerGroup().addTo(adminDriverMap);
+    adminDriverMapContainer = mapEl;
+  }
+
+  adminDriverMapLayers.clearLayers();
+
+  const positionedDrivers = getDriversWithRecordedPositions();
+  const bounds = [];
+
+  positionedDrivers.forEach((driver) => {
+    bounds.push([driver.lat, driver.lng]);
+    Leaflet
+      .marker([driver.lat, driver.lng], {
+        icon: buildAdminDriverLocationMarkerIcon(getDriverInitials(driver.name)),
+      })
+      .bindPopup(buildAdminDriverLocationPopup(driver))
+      .addTo(adminDriverMapLayers);
+  });
+
+  if (bounds.length) {
+    adminDriverMap.fitBounds(bounds, { padding: [36, 36] });
+  } else {
+    adminDriverMap.setView([HUB.lat, HUB.lng], 8);
+  }
+
+  setAdminDriverLocationStatus(getAdminDriverLocationStatus(positionedDrivers));
+  window.requestAnimationFrame(() => {
+    adminDriverMap?.invalidateSize();
+  });
+}
+
+function destroyAdminDriverLocationMap() {
+  if (adminDriverMap) {
+    adminDriverMap.remove();
+  }
+  adminDriverMap = null;
+  adminDriverMapContainer = null;
+  adminDriverMapLayers = null;
+}
+
+function setAdminDriverLocationStatus(message) {
+  const statusEl = document.getElementById("admin-driver-location-status");
+  if (!(statusEl instanceof HTMLElement)) {
+    return;
+  }
+
+  statusEl.textContent = message || "";
+  statusEl.classList.toggle("hidden", !message);
+}
+
+function getAdminDriverLocationStatus(positionedDrivers = getDriversWithRecordedPositions()) {
+  const totalDrivers = getDriverUsers().length;
+  if (!totalDrivers) {
+    return "No driver accounts are available yet.";
+  }
+
+  if (!positionedDrivers.length) {
+    return "No driver positions have been recorded yet. Drivers need to open their route page and allow location access first.";
+  }
+
+  const awaitingDrivers = Math.max(totalDrivers - positionedDrivers.length, 0);
+  if (!awaitingDrivers) {
+    return `Showing the last recorded position for all ${positionedDrivers.length} driver${positionedDrivers.length === 1 ? "" : "s"}.`;
+  }
+
+  return `Showing ${positionedDrivers.length} recorded driver location${positionedDrivers.length === 1 ? "" : "s"}. ${awaitingDrivers} driver${awaitingDrivers === 1 ? " is" : "s are"} still awaiting a recorded position.`;
+}
+
+function getDriverInitials(name) {
+  const initials = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+
+  return initials || "D";
+}
+
+function buildAdminDriverLocationMarkerIcon(label) {
+  const Leaflet = window.L;
+  return Leaflet.divIcon({
+    className: "route-map-marker-shell",
+    html: `<span class="route-map-marker route-map-marker-driver">${escapeHtml(label)}</span>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -18],
+  });
+}
+
+function buildAdminDriverLocationPopup(driver) {
+  const activeOrders = getOrdersForDriver(driver.id).filter((order) => order.status === "active");
+  const activeStops = new Set(activeOrders.map((order) => order.locationId)).size;
+  const recordedAt = formatDateTime(driver.lastKnownRecordedAt) || "Recently";
+
+  return `
+    <div class="route-map-popup">
+      <p class="eyebrow">Driver</p>
+      <h4>${escapeHtml(driver.name || "Unknown")}</h4>
+      <p>${escapeHtml(driver.phone || "No phone assigned")}</p>
+      <p>${escapeHtml(`${activeOrders.length} active entr${activeOrders.length === 1 ? "y" : "ies"} across ${activeStops} stop${activeStops === 1 ? "" : "s"}`)}</p>
+      <p class="muted">Recorded ${escapeHtml(recordedAt)}</p>
+    </div>
+  `;
+}
+
 function setDriverRouteStatus(message) {
   const statusEl = document.getElementById("route-map-status");
   if (!(statusEl instanceof HTMLElement)) {
@@ -6411,6 +6795,89 @@ function changePage(pageKey, page) {
   render();
 }
 
+function getOrderCsvReferenceSummary(order) {
+  return getReferenceLines(order).join(" | ");
+}
+
+function getOrderCsvDriverIssue(order) {
+  const label = getOrderFlagLabel(order);
+  const note = String(order?.driverFlagNote || "").trim();
+  return [label, note].filter(Boolean).join(": ");
+}
+
+function getOrderCsvScheduleSummary(order) {
+  const scheduledFor = formatDateOnly(order?.scheduledFor);
+  const originalScheduledFor = formatDateOnly(order?.originalScheduledFor);
+  const carryOverCount = Number(order?.carryOverCount || 0);
+  const dayLabel = carryOverCount === 1 ? "day" : "days";
+
+  if (scheduledFor && originalScheduledFor && carryOverCount > 0) {
+    return `${scheduledFor} (Rolled from ${originalScheduledFor}, ${carryOverCount} ${dayLabel})`;
+  }
+
+  if (scheduledFor && carryOverCount > 0) {
+    return `${scheduledFor} (Rolled over ${carryOverCount} ${dayLabel})`;
+  }
+
+  return scheduledFor;
+}
+
+function buildOrderCsvRow(order) {
+  return [
+    order.reference || "",
+    getDriverDisplayName(order),
+    order.locationName || "",
+    order.locationAddress || "",
+    capitalize(order.entryType || ""),
+    capitalize(getOrderPriority(order)),
+    getOrderCsvReferenceSummary(order),
+    order.stockDescription || "",
+    order.branding || "",
+    order.moveToFactory ? "Yes" : "No",
+    order.factoryDestinationName || "",
+    getOrderCsvDriverIssue(order),
+    order.notes || "",
+    getOrderCsvScheduleSummary(order),
+    capitalize(order.status || "active"),
+    getOrderCompletionLabel(order),
+    order.createdByName || "",
+    formatDateTime(order.createdAt),
+    formatDateTime(order.completedAt),
+  ];
+}
+
+function buildOrdersCsvContent(orders) {
+  const lineBreak = "\r\n";
+  const rows = [
+    [
+      "Reference",
+      "Assigned driver",
+      "Pickup location",
+      "Pickup address",
+      "Entry type",
+      "Priority",
+      "Order references",
+      "Stock required",
+      "Branding",
+      "Move to factory",
+      "Factory destination",
+      "Driver issue",
+      "Extra notes",
+      "Schedule",
+      "Status",
+      "Completion",
+      "Created by",
+      "Created",
+      "Completed",
+    ],
+    ...orders.map(buildOrderCsvRow),
+  ];
+
+  return `\uFEFFsep=,${lineBreak}${rows
+    .map((columns) => columns.map(escapeCsvValue).join(","))
+    .join(lineBreak)}`;
+}
+
 function exportOrdersCsv() {
   const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
   if (!sortedOrders.length) {
@@ -6418,44 +6885,7 @@ function exportOrdersCsv() {
     return;
   }
 
-  const rows = sortedOrders.map((order) => [
-    order.reference,
-    getDriverDisplayName(order),
-    order.locationName,
-    order.entryType,
-    getMoveToFactoryLabel(order) || "No",
-    order.quoteNumber || order.inhouseOrderNumber,
-    order.salesOrderNumber || order.factoryOrderNumber,
-    order.invoiceNumber || "",
-    order.poNumber || "",
-    order.createdByName,
-    order.status,
-    getOrderNoticeText(order),
-    formatDateTime(order.createdAt),
-    formatDateTime(order.completedAt),
-  ]);
-  const csv = [
-    [
-      "Reference",
-      "Driver",
-      "Pickup location",
-      "Collection or delivery",
-      "Move to factory",
-      "Quote number",
-      "Sales order number",
-      "Invoice number",
-      "PO number",
-      "Created by",
-      "Status",
-      "Notice",
-      "Created at",
-      "Completed at",
-    ],
-    ...rows,
-  ]
-    .map((columns) => columns.map(escapeCsvValue).join(","))
-    .join("\n");
-
+  const csv = buildOrdersCsvContent(sortedOrders);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -6541,6 +6971,8 @@ function renderOrderNotice(order, emptyLabel = "") {
 
 function getOrderNoticeLines(order) {
   const lines = [];
+  const stockDescription = String(order?.stockDescription || "").trim();
+  const branding = String(order?.branding || "").trim();
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
@@ -6549,6 +6981,14 @@ function getOrderNoticeLines(order) {
 
   if (driverFlag) {
     lines.push(driverFlag);
+  }
+
+  if (stockDescription) {
+    lines.push(`Stock: ${stockDescription}.`);
+  }
+
+  if (branding) {
+    lines.push(`Branding: ${branding}.`);
   }
 
   if (notice) {

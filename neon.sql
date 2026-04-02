@@ -27,6 +27,10 @@ alter table private.app_users
   add constraint app_users_role_check
   check (role in ('admin', 'sales', 'driver', 'logistics'));
 
+alter table private.app_users add column if not exists last_known_lat numeric(9, 6);
+alter table private.app_users add column if not exists last_known_lng numeric(9, 6);
+alter table private.app_users add column if not exists last_known_recorded_at timestamptz;
+
 create table if not exists private.suppliers (
   id uuid primary key default public.gen_random_uuid(),
   name text not null,
@@ -202,6 +206,8 @@ alter table private.orders add column if not exists factory_order_number text;
 alter table private.orders add column if not exists inhouse_order_number text;
 alter table private.orders add column if not exists invoice_number text;
 alter table private.orders add column if not exists po_number text;
+alter table private.orders add column if not exists branding text;
+alter table private.orders add column if not exists stock_description text;
 alter table private.orders add column if not exists driver_flag_type text;
 alter table private.orders add column if not exists driver_flag_note text;
 alter table private.orders add column if not exists driver_flagged_at timestamptz;
@@ -243,6 +249,14 @@ set po_number = ''
 where po_number is null;
 
 update private.orders
+set branding = ''
+where branding is null;
+
+update private.orders
+set stock_description = ''
+where stock_description is null;
+
+update private.orders
 set driver_flag_note = ''
 where driver_flag_note is null;
 
@@ -265,6 +279,8 @@ alter table private.orders alter column factory_order_number set default '';
 alter table private.orders alter column inhouse_order_number set default '';
 alter table private.orders alter column invoice_number set default '';
 alter table private.orders alter column po_number set default '';
+alter table private.orders alter column branding set default '';
+alter table private.orders alter column stock_description set default '';
 alter table private.orders alter column driver_flag_note set default '';
 alter table private.orders alter column move_to_factory set default false;
 alter table private.orders alter column entry_type set not null;
@@ -272,6 +288,8 @@ alter table private.orders alter column factory_order_number set not null;
 alter table private.orders alter column inhouse_order_number set not null;
 alter table private.orders alter column invoice_number set not null;
 alter table private.orders alter column po_number set not null;
+alter table private.orders alter column branding set not null;
+alter table private.orders alter column stock_description set not null;
 alter table private.orders alter column driver_flag_note set not null;
 alter table private.orders alter column move_to_factory set not null;
 
@@ -351,9 +369,17 @@ alter table private.stock_items alter column sales_order_number set not null;
 alter table private.stock_items alter column po_number set not null;
 
 drop index if exists stock_items_name_unique;
+drop index if exists stock_items_quote_name_unique;
+drop index if exists stock_items_reference_name_unique;
 
-create unique index if not exists stock_items_quote_name_unique
-  on private.stock_items ((lower(btrim(quote_number))), (lower(btrim(name))));
+create unique index if not exists stock_items_reference_name_unique
+  on private.stock_items (
+    (lower(btrim(name))),
+    (lower(btrim(quote_number))),
+    (lower(btrim(invoice_number))),
+    (lower(btrim(sales_order_number))),
+    (lower(btrim(po_number)))
+  );
 
 create unique index if not exists stock_items_sku_unique
   on private.stock_items ((lower(btrim(sku))))
@@ -566,6 +592,9 @@ as $$
     'active', p_user.active,
     'phone', coalesce(p_user.phone, ''),
     'vehicle', coalesce(p_user.vehicle, ''),
+    'lastKnownLat', p_user.last_known_lat,
+    'lastKnownLng', p_user.last_known_lng,
+    'lastKnownRecordedAt', p_user.last_known_recorded_at,
     'createdAt', p_user.created_at
   );
 $$;
@@ -1001,6 +1030,8 @@ begin
           'quoteNumber', o.inhouse_order_number,
           'invoiceNumber', o.invoice_number,
           'poNumber', o.po_number,
+          'branding', o.branding,
+          'stockDescription', o.stock_description,
           'customerName', o.customer_name,
           'driverUserId', o.driver_user_id,
           'driverName', coalesce(d.name, ''),
@@ -1115,6 +1146,8 @@ begin
           'quoteNumber', o.inhouse_order_number,
           'invoiceNumber', o.invoice_number,
           'poNumber', o.po_number,
+          'branding', o.branding,
+          'stockDescription', o.stock_description,
           'customerName', o.customer_name,
           'driverUserId', o.driver_user_id,
           'driverName', v_actor.name,
@@ -1162,7 +1195,7 @@ begin
     ;
   end if;
 
-  if v_actor.role in ('admin', 'logistics') then
+  if v_actor.role in ('admin', 'logistics', 'sales') then
     select coalesce(
       jsonb_agg(
         jsonb_build_object(
@@ -1218,32 +1251,34 @@ begin
     left join private.app_users d on d.id = m.driver_user_id
     join private.app_users c on c.id = m.created_by_user_id;
 
-    select coalesce(
-      jsonb_agg(
-        jsonb_build_object(
-          'id', r.id,
-          'stockItemId', r.stock_item_id,
-          'itemName', s.name,
-          'sku', s.sku,
-          'quoteNumber', s.quote_number,
-          'invoiceNumber', s.invoice_number,
-          'salesOrderNumber', s.sales_order_number,
-          'poNumber', s.po_number,
-          'requestedQuantity', r.requested_quantity,
-          'notes', r.notes,
-          'sentTo', r.sent_to,
-          'requestedByUserId', r.requested_by_user_id,
-          'requestedByName', u.name,
-          'sentAt', r.sent_at
-        )
-        order by r.sent_at desc
-      ),
-      '[]'::jsonb
-    )
-    into v_artwork_requests
-    from private.artwork_requests r
-    join private.stock_items s on s.id = r.stock_item_id
-    join private.app_users u on u.id = r.requested_by_user_id;
+    if v_actor.role in ('admin', 'logistics') then
+      select coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'id', r.id,
+            'stockItemId', r.stock_item_id,
+            'itemName', s.name,
+            'sku', s.sku,
+            'quoteNumber', s.quote_number,
+            'invoiceNumber', s.invoice_number,
+            'salesOrderNumber', s.sales_order_number,
+            'poNumber', s.po_number,
+            'requestedQuantity', r.requested_quantity,
+            'notes', r.notes,
+            'sentTo', r.sent_to,
+            'requestedByUserId', r.requested_by_user_id,
+            'requestedByName', u.name,
+            'sentAt', r.sent_at
+          )
+          order by r.sent_at desc
+        ),
+        '[]'::jsonb
+      )
+      into v_artwork_requests
+      from private.artwork_requests r
+      join private.stock_items s on s.id = r.stock_item_id
+      join private.app_users u on u.id = r.requested_by_user_id;
+    end if;
   end if;
 
   return jsonb_build_object(
@@ -1261,6 +1296,47 @@ begin
     'stockItems', v_stock_items,
     'stockMovements', v_stock_movements,
     'artworkRequests', v_artwork_requests
+  );
+end;
+$$;
+
+create or replace function public.record_driver_position(
+  p_token uuid,
+  p_lat numeric,
+  p_lng numeric
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_recorded_at timestamptz := now();
+begin
+  v_actor := private.require_user(p_token, array['driver']);
+
+  if p_lat is null or p_lng is null then
+    raise exception 'Latitude and longitude are required.';
+  end if;
+
+  if p_lat < -90 or p_lat > 90 then
+    raise exception 'Latitude must be between -90 and 90.';
+  end if;
+
+  if p_lng < -180 or p_lng > 180 then
+    raise exception 'Longitude must be between -180 and 180.';
+  end if;
+
+  update private.app_users
+  set last_known_lat = p_lat,
+      last_known_lng = p_lng,
+      last_known_recorded_at = v_recorded_at
+  where id = v_actor.id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'recordedAt', v_recorded_at
   );
 end;
 $$;
@@ -1802,7 +1878,7 @@ declare
   v_actor private.app_users;
   v_name text := nullif(btrim(p_name), '');
   v_sku text := coalesce(nullif(btrim(p_sku), ''), '');
-  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_quote_number text := coalesce(nullif(btrim(p_quote_number), ''), '');
   v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
   v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
@@ -1821,8 +1897,11 @@ begin
     raise exception 'Stock item name is required.';
   end if;
 
-  if v_quote_number is null then
-    raise exception 'Quote number is required.';
+  if v_quote_number = ''
+     and v_invoice_number = ''
+     and v_sales_order_number = ''
+     and v_po_number = '' then
+    raise exception 'Enter at least one quote, sales order, invoice, or PO number.';
   end if;
 
   if v_initial_quantity <= 0 then
@@ -1834,8 +1913,11 @@ begin
     from private.stock_items
     where lower(btrim(name)) = lower(v_name)
       and lower(btrim(quote_number)) = lower(v_quote_number)
+      and lower(btrim(invoice_number)) = lower(v_invoice_number)
+      and lower(btrim(sales_order_number)) = lower(v_sales_order_number)
+      and lower(btrim(po_number)) = lower(v_po_number)
   ) then
-    raise exception 'That stock item already exists for the same quote number.';
+    raise exception 'That stock item already exists for the same reference combination.';
   end if;
 
   if v_sku <> '' and exists (
@@ -1915,7 +1997,7 @@ declare
   v_stock_item private.stock_items;
   v_name text := nullif(btrim(p_name), '');
   v_sku text := coalesce(nullif(btrim(p_sku), ''), '');
-  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_quote_number text := coalesce(nullif(btrim(p_quote_number), ''), '');
   v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
   v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
@@ -1937,8 +2019,11 @@ begin
     raise exception 'Stock item name is required.';
   end if;
 
-  if v_quote_number is null then
-    raise exception 'Quote number is required.';
+  if v_quote_number = ''
+     and v_invoice_number = ''
+     and v_sales_order_number = ''
+     and v_po_number = '' then
+    raise exception 'Enter at least one quote, sales order, invoice, or PO number.';
   end if;
 
   if exists (
@@ -1947,8 +2032,11 @@ begin
     where id <> p_stock_item_id
       and lower(btrim(name)) = lower(v_name)
       and lower(btrim(quote_number)) = lower(v_quote_number)
+      and lower(btrim(invoice_number)) = lower(v_invoice_number)
+      and lower(btrim(sales_order_number)) = lower(v_sales_order_number)
+      and lower(btrim(po_number)) = lower(v_po_number)
   ) then
-    raise exception 'That stock item already exists for the same quote number.';
+    raise exception 'That stock item already exists for the same reference combination.';
   end if;
 
   if v_sku <> '' and exists (
@@ -2278,6 +2366,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, boolean, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean, uuid);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -2288,6 +2377,8 @@ create or replace function public.create_order(
   p_sales_order_number text default null,
   p_invoice_number text default null,
   p_po_number text default null,
+  p_branding text default null,
+  p_stock_description text default null,
   p_allow_duplicate boolean default false,
   p_notice text default null,
   p_move_to_factory boolean default false,
@@ -2309,6 +2400,8 @@ declare
   v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
   v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
+  v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
+  v_stock_description text := nullif(btrim(p_stock_description), '');
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
   v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
@@ -2325,6 +2418,10 @@ begin
 
   if v_quote_number is null then
     raise exception 'Quote number is required.';
+  end if;
+
+  if v_stock_description is null then
+    raise exception 'Stock description is required.';
   end if;
 
   if p_driver_user_id is not null then
@@ -2383,6 +2480,19 @@ begin
     raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
   end if;
 
+  if p_driver_user_id is not null
+     and exists (
+       select 1
+       from private.orders
+       where driver_user_id = p_driver_user_id
+         and location_id = p_location_id
+         and status = 'completed'
+         and scheduled_for = v_today
+     )
+     and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
+    raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
+  end if;
+
   insert into private.orders (
     customer_name,
     driver_user_id,
@@ -2392,6 +2502,8 @@ begin
     inhouse_order_number,
     invoice_number,
     po_number,
+    branding,
+    stock_description,
     priority,
     notes,
     move_to_factory,
@@ -2409,6 +2521,8 @@ begin
     v_quote_number,
     v_invoice_number,
     v_po_number,
+    v_branding,
+    v_stock_description,
     'medium',
     v_notice,
     v_move_to_factory,
@@ -2440,6 +2554,7 @@ declare
   v_actor private.app_users;
   v_order private.orders;
   v_driver private.app_users;
+  v_today date := private.today_local();
 begin
   v_actor := private.require_user(p_token);
 
@@ -2495,6 +2610,18 @@ begin
         and status = 'active'
     ) and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
       raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
+    end if;
+
+    if exists (
+      select 1
+      from private.orders
+      where id <> p_order_id
+        and driver_user_id = p_driver_user_id
+        and location_id = v_order.location_id
+        and status = 'completed'
+        and scheduled_for = v_today
+    ) and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
+      raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
     end if;
   end if;
 

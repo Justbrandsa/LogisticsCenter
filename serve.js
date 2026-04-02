@@ -31,6 +31,7 @@ try {
 const HOST = "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
+const TIME_ZONE = "Africa/Johannesburg";
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
@@ -72,6 +73,9 @@ const RPC_DEFINITIONS = Object.freeze({
   update_stock_item: {
     params: ["p_token", "p_stock_item_id", "p_name", "p_sku", "p_quote_number", "p_invoice_number", "p_sales_order_number", "p_po_number", "p_unit", "p_notes"],
   },
+  record_driver_position: {
+    params: ["p_token", "p_lat", "p_lng"],
+  },
   delete_stock_item: { params: ["p_token", "p_stock_item_id"] },
   record_stock_movement: {
     params: ["p_token", "p_stock_item_id", "p_movement_type", "p_quantity", "p_supplier_name", "p_driver_user_id", "p_notes"],
@@ -90,6 +94,8 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_sales_order_number",
       "p_invoice_number",
       "p_po_number",
+      "p_branding",
+      "p_stock_description",
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
@@ -803,47 +809,159 @@ function buildRpcQuery(functionName, parameterCount) {
   return `select public.${functionName}(${placeholders}) as data`;
 }
 
+function getOrderReferenceSummary(order) {
+  const lines = [];
+  const quoteNumber = String(order?.quoteNumber || order?.inhouseOrderNumber || "").trim();
+  const salesOrderNumber = String(order?.salesOrderNumber || order?.factoryOrderNumber || "").trim();
+  const invoiceNumber = String(order?.invoiceNumber || "").trim();
+  const poNumber = String(order?.poNumber || "").trim();
+
+  if (quoteNumber) {
+    lines.push(`Quote ${quoteNumber}`);
+  }
+
+  if (salesOrderNumber) {
+    lines.push(`SO ${salesOrderNumber}`);
+  }
+
+  if (invoiceNumber) {
+    lines.push(`Invoice ${invoiceNumber}`);
+  }
+
+  if (poNumber) {
+    lines.push(`PO ${poNumber}`);
+  }
+
+  return lines.join(" | ");
+}
+
+function getOrderPriority(order) {
+  const priority = String(order?.priority || "medium").trim().toLowerCase();
+  return ["high", "medium", "low"].includes(priority) ? priority : "medium";
+}
+
+function getOrderDriverIssue(order) {
+  const label = getOrderFlagLabel(order);
+  const note = String(order?.driverFlagNote || "").trim();
+  return [label, note].filter(Boolean).join(": ");
+}
+
+function formatDateOnly(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(`${value}T00:00:00`);
+  return new Intl.DateTimeFormat("en-ZA", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: TIME_ZONE,
+  }).format(date);
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  return new Intl.DateTimeFormat("en-ZA", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: TIME_ZONE,
+  }).format(date);
+}
+
+function capitalize(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function getOrderScheduleSummary(order) {
+  const scheduledFor = formatDateOnly(order?.scheduledFor);
+  const originalScheduledFor = formatDateOnly(order?.originalScheduledFor);
+  const carryOverCount = Number(order?.carryOverCount || 0);
+  const dayLabel = carryOverCount === 1 ? "day" : "days";
+
+  if (scheduledFor && originalScheduledFor && carryOverCount > 0) {
+    return `${scheduledFor} (Rolled from ${originalScheduledFor}, ${carryOverCount} ${dayLabel})`;
+  }
+
+  if (scheduledFor && carryOverCount > 0) {
+    return `${scheduledFor} (Rolled over ${carryOverCount} ${dayLabel})`;
+  }
+
+  return scheduledFor;
+}
+
+function buildOrderCsvRow(order) {
+  return [
+    order.reference || "",
+    order.driverName || "Unassigned",
+    order.locationName || "",
+    order.locationAddress || "",
+    getOrderEntryTypeLabel(order.entryType),
+    capitalize(getOrderPriority(order)),
+    getOrderReferenceSummary(order),
+    order.stockDescription || "",
+    order.branding || "",
+    order.moveToFactory ? "Yes" : "No",
+    order.factoryDestinationName || "",
+    getOrderDriverIssue(order),
+    order.notes || "",
+    getOrderScheduleSummary(order),
+    capitalize(order.status || "active"),
+    getOrderCompletionLabel(order),
+    order.createdByName || "",
+    formatDateTime(order.createdAt),
+    formatDateTime(order.completedAt),
+  ];
+}
+
 function buildOrdersCsv(orders) {
+  const lineBreak = "\r\n";
   const rows = [
     [
       "Reference",
-      "Driver",
+      "Assigned driver",
       "Pickup location",
-      "Collection or delivery",
+      "Pickup address",
+      "Entry type",
+      "Priority",
+      "Order references",
+      "Stock required",
+      "Branding",
       "Move to factory",
-      "Quote number",
-      "Sales order number",
-      "Invoice number",
-      "PO number",
-      "Created by",
+      "Factory destination",
+      "Driver issue",
+      "Extra notes",
+      "Schedule",
       "Status",
-      "Notice",
-      "Created at",
-      "Completed at",
+      "Completion",
+      "Created by",
+      "Created",
+      "Completed",
     ],
-    ...orders.map((order) => [
-      order.reference || "",
-      order.driverName || "Unassigned",
-      order.locationName || "",
-      order.entryType || "",
-      getMoveToFactoryLabel(order) || "No",
-      order.quoteNumber || order.inhouseOrderNumber || "",
-      order.salesOrderNumber || order.factoryOrderNumber || "",
-      order.invoiceNumber || "",
-      order.poNumber || "",
-      order.createdByName || "",
-      order.status || "",
-      buildOrderNoticeText(order),
-      order.createdAt || "",
-      order.completedAt || "",
-    ]),
+    ...orders.map(buildOrderCsvRow),
   ];
 
-  return rows.map((columns) => columns.map(escapeCsvValue).join(",")).join("\n");
+  return `\uFEFFsep=,${lineBreak}${rows
+    .map((columns) => columns.map(escapeCsvValue).join(","))
+    .join(lineBreak)}`;
 }
 
 function buildOrderNoticeText(order) {
   const lines = [];
+  const stockDescription = String(order?.stockDescription || "").trim();
+  const branding = String(order?.branding || "").trim();
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
@@ -852,6 +970,14 @@ function buildOrderNoticeText(order) {
 
   if (driverFlag) {
     lines.push(driverFlag);
+  }
+
+  if (stockDescription) {
+    lines.push(`Stock: ${stockDescription}.`);
+  }
+
+  if (branding) {
+    lines.push(`Branding: ${branding}.`);
   }
 
   if (notice) {
