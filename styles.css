@@ -1020,11 +1020,13 @@ table.responsive-stack td[data-label="Action"] .action-row button {
   display: grid;
   grid-template-columns: 1fr;
   gap: 1rem;
+  align-items: start;
 }
 
 .global-location-groups {
   display: grid;
   gap: 1rem;
+  align-items: start;
 }
 
 .stop-card {
@@ -1032,6 +1034,7 @@ table.responsive-stack td[data-label="Action"] .action-row button {
   padding: 1rem;
   display: grid;
   gap: 0.75rem;
+  align-content: start;
 }
 
 .admin-driver-map-card {

@@ -70,6 +70,8 @@ const state = {
   stockScannerPendingItemId: "",
   stockScannerPendingCode: "",
   stockSearchQuery: "",
+  globalListSearchQuery: "",
+  networkSearchQuery: "",
   stockMovementsSectionOpen: false,
   stockArtworkPanelOpen: false,
   stockArtworkRequestsSectionOpen: false,
@@ -823,6 +825,19 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "clear-global-list-search" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    state.globalListSearchQuery = "";
+    state.pagination.globalEntries = 1;
+    render();
+    return;
+  }
+
+  if (action === "clear-network-search" && currentUser.role === "admin") {
+    state.networkSearchQuery = "";
+    render();
+    return;
+  }
+
   if (action === "toggle-stock-section" && (currentUser.role === "admin" || currentUser.role === "logistics" || currentUser.role === "sales")) {
     const section = String(button.dataset.stockSection || "");
     if (section === "movements") {
@@ -1042,6 +1057,19 @@ function handleInput(event) {
 
   if (target.matches("[data-stock-search]") && target instanceof HTMLInputElement) {
     state.stockSearchQuery = target.value;
+    render();
+    return;
+  }
+
+  if (target.matches("[data-global-list-search]") && target instanceof HTMLInputElement) {
+    state.globalListSearchQuery = target.value;
+    state.pagination.globalEntries = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("[data-network-search]") && target instanceof HTMLInputElement) {
+    state.networkSearchQuery = target.value;
     render();
     return;
   }
@@ -1919,6 +1947,10 @@ function getLatestStockMovementByItemId() {
 }
 
 function normalizeStockSearchValue(value) {
+  return normalizeSearchValue(value);
+}
+
+function normalizeSearchValue(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
@@ -1955,6 +1987,122 @@ function getStockItemSearchSummary(filteredCount, totalCount) {
   }
 
   return `Showing ${filteredCount} of ${totalCount} stock items for "${query}".`;
+}
+
+function matchesGlobalOrderSearch(order, query = state.globalListSearchQuery) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) {
+    return true;
+  }
+
+  return [
+    order?.reference,
+    ...getReferenceLines(order),
+    order?.locationName,
+    order?.locationAddress,
+    getDriverDisplayName(order),
+    order?.createdByName,
+    order?.entryType,
+    order?.status,
+    order?.stockDescription,
+    order?.branding,
+    order?.notes,
+    order?.factoryDestinationName,
+    order?.driverFlagNote,
+    order?.customerName,
+  ].some((value) => normalizeSearchValue(value).includes(needle));
+}
+
+function matchesGlobalLocationSearch(group, query = state.globalListSearchQuery) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) {
+    return true;
+  }
+
+  return [
+    group?.locationName,
+    group?.locationAddress,
+  ].some((value) => normalizeSearchValue(value).includes(needle));
+}
+
+function buildFilteredLocationGroup(group, orders) {
+  return {
+    ...group,
+    orders,
+    activeCount: orders.filter((order) => order.status === "active").length,
+    completedCount: orders.filter((order) => order.status === "completed").length,
+    priorityCount: orders.filter((order) => isPriorityOrder(order)).length,
+  };
+}
+
+function getFilteredGlobalLocationGroups(groups = getGlobalLocationGroups(), query = state.globalListSearchQuery) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) {
+    return groups;
+  }
+
+  return groups
+    .map((group) => {
+      const locationMatches = matchesGlobalLocationSearch(group, query);
+      const matchingOrders = locationMatches
+        ? group.orders
+        : group.orders.filter((order) => matchesGlobalOrderSearch(order, query));
+
+      if (!matchingOrders.length) {
+        return null;
+      }
+
+      return buildFilteredLocationGroup(group, matchingOrders);
+    })
+    .filter(Boolean);
+}
+
+function getGlobalListSearchSummary(filteredGroups, totalGroups, totalEntries) {
+  const query = String(state.globalListSearchQuery || "").trim();
+  const filteredEntries = filteredGroups.reduce((sum, group) => sum + group.orders.length, 0);
+
+  if (!query) {
+    return `${totalEntries} visible entr${totalEntries === 1 ? "y" : "ies"} across ${totalGroups} pickup location${totalGroups === 1 ? "" : "s"}.`;
+  }
+
+  if (!filteredEntries) {
+    return `No entries or locations match "${query}".`;
+  }
+
+  return `Showing ${filteredEntries} of ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"} across ${filteredGroups.length} of ${totalGroups} location${totalGroups === 1 ? "" : "s"} for "${query}".`;
+}
+
+function matchesNetworkSearch(location, query = state.networkSearchQuery) {
+  const needle = normalizeSearchValue(query);
+  if (!needle) {
+    return true;
+  }
+
+  return [
+    location?.name,
+    location?.locationType,
+    location?.address,
+    location?.contactPerson,
+    location?.contactNumber,
+    location?.notes,
+  ].some((value) => normalizeSearchValue(value).includes(needle));
+}
+
+function getFilteredNetworkLocations() {
+  return state.snapshot.locations.filter((location) => matchesNetworkSearch(location));
+}
+
+function getNetworkSearchSummary(filteredCount, totalCount) {
+  const query = String(state.networkSearchQuery || "").trim();
+  if (!query) {
+    return `${totalCount} pickup location${totalCount === 1 ? "" : "s"} in the network.`;
+  }
+
+  if (!filteredCount) {
+    return `No locations match "${query}".`;
+  }
+
+  return `Showing ${filteredCount} of ${totalCount} location${totalCount === 1 ? "" : "s"} for "${query}".`;
 }
 
 function renderStockDisclosure({ tag = "section", containerClass = "table-card", sectionKey, eyebrow, title, subtitle = "", summary = "", open = false, body }) {
@@ -4347,6 +4495,8 @@ function renderAccountPanel() {
 function renderSupplierNetworkSection() {
   const editingLocation = getEditingLocation();
   const isEditingLocation = Boolean(editingLocation);
+  const filteredLocations = getFilteredNetworkLocations();
+  const totalLocations = state.snapshot.locations.length;
 
   return `
     <section class="table-card">
@@ -4418,6 +4568,29 @@ function renderSupplierNetworkSection() {
             }
           </div>
         </form>
+        <div class="table-toolbar stock-table-toolbar">
+          <div class="stock-section-copy">
+            <p class="stock-results-note">${escapeHtml(getNetworkSearchSummary(filteredLocations.length, totalLocations))}</p>
+          </div>
+          <label class="stock-search">
+            Search locations
+            <div class="stock-search-controls">
+              <input
+                type="search"
+                value="${escapeHtml(state.networkSearchQuery)}"
+                placeholder="Name, type, address, contact"
+                autocomplete="off"
+                spellcheck="false"
+                data-network-search
+              >
+              ${
+                state.networkSearchQuery
+                  ? `<button type="button" class="button button-ghost" data-action="clear-network-search"${state.busy ? " disabled" : ""}>Clear</button>`
+                  : ""
+              }
+            </div>
+          </label>
+        </div>
         <div class="table-scroll">
           <table class="responsive-stack">
             <thead>
@@ -4431,11 +4604,11 @@ function renderSupplierNetworkSection() {
             </thead>
             <tbody>
               ${
-                state.snapshot.locations.length
-                  ? state.snapshot.locations.map((location) => renderLocationRow(location)).join("")
+                filteredLocations.length
+                  ? filteredLocations.map((location) => renderLocationRow(location)).join("")
                   : `
                     <tr>
-                      <td colspan="5">No locations added yet.</td>
+                      <td colspan="5">${totalLocations ? "No locations match this search." : "No locations added yet."}</td>
                     </tr>
                   `
               }
@@ -4550,6 +4723,9 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
         Stock description
         <textarea name="stockDescription" placeholder="What stock should the driver collect for this entry?" required></textarea>
       </label>
+      <p class="field-note">
+        Saving this entry will also create the matching stock item automatically in the Stock page if it does not already exist.
+      </p>
       <label>
         Branding
         <input name="branding" type="text" placeholder="Optional">
@@ -4644,7 +4820,8 @@ function renderAssignmentManager(viewerRole) {
 function renderGlobalOrdersSection(viewerRole) {
   const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
   const locationGroups = getGlobalLocationGroups(sortedOrders);
-  const page = getPaginationData(locationGroups, "globalEntries", PAGE_SIZES.globalEntries);
+  const filteredLocationGroups = getFilteredGlobalLocationGroups(locationGroups);
+  const page = getPaginationData(filteredLocationGroups, "globalEntries", PAGE_SIZES.globalEntries);
   const canExport = viewerRole === "admin" || viewerRole === "sales";
   const canDelete = viewerRole === "admin";
 
@@ -4661,8 +4838,26 @@ function renderGlobalOrdersSection(viewerRole) {
                 : "This view groups every visible entry by pickup location. Expand a location to review the orders there."
             }
           </p>
-          <p class="stock-results-note">${escapeHtml(`${sortedOrders.length} visible entr${sortedOrders.length === 1 ? "y" : "ies"} across ${locationGroups.length} pickup location${locationGroups.length === 1 ? "" : "s"}.`)}</p>
+          <p class="stock-results-note">${escapeHtml(getGlobalListSearchSummary(filteredLocationGroups, locationGroups.length, sortedOrders.length))}</p>
         </div>
+        <label class="stock-search">
+          Search entries
+          <div class="stock-search-controls">
+            <input
+              type="search"
+              value="${escapeHtml(state.globalListSearchQuery)}"
+              placeholder="Location, reference, driver, stock description"
+              autocomplete="off"
+              spellcheck="false"
+              data-global-list-search
+            >
+            ${
+              state.globalListSearchQuery
+                ? `<button type="button" class="button button-ghost" data-action="clear-global-list-search"${state.busy ? " disabled" : ""}>Clear</button>`
+                : ""
+            }
+          </div>
+        </label>
         ${
           canExport
             ? `
@@ -4698,7 +4893,7 @@ function renderGlobalOrdersSection(viewerRole) {
         ${
           page.items.length
             ? page.items.map((group) => renderGlobalLocationGroup(group, viewerRole)).join("")
-            : '<div class="empty-state">No entries available yet.</div>'
+            : `<div class="empty-state">${escapeHtml(sortedOrders.length ? "No entries or locations match this search." : "No entries available yet.")}</div>`
         }
       </div>
       ${renderPaginationControls("globalEntries", page)}

@@ -2398,6 +2398,8 @@ declare
   v_driver private.app_users;
   v_location private.locations;
   v_factory_destination private.locations;
+  v_stock_item_id uuid;
+  v_stock_item_created boolean := false;
   v_today date := private.today_local();
   v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
   v_quote_number text := nullif(btrim(p_quote_number), '');
@@ -2408,6 +2410,10 @@ declare
   v_stock_description text := nullif(btrim(p_stock_description), '');
   v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
+  v_stock_item_notes text := case
+    when coalesce(nullif(btrim(p_branding), ''), '') <> '' then concat('Branding: ', btrim(p_branding), '.')
+    else ''
+  end;
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
   v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
 begin
@@ -2541,7 +2547,62 @@ begin
     v_actor.id
   );
 
-  return jsonb_build_object('ok', true);
+  select s.id
+  into v_stock_item_id
+  from private.stock_items s
+  where lower(btrim(s.name)) = lower(v_stock_description)
+    and lower(btrim(s.quote_number)) = lower(v_quote_number)
+    and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
+    and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
+    and lower(btrim(s.po_number)) = lower(v_po_number)
+  limit 1;
+
+  if v_stock_item_id is null then
+    begin
+      insert into private.stock_items (
+        name,
+        sku,
+        quote_number,
+        invoice_number,
+        sales_order_number,
+        po_number,
+        unit,
+        notes,
+        created_by_user_id
+      )
+      values (
+        v_stock_description,
+        '',
+        v_quote_number,
+        v_invoice_number,
+        v_sales_order_number,
+        v_po_number,
+        'units',
+        v_stock_item_notes,
+        v_actor.id
+      )
+      returning id into v_stock_item_id;
+
+      v_stock_item_created := true;
+    exception
+      when unique_violation then
+        select s.id
+        into v_stock_item_id
+        from private.stock_items s
+        where lower(btrim(s.name)) = lower(v_stock_description)
+          and lower(btrim(s.quote_number)) = lower(v_quote_number)
+          and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
+          and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
+          and lower(btrim(s.po_number)) = lower(v_po_number)
+        limit 1;
+    end;
+  end if;
+
+  return jsonb_build_object(
+    'ok', true,
+    'stockItemId', v_stock_item_id,
+    'stockItemCreated', v_stock_item_created
+  );
 end;
 $$;
 
