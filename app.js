@@ -1167,8 +1167,9 @@ async function runMutation(functionName, parameters, successMessage) {
   render();
 
   try {
-    await callRpc(functionName, parameters);
-    showFlash(successMessage, "success");
+    const data = await callRpc(functionName, parameters);
+    const warning = String(data?.warning || "").trim();
+    showFlash([successMessage, warning].filter(Boolean).join(" "), "success");
     await refreshSnapshot();
     return true;
   } catch (error) {
@@ -1324,6 +1325,7 @@ async function createOrder(formData, currentUser) {
   const driverUserId = String(formData.get("driverUserId") || "").trim();
   const locationId = String(formData.get("locationId") || "").trim();
   const entryType = String(formData.get("entryType") || "delivery").trim();
+  const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
   const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
@@ -1366,6 +1368,7 @@ async function createOrder(formData, currentUser) {
       p_po_number: poNumber,
       p_branding: branding,
       p_stock_description: stockDescription,
+      p_priority: priority,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
       p_factory_destination_location_id: moveToFactory ? factoryDestinationLocationId : null,
@@ -4519,6 +4522,10 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           <input class="readonly-field" type="text" value="${escapeHtml(currentUser.name)}" readonly>
         </label>
       </div>
+      <label class="inline-check">
+        <input type="checkbox" name="priority">
+        Mark this as a priority stop
+      </label>
       <div class="form-grid">
         <label>
           Quote number
@@ -4636,7 +4643,8 @@ function renderAssignmentManager(viewerRole) {
 
 function renderGlobalOrdersSection(viewerRole) {
   const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
-  const page = getPaginationData(sortedOrders, "globalEntries", PAGE_SIZES.globalEntries);
+  const locationGroups = getGlobalLocationGroups(sortedOrders);
+  const page = getPaginationData(locationGroups, "globalEntries", PAGE_SIZES.globalEntries);
   const canExport = viewerRole === "admin" || viewerRole === "sales";
   const canDelete = viewerRole === "admin";
 
@@ -4649,10 +4657,11 @@ function renderGlobalOrdersSection(viewerRole) {
           <p class="panel-subtitle">
             ${
               canDelete
-                ? "This table combines every visible entry across the driver-separated lists. Admins can remove entries here if needed."
-                : "This table combines every visible entry across the driver-separated lists."
+                ? "This view groups every visible entry by pickup location. Expand a location to review the orders there, and admins can still remove entries if needed."
+                : "This view groups every visible entry by pickup location. Expand a location to review the orders there."
             }
           </p>
+          <p class="stock-results-note">${escapeHtml(`${sortedOrders.length} visible entr${sortedOrders.length === 1 ? "y" : "ies"} across ${locationGroups.length} pickup location${locationGroups.length === 1 ? "" : "s"}.`)}</p>
         </div>
         ${
           canExport
@@ -4685,38 +4694,197 @@ function renderGlobalOrdersSection(viewerRole) {
           ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
           : ""
       }
-      <div class="table-scroll">
-        <table class="responsive-stack">
-          <thead>
-            <tr>
-              <th>Reference</th>
-              <th>Order references</th>
-              <th>Type</th>
-              <th>Move to factory</th>
-              <th>Driver</th>
-              <th>Pickup location</th>
-              <th>Created by</th>
-              <th>Status</th>
-              <th>Notice</th>
-              <th>Created</th>
-              ${canDelete ? "<th>Actions</th>" : ""}
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              page.items.length
-                ? page.items.map((order) => renderGlobalOrderRow(order, viewerRole)).join("")
-                : `
-                  <tr>
-                    <td colspan="${canDelete ? "11" : "10"}">No entries available yet.</td>
-                  </tr>
-                `
-            }
-          </tbody>
-        </table>
+      <div class="global-location-groups">
+        ${
+          page.items.length
+            ? page.items.map((group) => renderGlobalLocationGroup(group, viewerRole)).join("")
+            : '<div class="empty-state">No entries available yet.</div>'
+        }
       </div>
       ${renderPaginationControls("globalEntries", page)}
     </section>
+  `;
+}
+
+function getGlobalLocationGroups(sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort)) {
+  const grouped = new Map();
+
+  sortedOrders.forEach((order) => {
+    const locationId = String(order.locationId || "").trim();
+    const fallbackKey = [order.locationName, order.locationAddress]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+      .join("|");
+    const groupKey = locationId || fallbackKey || `order:${order.id}`;
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        key: groupKey,
+        locationId,
+        locationName: order.locationName || "Unknown",
+        locationAddress: order.locationAddress || "",
+        orders: [],
+        activeCount: 0,
+        completedCount: 0,
+        priorityCount: 0,
+      });
+    }
+
+    const group = grouped.get(groupKey);
+    group.orders.push(order);
+    if (order.status === "active") {
+      group.activeCount += 1;
+    }
+    if (order.status === "completed") {
+      group.completedCount += 1;
+    }
+    if (isPriorityOrder(order)) {
+      group.priorityCount += 1;
+    }
+  });
+
+  return Array.from(grouped.values())
+    .map((group) => ({
+      ...group,
+      orders: [...group.orders].sort(orderDisplaySort),
+    }))
+    .sort((left, right) => {
+      const leftHasActive = left.activeCount > 0 ? 0 : 1;
+      const rightHasActive = right.activeCount > 0 ? 0 : 1;
+      if (leftHasActive !== rightHasActive) {
+        return leftHasActive - rightHasActive;
+      }
+
+      const nameCompare = String(left.locationName || "").localeCompare(String(right.locationName || ""), undefined, {
+        sensitivity: "base",
+      });
+      if (nameCompare) {
+        return nameCompare;
+      }
+
+      return String(left.locationAddress || "").localeCompare(String(right.locationAddress || ""), undefined, {
+        sensitivity: "base",
+      });
+    });
+}
+
+function renderGlobalLocationGroup(group, viewerRole) {
+  const locationRecord = getLocation(group.locationId) || {
+    name: group.locationName,
+    address: group.locationAddress,
+  };
+  const navigationUrl = getGoogleMapsNavigateUrl(locationRecord);
+  const stopCardKey = buildGlobalLocationGroupKey(group.key);
+  const isOpen = isStopCardOpen(stopCardKey);
+
+  return `
+    <article class="stop-card global-location-group${isOpen ? " is-open" : " is-collapsed"}">
+      <div class="stop-header">
+        <div>
+          <p class="eyebrow">Pickup location</p>
+          <h4 class="stop-title">${escapeHtml(group.locationName)}</h4>
+          ${isOpen ? `<p class="stop-address">${escapeHtml(group.locationAddress || "Address not set")}</p>` : ""}
+        </div>
+        <div class="chip-row">
+          <span class="chip">${group.orders.length} entr${group.orders.length === 1 ? "y" : "ies"}</span>
+          ${group.activeCount ? `<span class="chip chip-success">${group.activeCount} active</span>` : ""}
+          ${group.completedCount ? `<span class="chip">${group.completedCount} completed</span>` : ""}
+          ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+        </div>
+      </div>
+      <div class="action-row stop-actions">
+        ${
+          navigationUrl
+            ? `
+              <a
+                class="button button-primary"
+                href="${escapeHtml(navigationUrl)}"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Navigate
+              </a>
+            `
+            : ""
+        }
+        <button
+          type="button"
+          class="button button-ghost"
+          data-action="toggle-stop-card"
+          data-stop-card-key="${escapeHtml(stopCardKey)}"
+          ${state.busy ? " disabled" : ""}
+        >
+          ${isOpen ? "Hide entries" : "Show entries"}
+        </button>
+      </div>
+      ${
+        isOpen
+          ? `
+            <div class="location-group-orders">
+              ${group.orders.map((order) => renderGlobalOrderCard(order, viewerRole)).join("")}
+            </div>
+          `
+          : ""
+      }
+    </article>
+  `;
+}
+
+function renderGlobalOrderCard(order, viewerRole) {
+  const canDelete = viewerRole === "admin";
+  const isPriority = isPriorityOrder(order);
+  const referenceLines = getReferenceLines(order);
+  const createdAt = formatDateTime(order.createdAt);
+
+  return `
+    <div class="order-card${isPriority ? " order-card-priority" : ""}">
+      <div class="stop-header">
+        <div>
+          <strong>${escapeHtml(order.reference)}</strong>
+          <div class="order-meta">
+            ${
+              referenceLines.length
+                ? referenceLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")
+                : '<span>No order references</span>'
+            }
+          </div>
+        </div>
+        <div class="chip-row">
+          ${renderTypeChip(order.entryType)}
+          ${renderOrderPriorityChip(order)}
+          ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
+          ${renderOrderFlagChip(order)}
+          ${
+            order.driverUserId
+              ? `<span class="chip">Driver: ${escapeHtml(getDriverDisplayName(order))}</span>`
+              : '<span class="chip chip-warning">Unassigned</span>'
+          }
+          ${renderStatusChip(order.status)}
+        </div>
+      </div>
+      ${renderOrderStockDetails(order)}
+      ${renderOrderNotice(order)}
+      <p class="order-card-meta-note">
+        ${escapeHtml(`Created by ${order.createdByName || "Unknown"}${createdAt ? ` on ${createdAt}` : ""}`)}
+      </p>
+      ${
+        canDelete
+          ? `
+            <div class="action-row">
+              <button
+                class="button button-danger"
+                data-action="delete-order"
+                data-order-id="${order.id}"
+                data-order-reference="${escapeHtml(order.reference)}"
+                ${state.busy ? " disabled" : ""}
+              >
+                Delete
+              </button>
+            </div>
+          `
+          : ""
+      }
+    </div>
   `;
 }
 
@@ -4906,6 +5074,7 @@ function renderAssignmentRow(order, viewerRole) {
       <td data-label="Entry">
         <strong>${escapeHtml(order.reference)}</strong><br>
         ${renderReferenceSummary(order)}
+        ${renderOrderStockDetails(order)}
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${renderOrderPriorityChip(order)}
@@ -5345,6 +5514,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                 <div class="order-meta">
                   ${getReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
                 </div>
+                ${renderOrderStockDetails(order)}
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
                   ${renderOrderPriorityChip(order)}
@@ -5583,6 +5753,9 @@ function renderOrderTransferForm(order) {
   }
 
   const currentDriverName = getDriverDisplayName(order);
+  const transferNote = state.snapshot.user?.role === "driver"
+    ? `Move this active entry from ${currentDriverName} to another active driver. The admin email inbox will be notified when you confirm the transfer.`
+    : `Move this active entry from ${currentDriverName} to another active driver.`;
 
   return `
     <div class="order-flag-form">
@@ -5595,7 +5768,7 @@ function renderOrderTransferForm(order) {
         </select>
       </label>
       <p class="field-note">
-        Move this active entry from ${escapeHtml(currentDriverName)} to another active driver.
+        ${escapeHtml(transferNote)}
       </p>
       <div class="action-row">
         <button
@@ -6103,6 +6276,10 @@ function countDuplicateOrders(driverUserId) {
 
 function buildStopCardKey(driverUserId, stopId) {
   return [String(driverUserId || "").trim(), String(stopId || "").trim()].filter(Boolean).join(":");
+}
+
+function buildGlobalLocationGroupKey(groupKey) {
+  return `global-location:${String(groupKey || "").trim()}`;
 }
 
 function isStopCardOpen(stopCardKey) {
@@ -7005,10 +7182,42 @@ function renderOrderNotice(order, emptyLabel = "") {
   `;
 }
 
-function getOrderNoticeLines(order) {
-  const lines = [];
+function getOrderStockDetailItems(order) {
+  const items = [];
   const stockDescription = String(order?.stockDescription || "").trim();
   const branding = String(order?.branding || "").trim();
+
+  if (stockDescription) {
+    items.push({ label: "Stock", value: stockDescription });
+  }
+
+  if (branding) {
+    items.push({ label: "Branding", value: branding });
+  }
+
+  return items;
+}
+
+function renderOrderStockDetails(order) {
+  const items = getOrderStockDetailItems(order);
+  if (!items.length) {
+    return "";
+  }
+
+  return `
+    <div class="order-stock-details">
+      ${items.map((item) => `
+        <span class="order-stock-detail">
+          <span class="order-stock-label">${escapeHtml(item.label)}:</span>
+          ${escapeHtml(item.value)}
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function getOrderNoticeLines(order) {
+  const lines = [];
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
@@ -7017,14 +7226,6 @@ function getOrderNoticeLines(order) {
 
   if (driverFlag) {
     lines.push(driverFlag);
-  }
-
-  if (stockDescription) {
-    lines.push(`Stock: ${stockDescription}.`);
-  }
-
-  if (branding) {
-    lines.push(`Branding: ${branding}.`);
   }
 
   if (notice) {

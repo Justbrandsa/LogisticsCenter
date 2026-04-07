@@ -654,6 +654,8 @@ begin
 end;
 $$;
 
+drop function if exists private.roll_forward_open_orders(date);
+
 create or replace function private.roll_forward_open_orders(p_today date default private.today_local())
 returns jsonb
 language plpgsql
@@ -2367,6 +2369,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -2379,6 +2382,7 @@ create or replace function public.create_order(
   p_po_number text default null,
   p_branding text default null,
   p_stock_description text default null,
+  p_priority text default 'medium',
   p_allow_duplicate boolean default false,
   p_notice text default null,
   p_move_to_factory boolean default false,
@@ -2402,6 +2406,7 @@ declare
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
   v_stock_description text := nullif(btrim(p_stock_description), '');
+  v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
   v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
@@ -2422,6 +2427,10 @@ begin
 
   if v_stock_description is null then
     raise exception 'Stock description is required.';
+  end if;
+
+  if v_priority not in ('high', 'medium', 'low') then
+    raise exception 'Choose a valid priority.';
   end if;
 
   if p_driver_user_id is not null then
@@ -2523,7 +2532,7 @@ begin
     v_po_number,
     v_branding,
     v_stock_description,
-    'medium',
+    v_priority,
     v_notice,
     v_move_to_factory,
     v_factory_destination_location_id,

@@ -96,6 +96,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_po_number",
       "p_branding",
       "p_stock_description",
+      "p_priority",
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
@@ -227,9 +228,24 @@ async function routeRequest(request, response) {
     if (request.method === "POST" && cleanPath.startsWith("/api/rpc/")) {
       const functionName = cleanPath.slice("/api/rpc/".length);
       const payload = await readJsonBody(request);
-      const data = await database.call(functionName, payload?.parameters || {});
+      const parameters = payload?.parameters || {};
+      const driverTransferEmailContext = await buildDriverTransferEmailContext(functionName, parameters);
+      const data = await database.call(functionName, parameters);
+      let responseData = data;
+      let warning = "";
       await maybeSendCarryOverEmail(functionName, data);
-      sendJson(response, 200, { data });
+      if (driverTransferEmailContext) {
+        try {
+          await mailer.sendDriverTransferEmail(driverTransferEmailContext);
+        } catch (error) {
+          warning = `Admin email could not be sent: ${normalizeErrorMessage(error)}`;
+          console.error("Failed to send driver transfer email.", error);
+        }
+      }
+      if (warning) {
+        responseData = appendWarningToRpcResult(data, warning);
+      }
+      sendJson(response, 200, { data: responseData });
       return;
     }
 
@@ -281,6 +297,60 @@ async function routeRequest(request, response) {
 
     sendJson(response, statusCode, { error: message });
   }
+}
+
+async function buildDriverTransferEmailContext(functionName, parameters) {
+  if (functionName !== "assign_order") {
+    return null;
+  }
+
+  const token = String(parameters?.p_token || "").trim();
+  const orderId = String(parameters?.p_order_id || "").trim();
+  const nextDriverUserId = String(parameters?.p_driver_user_id || "").trim();
+  if (!token || !orderId || !nextDriverUserId) {
+    return null;
+  }
+
+  const snapshot = await database.call("get_app_snapshot", { p_token: token });
+  const currentUser = snapshot?.user || null;
+  if (!currentUser || currentUser.role !== "driver") {
+    return null;
+  }
+
+  const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : [];
+  const drivers = Array.isArray(snapshot?.users) ? snapshot.users : [];
+  const order = orders.find((entry) => entry.id === orderId && entry.status === "active") || null;
+  const nextDriver = drivers.find((driver) => driver.id === nextDriverUserId) || null;
+
+  if (!order || !nextDriver) {
+    return null;
+  }
+
+  return {
+    initiatedByName: currentUser.name || "Driver",
+    fromDriverName: order.driverName || currentUser.name || "Unknown driver",
+    toDriverName: nextDriver.name || "Unknown driver",
+    transferredAt: new Date().toISOString(),
+    order,
+  };
+}
+
+function appendWarningToRpcResult(data, warning) {
+  if (!warning) {
+    return data;
+  }
+
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    return {
+      ...data,
+      warning,
+    };
+  }
+
+  return {
+    value: data,
+    warning,
+  };
 }
 
 function createDatabase() {
@@ -558,6 +628,53 @@ function createMailer() {
         sentFrom: status.from,
         subject,
         count,
+      };
+    },
+    async sendDriverTransferEmail(transfer) {
+      if (!status.configured) {
+        throw createHttpError(503, status.reason || "Email delivery is not configured.");
+      }
+
+      const order = transfer?.order || null;
+      if (!order) {
+        throw createHttpError(400, "Transfer details are required.");
+      }
+
+      const transferredAt = formatDateTime(transfer?.transferredAt || new Date().toISOString());
+      const subject = `Driver transfer: ${order.reference || "Route Ledger entry"} -> ${transfer?.toDriverName || "New driver"}`;
+      const text = [
+        "A driver transferred an active Route Ledger entry.",
+        "",
+        `Transferred by: ${transfer?.initiatedByName || "Driver"}`,
+        `From driver: ${transfer?.fromDriverName || "Unknown driver"}`,
+        `To driver: ${transfer?.toDriverName || "Unknown driver"}`,
+        `Reference: ${order.reference || "Unknown"}`,
+        `Order references: ${getOrderReferenceSummary(order) || "None"}`,
+        `Stock required: ${String(order.stockDescription || "").trim() || "Not set"}`,
+        `Branding: ${String(order.branding || "").trim() || "None"}`,
+        `Entry type: ${getOrderEntryTypeLabel(order.entryType) || "Not set"}`,
+        `Priority: ${capitalize(getOrderPriority(order)) || "Medium"}`,
+        `Pickup location: ${String(order.locationName || "").trim() || "Unknown"}`,
+        `Pickup address: ${String(order.locationAddress || "").trim() || "Unknown"}`,
+        `Move to factory: ${getMoveToFactoryLabel(order) || "No"}`,
+        `Driver issue: ${getOrderDriverIssue(order) || "None"}`,
+        `Notes: ${String(order.notes || "").trim() || "None"}`,
+        `Schedule: ${getOrderScheduleSummary(order) || "Not scheduled"}`,
+        `Transferred at: ${transferredAt || "Just now"}`,
+      ].join("\n");
+
+      await sendMessage({
+        from: status.from,
+        to: status.to,
+        subject,
+        text,
+      });
+
+      return {
+        ok: true,
+        sentTo: status.to,
+        sentFrom: status.from,
+        subject,
       };
     },
     async sendArtworkRequest(token, payload) {
@@ -1228,8 +1345,25 @@ function getMoveToFactoryText(order) {
     : "Move collected stock to a factory.";
 }
 
+function getEmailRecipientList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean);
+  }
+
+  return String(value || "")
+    .split(/[,\n;]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 async function sendViaMicrosoftGraph(config, message) {
   const token = await getMicrosoftGraphAccessToken(config);
+  const recipients = getEmailRecipientList(message.to);
+  if (!recipients.length) {
+    throw createHttpError(400, "At least one email recipient is required.");
+  }
   const attachments = Array.isArray(message.attachments)
     ? message.attachments.map((attachment) => ({
         "@odata.type": "#microsoft.graph.fileAttachment",
@@ -1245,13 +1379,11 @@ async function sendViaMicrosoftGraph(config, message) {
         contentType: "Text",
         content: message.text,
       },
-      toRecipients: [
-        {
-          emailAddress: {
-            address: message.to,
-          },
+      toRecipients: recipients.map((recipient) => ({
+        emailAddress: {
+          address: recipient,
         },
-      ],
+      })),
     },
     saveToSentItems: true,
   };
