@@ -512,7 +512,21 @@ function normalizeError(error) {
   }
 
   const candidate = error.message || error.details || error.hint;
-  return candidate || "Something went wrong.";
+  const message = candidate || "Something went wrong.";
+  const lowerMessage = String(message).toLowerCase();
+
+  if (
+    lowerMessage.includes("function public.create_order")
+    || lowerMessage.includes("function public.assign_order")
+    || lowerMessage.includes("function public.record_driver_position")
+    || lowerMessage.includes("column \"last_known_lat\"")
+    || lowerMessage.includes("column \"last_known_lng\"")
+    || lowerMessage.includes("column \"last_known_recorded_at\"")
+  ) {
+    return "The app code is ahead of the database. Apply the latest neon.sql update, then try again.";
+  }
+
+  return message;
 }
 
 async function handleSubmit(event) {
@@ -5824,6 +5838,19 @@ function getDriversWithRecordedPositions() {
     .filter((driver) => Number.isFinite(driver.lat) && Number.isFinite(driver.lng));
 }
 
+function hasDriverLocationTrackingFields() {
+  const drivers = getDriverUsers();
+  if (!drivers.length) {
+    return true;
+  }
+
+  return drivers.some((driver) => (
+    Object.prototype.hasOwnProperty.call(driver, "lastKnownLat")
+    || Object.prototype.hasOwnProperty.call(driver, "lastKnownLng")
+    || Object.prototype.hasOwnProperty.call(driver, "lastKnownRecordedAt")
+  ));
+}
+
 function getTransferDriverChoices(order) {
   const currentDriverId = String(order?.driverUserId || "").trim();
   return state.snapshot.users.filter((user) => (
@@ -5964,6 +5991,11 @@ async function recordDriverPosition(lat, lng) {
       p_lng: lng,
     });
   } catch (error) {
+    const message = normalizeError(error);
+    state.driverRouteOriginError = message.includes("latest neon.sql")
+      ? `${message} Driver tracking will start working after that update is applied.`
+      : "Your location was found, but it could not be saved for admin tracking right now.";
+    render();
     console.error("Failed to record driver position.", error);
   }
 }
@@ -6533,6 +6565,10 @@ function getAdminDriverLocationStatus(positionedDrivers = getDriversWithRecorded
     return "No driver accounts are available yet.";
   }
 
+  if (!hasDriverLocationTrackingFields()) {
+    return "Driver location tracking is not available in this database yet. Apply the latest neon.sql update, then have drivers open their route page and allow location access.";
+  }
+
   if (!positionedDrivers.length) {
     return "No driver positions have been recorded yet. Drivers need to open their route page and allow location access first.";
   }
@@ -6636,7 +6672,7 @@ function buildDriverRouteMarkerIcon(label, isHub) {
 
 function getDriverRouteOriginStatus(routeOrigin) {
   if (routeOrigin?.source === "driver") {
-    return "Route starts from the driver's current location.";
+    return ["Route starts from the driver's current location.", state.driverRouteOriginError || ""].filter(Boolean).join(" ");
   }
 
   return state.driverRouteOriginError || "";
