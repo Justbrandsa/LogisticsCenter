@@ -976,6 +976,18 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "pick-up-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
+    await runMutation(
+      "pick_up_order",
+      {
+        p_token: sessionToken,
+        p_order_id: button.dataset.orderId,
+      },
+      "Entry marked as picked up.",
+    );
+    return;
+  }
+
   if (action === "complete-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
     const completionType = String(button.dataset.completionType || "").trim() || "office";
     const completionLabel = getOrderCompletionTypeLabel(completionType).toLowerCase() || "completed";
@@ -1955,7 +1967,10 @@ function findStockItemForOrder(order) {
 
 function getRecentCreatedStockActivities() {
   return state.snapshot.stockItems
-    .filter((item) => isRecentStockMovement(item.createdAt))
+    .filter((item) => (
+      isRecentStockMovement(item.createdAt)
+      && String(item.createdSource || "manual").trim() !== "order"
+    ))
     .map((item) => ({
       id: `stock-created-${item.id}`,
       stockItemId: item.id,
@@ -4164,14 +4179,14 @@ function renderRecentStockActivitySection({ recentInbound, recentOutbound }) {
           <p class="eyebrow">Recent activity</p>
           <h3 class="panel-title">Recently arrived and shipped stock</h3>
           <p class="panel-subtitle">
-            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_HOURS))} hours, including newly created stock items and driver office drops, grouped by item.
+            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_HOURS))} hours, including manually created stock items and driver office drops, grouped by item.
           </p>
         </div>
       </div>
       <div class="recent-stock-grid">
         ${renderRecentStockActivityColumn({
           title: "Recently arrived",
-          subtitle: "Latest stock-in activity, newly created items, and driver office drops per stock line.",
+          subtitle: "Latest stock-in activity, manually created stock items, and driver office drops per stock line.",
           emptyLabel: `No stock arrived, was created, or was dropped at the office in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
           movements: recentInbound,
         })}
@@ -5176,6 +5191,7 @@ function renderGlobalOrderCard(order, viewerRole) {
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${renderOrderPriorityChip(order)}
+          ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
           ${renderOrderFlagChip(order)}
           ${
@@ -5357,6 +5373,7 @@ function renderGlobalOrderRow(order, viewerRole) {
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${renderOrderPriorityChip(order)}
+          ${renderOrderPickupChip(order)}
         </div>
       </td>
       <td data-label="Move to factory">${renderMoveToFactoryValue(order)}</td>
@@ -5402,6 +5419,7 @@ function renderAssignmentRow(order, viewerRole) {
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${renderOrderPriorityChip(order)}
+          ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
           ${renderOrderFlagChip(order)}
         </div>
@@ -5861,8 +5879,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
             const canFlag = allowFlag && order.status === "active";
             const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
             const isPriority = isPriorityOrder(order);
-            const canDropAtOffice = allowComplete && order.status === "active";
-            const canDropAtFactory = allowComplete && order.status === "active" && order.moveToFactory;
+            const pickedUp = isOrderPickedUp(order);
+            const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
+            const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
+            const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
 
             return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
@@ -5874,6 +5894,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
                   ${renderOrderPriorityChip(order)}
+                  ${renderOrderPickupChip(order)}
                   ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
                   ${renderOrderFlagChip(order)}
                   <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
@@ -5895,6 +5916,20 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 ${state.busy ? " disabled" : ""}
                               >
                                 ${isPriority ? "Clear priority" : "Make priority"}
+                              </button>
+                            `
+                            : ""
+                        }
+                        ${
+                          canMarkPickedUp
+                            ? `
+                              <button
+                                class="button button-primary"
+                                data-action="pick-up-order"
+                                data-order-id="${order.id}"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                Picked up
                               </button>
                             `
                             : ""
@@ -6035,6 +6070,14 @@ function isPriorityOrder(order) {
 
 function renderOrderPriorityChip(order) {
   return isPriorityOrder(order) ? '<span class="chip chip-priority-high">Priority stop</span>' : "";
+}
+
+function isOrderPickedUp(order) {
+  return Boolean(String(order?.pickedUpAt || "").trim());
+}
+
+function renderOrderPickupChip(order) {
+  return isOrderPickedUp(order) ? '<span class="chip chip-success">Picked up</span>' : "";
 }
 
 function renderOrderFlagChip(order) {
@@ -7583,12 +7626,17 @@ function getOrderNoticeLines(order) {
   const lines = [];
   const notice = String(order?.notes || "").trim();
   const driverFlag = getOrderFlagNoticeText(order);
+  const pickupNotice = getOrderPickupNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
   const completion = getOrderCompletionNoticeText(order);
   const rolloverNotice = getRolloverNoticeText(order);
 
   if (driverFlag) {
     lines.push(driverFlag);
+  }
+
+  if (pickupNotice) {
+    lines.push(pickupNotice);
   }
 
   if (notice) {
@@ -7639,6 +7687,22 @@ function getOrderFlagNoticeText(order) {
 
   if (flaggedAt || flaggedBy) {
     parts.push(`Logged ${[flaggedAt, flaggedBy ? `by ${flaggedBy}` : ""].filter(Boolean).join(" ")}.`);
+  }
+
+  return parts.join(" ");
+}
+
+function getOrderPickupNoticeText(order) {
+  if (!isOrderPickedUp(order)) {
+    return "";
+  }
+
+  const pickedUpAt = formatDateTime(order?.pickedUpAt);
+  const pickedUpBy = String(order?.pickedUpByName || "").trim();
+  const parts = ["Picked up."];
+
+  if (pickedUpAt || pickedUpBy) {
+    parts.push(`Logged ${[pickedUpAt, pickedUpBy ? `by ${pickedUpBy}` : ""].filter(Boolean).join(" ")}.`);
   }
 
   return parts.join(" ");

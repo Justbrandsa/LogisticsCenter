@@ -107,6 +107,7 @@ const RPC_DEFINITIONS = Object.freeze({
   assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
   set_order_priority: { params: ["p_token", "p_order_id", "p_priority"] },
   set_order_flag: { params: ["p_token", "p_order_id", "p_flag_type", "p_note"] },
+  pick_up_order: { params: ["p_token", "p_order_id"] },
   complete_order: { params: ["p_token", "p_order_id", "p_completion_type"] },
   delete_order: { params: ["p_token", "p_order_id"] },
 });
@@ -1140,6 +1141,7 @@ function buildCarryOverEmailText(rollover) {
     "",
     `New scheduled date: ${scheduledFor || "Unknown"}`,
     `Items carried over: ${count}`,
+    "Rolled items were marked as priority stops.",
   ];
 
   if (!groups.length) {
@@ -1188,6 +1190,7 @@ function buildCarryOverEmailOrderLine(order) {
   const entryType = getOrderEntryTypeLabel(order?.entryType);
   const locationName = String(order?.locationName || "").trim();
   const deliveryAddress = String(order?.deliveryAddress || "").trim();
+  const priority = capitalize(getOrderPriority(order));
   const quoteNumber = String(order?.quoteNumber || "").trim();
   const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
   const invoiceNumber = String(order?.invoiceNumber || "").trim();
@@ -1213,6 +1216,10 @@ function buildCarryOverEmailOrderLine(order) {
 
   if (deliveryAddress) {
     lineParts.push(`Delivery address: ${deliveryAddress}`);
+  }
+
+  if (priority) {
+    lineParts.push(`Priority: ${priority}`);
   }
 
   if (quoteNumber && quoteNumber !== reference) {

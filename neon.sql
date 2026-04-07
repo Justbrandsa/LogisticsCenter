@@ -188,6 +188,8 @@ create table if not exists private.orders (
   driver_flag_note text not null default '',
   driver_flagged_at timestamptz,
   driver_flagged_by_user_id uuid references private.app_users(id) on delete set null,
+  picked_up_at timestamptz,
+  picked_up_by_user_id uuid references private.app_users(id) on delete set null,
   move_to_factory boolean not null default false,
   factory_destination_location_id uuid references private.locations(id) on delete restrict,
   status text not null default 'active' check (status in ('active', 'completed')),
@@ -214,6 +216,8 @@ alter table private.orders add column if not exists driver_flag_type text;
 alter table private.orders add column if not exists driver_flag_note text;
 alter table private.orders add column if not exists driver_flagged_at timestamptz;
 alter table private.orders add column if not exists driver_flagged_by_user_id uuid references private.app_users(id) on delete set null;
+alter table private.orders add column if not exists picked_up_at timestamptz;
+alter table private.orders add column if not exists picked_up_by_user_id uuid references private.app_users(id) on delete set null;
 alter table private.orders add column if not exists move_to_factory boolean;
 alter table private.orders add column if not exists factory_destination_location_id uuid;
 alter table private.orders add column if not exists completion_type text;
@@ -341,6 +345,7 @@ create table if not exists private.stock_items (
   po_number text not null default '',
   unit text not null default 'units',
   notes text not null default '',
+  created_source text not null default 'manual',
   created_by_user_id uuid not null references private.app_users(id) on delete restrict,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -350,6 +355,7 @@ alter table private.stock_items add column if not exists quote_number text;
 alter table private.stock_items add column if not exists invoice_number text;
 alter table private.stock_items add column if not exists sales_order_number text;
 alter table private.stock_items add column if not exists po_number text;
+alter table private.stock_items add column if not exists created_source text;
 
 update private.stock_items
 set quote_number = ''
@@ -367,14 +373,45 @@ update private.stock_items
 set po_number = ''
 where po_number is null;
 
+update private.stock_items
+set created_source = 'manual'
+where created_source is null
+   or nullif(btrim(created_source), '') is null;
+
+update private.stock_items s
+set created_source = 'order'
+where not exists (
+    select 1
+    from private.stock_movements m
+    where m.stock_item_id = s.id
+  )
+  and exists (
+    select 1
+    from private.orders o
+    where lower(btrim(s.name)) = lower(btrim(o.stock_description))
+      and lower(btrim(s.quote_number)) = lower(btrim(o.inhouse_order_number))
+      and lower(btrim(s.invoice_number)) = lower(btrim(o.invoice_number))
+      and lower(btrim(s.sales_order_number)) = lower(btrim(o.factory_order_number))
+      and lower(btrim(s.po_number)) = lower(btrim(o.po_number))
+  );
+
 alter table private.stock_items alter column quote_number set default '';
 alter table private.stock_items alter column invoice_number set default '';
 alter table private.stock_items alter column sales_order_number set default '';
 alter table private.stock_items alter column po_number set default '';
+alter table private.stock_items alter column created_source set default 'manual';
 alter table private.stock_items alter column quote_number set not null;
 alter table private.stock_items alter column invoice_number set not null;
 alter table private.stock_items alter column sales_order_number set not null;
 alter table private.stock_items alter column po_number set not null;
+alter table private.stock_items alter column created_source set not null;
+
+alter table private.stock_items
+  drop constraint if exists stock_items_created_source_check;
+
+alter table private.stock_items
+  add constraint stock_items_created_source_check
+  check (created_source in ('manual', 'order'));
 
 drop index if exists stock_items_name_unique;
 drop index if exists stock_items_quote_name_unique;
@@ -703,13 +740,16 @@ begin
       l.location_type,
       l.contact_person as location_contact_person,
       l.contact_number as location_contact_number,
-      o.priority,
+      'high'::text as priority,
       o.notes,
       o.driver_flag_type,
       o.driver_flag_note,
       o.driver_flagged_at,
       o.driver_flagged_by_user_id,
       coalesce(g.name, '') as driver_flagged_by_name,
+      o.picked_up_at,
+      o.picked_up_by_user_id,
+      coalesce(i.name, '') as picked_up_by_name,
       o.status,
       o.scheduled_for as previous_scheduled_for,
       p_today as scheduled_for,
@@ -729,6 +769,7 @@ begin
     left join private.locations f on f.id = o.factory_destination_location_id
     left join private.app_users g on g.id = o.driver_flagged_by_user_id
     left join private.app_users h on h.id = o.completed_by_user_id
+    left join private.app_users i on i.id = o.picked_up_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     where o.status = 'active'
       and o.scheduled_for < p_today
@@ -736,6 +777,7 @@ begin
   updated_orders as (
     update private.orders o
     set scheduled_for = p_today,
+        priority = 'high',
         carry_over_count = o.carry_over_count + greatest((p_today - o.scheduled_for), 1),
         updated_at = now()
     from carried_orders carried
@@ -773,6 +815,9 @@ begin
         'driverFlaggedAt', carried.driver_flagged_at,
         'driverFlaggedByUserId', carried.driver_flagged_by_user_id,
         'driverFlaggedByName', carried.driver_flagged_by_name,
+        'pickedUpAt', carried.picked_up_at,
+        'pickedUpByUserId', carried.picked_up_by_user_id,
+        'pickedUpByName', carried.picked_up_by_name,
         'completionType', carried.completion_type,
         'completedByUserId', carried.completed_by_user_id,
         'completedByName', carried.completed_by_name,
@@ -1061,6 +1106,9 @@ begin
           'driverFlaggedAt', o.driver_flagged_at,
           'driverFlaggedByUserId', o.driver_flagged_by_user_id,
           'driverFlaggedByName', coalesce(g.name, ''),
+          'pickedUpAt', o.picked_up_at,
+          'pickedUpByUserId', o.picked_up_by_user_id,
+          'pickedUpByName', coalesce(i.name, ''),
           'completionType', o.completion_type,
           'completedByUserId', o.completed_by_user_id,
           'completedByName', coalesce(h.name, ''),
@@ -1088,6 +1136,7 @@ begin
     left join private.locations f on f.id = o.factory_destination_location_id
     left join private.app_users g on g.id = o.driver_flagged_by_user_id
     left join private.app_users h on h.id = o.completed_by_user_id
+    left join private.app_users i on i.id = o.picked_up_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     ;
   else
@@ -1178,6 +1227,9 @@ begin
           'driverFlaggedAt', o.driver_flagged_at,
           'driverFlaggedByUserId', o.driver_flagged_by_user_id,
           'driverFlaggedByName', coalesce(g.name, ''),
+          'pickedUpAt', o.picked_up_at,
+          'pickedUpByUserId', o.picked_up_by_user_id,
+          'pickedUpByName', coalesce(i.name, ''),
           'completionType', o.completion_type,
           'completedByUserId', o.completed_by_user_id,
           'completedByName', coalesce(h.name, ''),
@@ -1204,6 +1256,7 @@ begin
     left join private.locations f on f.id = o.factory_destination_location_id
     left join private.app_users g on g.id = o.driver_flagged_by_user_id
     left join private.app_users h on h.id = o.completed_by_user_id
+    left join private.app_users i on i.id = o.picked_up_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     where o.driver_user_id = v_actor.id
     ;
@@ -1222,6 +1275,7 @@ begin
           'poNumber', s.po_number,
           'unit', s.unit,
           'notes', s.notes,
+          'createdSource', s.created_source,
           'onHandQuantity', private.stock_on_hand(s.id),
           'createdAt', s.created_at,
           'updatedAt', s.updated_at
@@ -1951,6 +2005,7 @@ begin
     po_number,
     unit,
     notes,
+    created_source,
     created_by_user_id
   )
   values (
@@ -1962,6 +2017,7 @@ begin
     v_po_number,
     v_unit,
     v_notes,
+    'manual',
     v_actor.id
   )
   returning id into v_stock_item_id;
@@ -2591,6 +2647,7 @@ begin
         po_number,
         unit,
         notes,
+        created_source,
         created_by_user_id
       )
       values (
@@ -2602,6 +2659,7 @@ begin
         v_po_number,
         'units',
         v_stock_item_notes,
+        'order',
         v_actor.id
       )
       returning id into v_stock_item_id;
@@ -2830,6 +2888,60 @@ begin
 end;
 $$;
 
+drop function if exists public.pick_up_order(uuid, uuid);
+
+create or replace function public.pick_up_order(
+  p_token uuid,
+  p_order_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_order private.orders;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role not in ('admin', 'driver') then
+    raise exception 'Permission denied';
+  end if;
+
+  select *
+  into v_order
+  from private.orders
+  where id = p_order_id;
+
+  if v_order.id is null then
+    raise exception 'Order not found.';
+  end if;
+
+  if v_actor.role = 'driver' and v_order.driver_user_id is distinct from v_actor.id then
+    raise exception 'Drivers can only pick up their own assigned orders.';
+  end if;
+
+  if v_order.status <> 'active' then
+    raise exception 'Only active entries can be marked as picked up.';
+  end if;
+
+  if v_order.picked_up_at is not null then
+    return jsonb_build_object('ok', true);
+  end if;
+
+  update private.orders
+  set picked_up_at = now(),
+      picked_up_by_user_id = v_actor.id,
+      updated_at = now()
+  where id = p_order_id
+    and status = 'active'
+    and picked_up_at is null;
+
+  return jsonb_build_object('ok', true, 'pickedUpBy', v_actor.id);
+end;
+$$;
+
 drop function if exists public.complete_order(uuid, uuid);
 drop function if exists public.complete_order(uuid, uuid, text);
 
@@ -2877,6 +2989,10 @@ begin
 
   if v_completion_type = 'factory' and not v_order.move_to_factory then
     raise exception 'Only factory-transfer entries can be marked as dropped at the factory.';
+  end if;
+
+  if v_order.picked_up_at is null then
+    raise exception 'Mark the entry as picked up before dropping it off.';
   end if;
 
   update private.orders
