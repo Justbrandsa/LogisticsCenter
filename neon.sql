@@ -181,6 +181,7 @@ create table if not exists private.orders (
   invoice_number text not null default '',
   po_number text not null default '',
   customer_name text not null,
+  delivery_address text not null default '',
   priority text not null check (priority in ('high', 'medium', 'low')),
   notes text not null default '',
   driver_flag_type text check (driver_flag_type in ('not_collected', 'not_ready')),
@@ -208,6 +209,7 @@ alter table private.orders add column if not exists invoice_number text;
 alter table private.orders add column if not exists po_number text;
 alter table private.orders add column if not exists branding text;
 alter table private.orders add column if not exists stock_description text;
+alter table private.orders add column if not exists delivery_address text;
 alter table private.orders add column if not exists driver_flag_type text;
 alter table private.orders add column if not exists driver_flag_note text;
 alter table private.orders add column if not exists driver_flagged_at timestamptz;
@@ -257,6 +259,10 @@ set stock_description = ''
 where stock_description is null;
 
 update private.orders
+set delivery_address = ''
+where delivery_address is null;
+
+update private.orders
 set driver_flag_note = ''
 where driver_flag_note is null;
 
@@ -281,6 +287,7 @@ alter table private.orders alter column invoice_number set default '';
 alter table private.orders alter column po_number set default '';
 alter table private.orders alter column branding set default '';
 alter table private.orders alter column stock_description set default '';
+alter table private.orders alter column delivery_address set default '';
 alter table private.orders alter column driver_flag_note set default '';
 alter table private.orders alter column move_to_factory set default false;
 alter table private.orders alter column entry_type set not null;
@@ -290,6 +297,7 @@ alter table private.orders alter column invoice_number set not null;
 alter table private.orders alter column po_number set not null;
 alter table private.orders alter column branding set not null;
 alter table private.orders alter column stock_description set not null;
+alter table private.orders alter column delivery_address set not null;
 alter table private.orders alter column driver_flag_note set not null;
 alter table private.orders alter column move_to_factory set not null;
 
@@ -685,6 +693,7 @@ begin
       o.inhouse_order_number as quote_number,
       o.invoice_number,
       o.po_number,
+      o.delivery_address,
       o.customer_name,
       o.driver_user_id,
       coalesce(d.name, '') as driver_name,
@@ -747,6 +756,7 @@ begin
         'quoteNumber', carried.quote_number,
         'invoiceNumber', carried.invoice_number,
         'poNumber', carried.po_number,
+        'deliveryAddress', carried.delivery_address,
         'customerName', carried.customer_name,
         'driverUserId', carried.driver_user_id,
         'driverName', carried.driver_name,
@@ -1032,6 +1042,7 @@ begin
           'quoteNumber', o.inhouse_order_number,
           'invoiceNumber', o.invoice_number,
           'poNumber', o.po_number,
+          'deliveryAddress', o.delivery_address,
           'branding', o.branding,
           'stockDescription', o.stock_description,
           'customerName', o.customer_name,
@@ -1148,6 +1159,7 @@ begin
           'quoteNumber', o.inhouse_order_number,
           'invoiceNumber', o.invoice_number,
           'poNumber', o.po_number,
+          'deliveryAddress', o.delivery_address,
           'branding', o.branding,
           'stockDescription', o.stock_description,
           'customerName', o.customer_name,
@@ -2370,6 +2382,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -2382,6 +2395,7 @@ create or replace function public.create_order(
   p_po_number text default null,
   p_branding text default null,
   p_stock_description text default null,
+  p_delivery_address text default null,
   p_priority text default 'medium',
   p_allow_duplicate boolean default false,
   p_notice text default null,
@@ -2408,6 +2422,7 @@ declare
   v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
   v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
   v_stock_description text := nullif(btrim(p_stock_description), '');
+  v_delivery_address text := coalesce(nullif(btrim(p_delivery_address), ''), '');
   v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_stock_item_notes text := case
@@ -2433,6 +2448,12 @@ begin
 
   if v_stock_description is null then
     raise exception 'Stock description is required.';
+  end if;
+
+  if v_entry_type = 'delivery' and v_delivery_address = '' then
+    raise exception 'Delivery address is required for delivery entries.';
+  elsif v_entry_type <> 'delivery' then
+    v_delivery_address := '';
   end if;
 
   if v_priority not in ('high', 'medium', 'low') then
@@ -2519,6 +2540,7 @@ begin
     po_number,
     branding,
     stock_description,
+    delivery_address,
     priority,
     notes,
     move_to_factory,
@@ -2538,6 +2560,7 @@ begin
     v_po_number,
     v_branding,
     v_stock_description,
+    v_delivery_address,
     v_priority,
     v_notice,
     v_move_to_factory,

@@ -1360,6 +1360,7 @@ async function createOrder(formData, currentUser) {
   const poNumber = String(formData.get("poNumber") || "").trim();
   const branding = String(formData.get("branding") || "").trim();
   const stockDescription = String(formData.get("stockDescription") || "").trim();
+  const deliveryAddress = String(formData.get("deliveryAddress") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
   const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
@@ -1372,7 +1373,13 @@ async function createOrder(formData, currentUser) {
   }
 
   if (!stockDescription) {
-    showFlash("Stock description is required so drivers know what to collect.", "error");
+    showFlash("Stock description is required so drivers know what stock is on this entry.", "error");
+    render();
+    return;
+  }
+
+  if (entryType === "delivery" && !deliveryAddress) {
+    showFlash("Delivery address is required for delivery entries.", "error");
     render();
     return;
   }
@@ -1396,6 +1403,7 @@ async function createOrder(formData, currentUser) {
       p_po_number: poNumber,
       p_branding: branding,
       p_stock_description: stockDescription,
+      p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
       p_priority: priority,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
@@ -1889,47 +1897,147 @@ function isRecentStockMovement(value, hours = STOCK_RECENT_ACTIVITY_HOURS) {
   return (Date.now() - timestamp) <= (hours * 60 * 60 * 1000);
 }
 
+function normalizeStockMatchValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getStockActivityReferenceFields(record) {
+  return {
+    name: normalizeStockMatchValue(record?.name || record?.stockDescription),
+    quoteNumber: normalizeStockMatchValue(record?.quoteNumber || record?.inhouseOrderNumber),
+    salesOrderNumber: normalizeStockMatchValue(record?.salesOrderNumber || record?.factoryOrderNumber),
+    invoiceNumber: normalizeStockMatchValue(record?.invoiceNumber),
+    poNumber: normalizeStockMatchValue(record?.poNumber),
+  };
+}
+
+function findStockItemForOrder(order) {
+  const orderFields = getStockActivityReferenceFields(order);
+  let bestMatch = null;
+  let bestScore = 0;
+
+  state.snapshot.stockItems.forEach((item) => {
+    const itemFields = getStockActivityReferenceFields(item);
+    const exactTupleMatch = (
+      orderFields.name === itemFields.name
+      && orderFields.quoteNumber === itemFields.quoteNumber
+      && orderFields.salesOrderNumber === itemFields.salesOrderNumber
+      && orderFields.invoiceNumber === itemFields.invoiceNumber
+      && orderFields.poNumber === itemFields.poNumber
+    );
+
+    let score = exactTupleMatch ? 100 : 0;
+    let referenceMatches = 0;
+
+    ["quoteNumber", "salesOrderNumber", "invoiceNumber", "poNumber"].forEach((field) => {
+      if (orderFields[field] && itemFields[field] && orderFields[field] === itemFields[field]) {
+        score += 10;
+        referenceMatches += 1;
+      }
+    });
+
+    if (orderFields.name && itemFields.name && orderFields.name === itemFields.name) {
+      score += 1;
+    }
+
+    if (!exactTupleMatch && !referenceMatches) {
+      return;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = item;
+    }
+  });
+
+  return bestMatch;
+}
+
+function getRecentCreatedStockActivities() {
+  return state.snapshot.stockItems
+    .filter((item) => isRecentStockMovement(item.createdAt))
+    .map((item) => ({
+      id: `stock-created-${item.id}`,
+      stockItemId: item.id,
+      itemName: item.name,
+      sku: item.sku,
+      quoteNumber: item.quoteNumber,
+      invoiceNumber: item.invoiceNumber,
+      salesOrderNumber: item.salesOrderNumber,
+      poNumber: item.poNumber,
+      unit: item.unit,
+      movementType: "in",
+      quantity: Number(item.onHandQuantity || 0),
+      supplierName: "Stock item created",
+      driverUserId: "",
+      driverName: "",
+      notes: item.notes || "",
+      createdByUserId: "",
+      createdByName: "",
+      createdAt: item.createdAt,
+      activityKind: "created",
+    }));
+}
+
+function getRecentOfficeDropActivities() {
+  return state.snapshot.orders
+    .filter((order) => (
+      order.status === "completed"
+      && order.completionType === "office"
+      && isRecentStockMovement(order.completedAt)
+    ))
+    .map((order) => {
+      const matchedItem = findStockItemForOrder(order);
+
+      return {
+        id: `office-drop-${order.id}`,
+        stockItemId: matchedItem?.id || `office-drop-${order.id}`,
+        itemName: matchedItem?.name || order.stockDescription || order.reference || "Unknown",
+        sku: matchedItem?.sku || "",
+        quoteNumber: matchedItem?.quoteNumber || order.quoteNumber || order.inhouseOrderNumber || "",
+        invoiceNumber: matchedItem?.invoiceNumber || order.invoiceNumber || "",
+        salesOrderNumber: matchedItem?.salesOrderNumber || order.salesOrderNumber || order.factoryOrderNumber || "",
+        poNumber: matchedItem?.poNumber || order.poNumber || "",
+        unit: matchedItem?.unit || "units",
+        movementType: "in",
+        quantity: 0,
+        supplierName: order.locationName || "",
+        driverUserId: order.driverUserId || "",
+        driverName: order.driverName || order.completedByName || "",
+        notes: order.notes || "",
+        createdByUserId: order.completedByUserId || "",
+        createdByName: order.completedByName || "",
+        createdAt: order.completedAt,
+        activityKind: "office_drop",
+        locationName: order.locationName || "",
+        locationAddress: order.locationAddress || "",
+      };
+    });
+}
+
 function getRecentStockMovements(movementType, limit = 6) {
   const recentMovements = state.snapshot.stockMovements
     .filter((movement) => movement.movementType === movementType && isRecentStockMovement(movement.createdAt));
 
   if (movementType === "in") {
-    const recentCreatedItems = state.snapshot.stockItems
-      .filter((item) => isRecentStockMovement(item.createdAt))
-      .map((item) => ({
-        id: `stock-created-${item.id}`,
-        stockItemId: item.id,
-        itemName: item.name,
-        sku: item.sku,
-        quoteNumber: item.quoteNumber,
-        invoiceNumber: item.invoiceNumber,
-        salesOrderNumber: item.salesOrderNumber,
-        poNumber: item.poNumber,
-        unit: item.unit,
-        movementType: "in",
-        quantity: Number(item.onHandQuantity || 0),
-        supplierName: "Stock item created",
-        driverUserId: "",
-        driverName: "",
-        notes: item.notes || "",
-        createdByUserId: "",
-        createdByName: "",
-        createdAt: item.createdAt,
-        activityKind: "created",
-      }));
-
-    recentMovements.push(...recentCreatedItems);
+    recentMovements.push(...getRecentCreatedStockActivities());
+    recentMovements.push(...getRecentOfficeDropActivities());
   }
 
   recentMovements.sort((left, right) => Date.parse(String(right.createdAt || "")) - Date.parse(String(left.createdAt || "")));
 
   const seenStockItemIds = new Set();
   return recentMovements.filter((movement) => {
-    if (seenStockItemIds.has(movement.stockItemId)) {
+    const dedupeKey = String(movement.stockItemId || movement.id || "").trim();
+    if (!dedupeKey) {
+      return true;
+    }
+
+    if (seenStockItemIds.has(dedupeKey)) {
       return false;
     }
 
-    seenStockItemIds.add(movement.stockItemId);
+    seenStockItemIds.add(dedupeKey);
     return true;
   }).slice(0, limit);
 }
@@ -2000,6 +2108,7 @@ function matchesGlobalOrderSearch(order, query = state.globalListSearchQuery) {
     ...getReferenceLines(order),
     order?.locationName,
     order?.locationAddress,
+    order?.deliveryAddress,
     getDriverDisplayName(order),
     order?.createdByName,
     order?.entryType,
@@ -4055,15 +4164,15 @@ function renderRecentStockActivitySection({ recentInbound, recentOutbound }) {
           <p class="eyebrow">Recent activity</p>
           <h3 class="panel-title">Recently arrived and shipped stock</h3>
           <p class="panel-subtitle">
-            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_HOURS))} hours, including newly created stock items, grouped by item.
+            Latest stock activity from the last ${escapeHtml(String(STOCK_RECENT_ACTIVITY_HOURS))} hours, including newly created stock items and driver office drops, grouped by item.
           </p>
         </div>
       </div>
       <div class="recent-stock-grid">
         ${renderRecentStockActivityColumn({
           title: "Recently arrived",
-          subtitle: "Latest stock-in activity and newly created items per stock line.",
-          emptyLabel: `No stock arrived or was created in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
+          subtitle: "Latest stock-in activity, newly created items, and driver office drops per stock line.",
+          emptyLabel: `No stock arrived, was created, or was dropped at the office in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
           movements: recentInbound,
         })}
         ${renderRecentStockActivityColumn({
@@ -4106,16 +4215,24 @@ function renderRecentStockActivityEntry(movement) {
   const item = getStockItemById(movement.stockItemId);
   const unitLabel = getStockUnitLabel(item || movement);
   const isCreatedActivity = movement.activityKind === "created";
+  const isOfficeDropActivity = movement.activityKind === "office_drop";
   const onHandLabel = item
     ? `${Number(item.onHandQuantity || 0)} ${unitLabel} on hand now`
     : "";
   const referenceSummary = getReferenceLines(movement).join(" | ") || "No order references";
   const quantityLabel = isCreatedActivity
     ? "New item"
+    : isOfficeDropActivity
+    ? "Office drop"
     : `${Number(movement.quantity || 0)} ${unitLabel}`;
   const partyLabel = isCreatedActivity
     ? "Stock item created"
+    : isOfficeDropActivity
+    ? (movement.driverName ? `Dropped at office by ${movement.driverName}` : "Dropped at office")
     : getStockMovementPartyLabel(movement);
+  const locationLabel = isOfficeDropActivity
+    ? [movement.locationName, movement.locationAddress].filter(Boolean).join(" | ")
+    : "";
 
   return `
     <article class="recent-stock-entry">
@@ -4131,6 +4248,7 @@ function renderRecentStockActivityEntry(movement) {
       <div class="recent-stock-meta">
         <span>${escapeHtml(formatDateTime(movement.createdAt) || "")}</span>
         <span>${escapeHtml(partyLabel)}</span>
+        ${locationLabel ? `<span>${escapeHtml(locationLabel)}</span>` : ""}
         ${onHandLabel ? `<span>${escapeHtml(onHandLabel)}</span>` : ""}
       </div>
     </article>
@@ -4695,6 +4813,17 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           <input class="readonly-field" type="text" value="${escapeHtml(currentUser.name)}" readonly>
         </label>
       </div>
+      <label class="hidden" data-delivery-address-field>
+        Delivery address
+        <textarea
+          name="deliveryAddress"
+          placeholder="Required for delivery entries"
+          data-delivery-address-input
+        ></textarea>
+      </label>
+      <p class="field-note hidden" data-delivery-address-note>
+        Add the address the driver must deliver this order to.
+      </p>
       <label class="inline-check">
         <input type="checkbox" name="priority">
         Mark this as a priority stop
@@ -4721,7 +4850,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
       </div>
       <label>
         Stock description
-        <textarea name="stockDescription" placeholder="What stock should the driver collect for this entry?" required></textarea>
+        <textarea name="stockDescription" placeholder="What stock is on this entry?" required></textarea>
       </label>
       <p class="field-note">
         Saving this entry will also create the matching stock item automatically in the Stock page if it does not already exist.
@@ -5028,14 +5157,14 @@ function renderGlobalLocationGroup(group, viewerRole) {
 function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
   const isPriority = isPriorityOrder(order);
-  const referenceLines = getReferenceLines(order);
+  const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
 
   return `
     <div class="order-card${isPriority ? " order-card-priority" : ""}">
       <div class="stop-header">
         <div>
-          <strong>${escapeHtml(order.reference)}</strong>
+          <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
           <div class="order-meta">
             ${
               referenceLines.length
@@ -5179,8 +5308,8 @@ function renderCompletedOrders(driverUserId) {
         <table class="responsive-stack">
           <thead>
             <tr>
-              <th>Reference</th>
-              <th>Order references</th>
+              <th>Quote</th>
+              <th>Other references</th>
               <th>Type</th>
               <th>Completed</th>
             </tr>
@@ -5192,8 +5321,8 @@ function renderCompletedOrders(driverUserId) {
                     .map(
                       (order) => `
                         <tr>
-                          <td data-label="Reference">${escapeHtml(order.reference)}</td>
-                          <td data-label="Order references">${renderReferenceSummary(order)}</td>
+                          <td data-label="Quote">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
+                          <td data-label="Other references">${renderOrderListReferenceSummary(order)}</td>
                           <td data-label="Type">${renderTypeChip(order.entryType)}</td>
                           <td data-label="Completed">
                             ${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}<br>
@@ -5222,8 +5351,8 @@ function renderGlobalOrderRow(order, viewerRole) {
 
   return `
     <tr>
-      <td data-label="Reference">${escapeHtml(order.reference)}</td>
-      <td data-label="Order references">${renderReferenceSummary(order)}</td>
+      <td data-label="Quote">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
+      <td data-label="Other references">${renderOrderListReferenceSummary(order)}</td>
       <td data-label="Type">
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
@@ -5267,8 +5396,8 @@ function renderAssignmentRow(order, viewerRole) {
   return `
     <tr>
       <td data-label="Entry">
-        <strong>${escapeHtml(order.reference)}</strong><br>
-        ${renderReferenceSummary(order)}
+        <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong><br>
+        ${renderOrderListReferenceSummary(order)}
         ${renderOrderStockDetails(order)}
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
@@ -5421,6 +5550,38 @@ function getReferenceLines(record) {
   }
 
   return lines;
+}
+
+function getOrderPrimaryDisplay(order) {
+  const quoteNumber = String(order?.quoteNumber || order?.inhouseOrderNumber || "").trim();
+  if (quoteNumber) {
+    return `Quote ${quoteNumber}`;
+  }
+
+  return String(order?.reference || "").trim() || "Entry";
+}
+
+function getOrderListReferenceLines(order) {
+  const lines = [];
+  const orderReference = String(order?.reference || "").trim();
+
+  if (orderReference) {
+    lines.push(orderReference);
+  }
+
+  return [
+    ...lines,
+    ...getReferenceLines(order).filter((line) => !line.startsWith("Quote ")),
+  ];
+}
+
+function renderOrderListReferenceSummary(order, emptyLabel = "No order references") {
+  const lines = getOrderListReferenceLines(order);
+  if (!lines.length) {
+    return `<span class="muted">${escapeHtml(emptyLabel)}</span>`;
+  }
+
+  return lines.map((line) => `<span class="muted">${escapeHtml(line)}</span>`).join("<br>");
 }
 
 function renderReferenceSummary(record, emptyLabel = "No order references") {
@@ -5705,9 +5866,9 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
 
             return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
-                <strong>${escapeHtml(order.reference)}</strong>
+                <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
                 <div class="order-meta">
-                  ${getReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+                  ${getOrderListReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
                 </div>
                 ${renderOrderStockDetails(order)}
                 <div class="chip-row">
@@ -7067,7 +7228,7 @@ function buildDriverRouteOriginPopup(plan) {
 function buildDriverRouteStopPopup(stop, index) {
   const entryLabel = `${stop.orders.length} entr${stop.orders.length === 1 ? "y" : "ies"}`;
   const references = stop.orders
-    .map((order) => order.reference)
+    .map((order) => getOrderPrimaryDisplay(order))
     .filter(Boolean)
     .slice(0, 3)
     .join(", ");
@@ -7236,6 +7397,7 @@ function buildOrderCsvRow(order) {
     getDriverDisplayName(order),
     order.locationName || "",
     order.locationAddress || "",
+    order.deliveryAddress || "",
     capitalize(order.entryType || ""),
     capitalize(getOrderPriority(order)),
     getOrderCsvReferenceSummary(order),
@@ -7262,6 +7424,7 @@ function buildOrdersCsvContent(orders) {
       "Assigned driver",
       "Pickup location",
       "Pickup address",
+      "Delivery address",
       "Entry type",
       "Priority",
       "Order references",
@@ -7381,6 +7544,7 @@ function getOrderStockDetailItems(order) {
   const items = [];
   const stockDescription = String(order?.stockDescription || "").trim();
   const branding = String(order?.branding || "").trim();
+  const deliveryAddress = String(order?.deliveryAddress || "").trim();
 
   if (stockDescription) {
     items.push({ label: "Stock", value: stockDescription });
@@ -7388,6 +7552,10 @@ function getOrderStockDetailItems(order) {
 
   if (branding) {
     items.push({ label: "Branding", value: branding });
+  }
+
+  if (deliveryAddress) {
+    items.push({ label: "Delivery address", value: deliveryAddress });
   }
 
   return items;
@@ -7528,6 +7696,9 @@ function getRolloverNoticeText(order) {
 
 function syncMoveToFactoryField(form) {
   const entryTypeField = form.querySelector('[name="entryType"]');
+  const deliveryAddressField = form.querySelector("[data-delivery-address-field]");
+  const deliveryAddressInput = form.querySelector('[name="deliveryAddress"]');
+  const deliveryAddressNote = form.querySelector("[data-delivery-address-note]");
   const moveToFactoryField = form.querySelector('[name="moveToFactory"]');
   const destinationField = form.querySelector("[data-move-to-factory-destination]");
   const destinationSelect = form.querySelector('[name="factoryDestinationLocationId"]');
@@ -7544,7 +7715,24 @@ function syncMoveToFactoryField(form) {
   }
 
   const isCollection = entryTypeField.value === "collection";
+  const isDelivery = entryTypeField.value === "delivery";
   const hasFactoryOptions = Array.from(destinationSelect.options).some((option) => option.value);
+
+  if (deliveryAddressField instanceof HTMLElement) {
+    deliveryAddressField.classList.toggle("hidden", !isDelivery);
+  }
+
+  if (deliveryAddressInput instanceof HTMLTextAreaElement || deliveryAddressInput instanceof HTMLInputElement) {
+    deliveryAddressInput.required = isDelivery;
+  }
+
+  if (deliveryAddressNote instanceof HTMLElement) {
+    deliveryAddressNote.classList.toggle("hidden", !isDelivery);
+    deliveryAddressNote.textContent = isDelivery
+      ? "Add the address the driver must deliver this order to."
+      : "Switch the entry type to Delivery to add a destination address.";
+  }
+
   moveToFactoryField.disabled = !isCollection;
   if (!isCollection) {
     moveToFactoryField.checked = false;

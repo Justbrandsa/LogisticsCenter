@@ -96,6 +96,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_po_number",
       "p_branding",
       "p_stock_description",
+      "p_delivery_address",
       "p_priority",
       "p_allow_duplicate",
       "p_notice",
@@ -656,6 +657,7 @@ function createMailer() {
         `Priority: ${capitalize(getOrderPriority(order)) || "Medium"}`,
         `Pickup location: ${String(order.locationName || "").trim() || "Unknown"}`,
         `Pickup address: ${String(order.locationAddress || "").trim() || "Unknown"}`,
+        `Delivery address: ${String(order.deliveryAddress || "").trim() || "Not set"}`,
         `Move to factory: ${getMoveToFactoryLabel(order) || "No"}`,
         `Driver issue: ${getOrderDriverIssue(order) || "None"}`,
         `Notes: ${String(order.notes || "").trim() || "None"}`,
@@ -1025,6 +1027,7 @@ function buildOrderCsvRow(order) {
     order.driverName || "Unassigned",
     order.locationName || "",
     order.locationAddress || "",
+    order.deliveryAddress || "",
     getOrderEntryTypeLabel(order.entryType),
     capitalize(getOrderPriority(order)),
     getOrderReferenceSummary(order),
@@ -1051,6 +1054,7 @@ function buildOrdersCsv(orders) {
       "Assigned driver",
       "Pickup location",
       "Pickup address",
+      "Delivery address",
       "Entry type",
       "Priority",
       "Order references",
@@ -1183,6 +1187,7 @@ function buildCarryOverEmailOrderLine(order) {
   const customerName = String(order?.customerName || "").trim();
   const entryType = getOrderEntryTypeLabel(order?.entryType);
   const locationName = String(order?.locationName || "").trim();
+  const deliveryAddress = String(order?.deliveryAddress || "").trim();
   const quoteNumber = String(order?.quoteNumber || "").trim();
   const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
   const invoiceNumber = String(order?.invoiceNumber || "").trim();
@@ -1204,6 +1209,10 @@ function buildCarryOverEmailOrderLine(order) {
 
   if (locationName) {
     lineParts.push(`Location: ${locationName}`);
+  }
+
+  if (deliveryAddress) {
+    lineParts.push(`Delivery address: ${deliveryAddress}`);
   }
 
   if (quoteNumber && quoteNumber !== reference) {
