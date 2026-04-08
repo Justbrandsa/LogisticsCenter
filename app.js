@@ -7417,11 +7417,19 @@ function getOrderCsvDriverIssue(order) {
   return [label, note].filter(Boolean).join(": ");
 }
 
+function shouldMarkOrderAsRolledOver(order) {
+  return Boolean(order?.driverUserId) && Number(order?.carryOverCount || 0) > 0;
+}
+
 function getOrderCsvScheduleSummary(order) {
   const scheduledFor = formatDateOnly(order?.scheduledFor);
   const originalScheduledFor = formatDateOnly(order?.originalScheduledFor);
   const carryOverCount = Number(order?.carryOverCount || 0);
   const dayLabel = carryOverCount === 1 ? "day" : "days";
+
+  if (!shouldMarkOrderAsRolledOver(order)) {
+    return scheduledFor;
+  }
 
   if (scheduledFor && originalScheduledFor && carryOverCount > 0) {
     return `${scheduledFor} (Rolled from ${originalScheduledFor}, ${carryOverCount} ${dayLabel})`;
@@ -7742,11 +7750,11 @@ function renderDriverAssignmentValue(order) {
 }
 
 function getRolloverNoticeText(order) {
-  const carryOverCount = Number(order?.carryOverCount || 0);
-  if (!carryOverCount) {
+  if (!shouldMarkOrderAsRolledOver(order)) {
     return "";
   }
 
+  const carryOverCount = Number(order?.carryOverCount || 0);
   const scheduledFor = formatDateOnly(order?.scheduledFor);
   const originalScheduledFor = formatDateOnly(order?.originalScheduledFor);
   const dayLabel = carryOverCount === 1 ? "day" : "days";

@@ -1005,11 +1005,19 @@ function capitalize(value) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function shouldMarkOrderAsRolledOver(order) {
+  return Boolean(order?.driverUserId) && Number(order?.carryOverCount || 0) > 0;
+}
+
 function getOrderScheduleSummary(order) {
   const scheduledFor = formatDateOnly(order?.scheduledFor);
   const originalScheduledFor = formatDateOnly(order?.originalScheduledFor);
   const carryOverCount = Number(order?.carryOverCount || 0);
   const dayLabel = carryOverCount === 1 ? "day" : "days";
+
+  if (!shouldMarkOrderAsRolledOver(order)) {
+    return scheduledFor;
+  }
 
   if (scheduledFor && originalScheduledFor && carryOverCount > 0) {
     return `${scheduledFor} (Rolled from ${originalScheduledFor}, ${carryOverCount} ${dayLabel})`;
@@ -1088,7 +1096,6 @@ function buildOrderNoticeText(order) {
   const driverFlag = getOrderFlagNoticeText(order);
   const moveToFactory = getMoveToFactoryText(order);
   const completion = getOrderCompletionText(order);
-  const carryOverCount = Number(order?.carryOverCount || 0);
 
   if (driverFlag) {
     lines.push(driverFlag);
@@ -1114,7 +1121,8 @@ function buildOrderNoticeText(order) {
     lines.push(completion);
   }
 
-  if (carryOverCount > 0) {
+  if (shouldMarkOrderAsRolledOver(order)) {
+    const carryOverCount = Number(order?.carryOverCount || 0);
     const scheduledFor = String(order?.scheduledFor || "").trim();
     const originalScheduledFor = String(order?.originalScheduledFor || "").trim();
     const dayLabel = carryOverCount === 1 ? "day" : "days";
