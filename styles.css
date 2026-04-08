@@ -920,6 +920,22 @@ table.responsive-stack td[data-label="Action"] .action-row button {
   font-size: 1.05rem;
 }
 
+.stock-item-name-list {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.stock-item-name-line {
+  display: block;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.stock-item-mobile-title-list {
+  gap: 0.28rem;
+}
+
 .stock-item-mobile-summary {
   margin: 0.35rem 0 0;
   color: var(--muted);

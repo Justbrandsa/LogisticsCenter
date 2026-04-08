@@ -2439,6 +2439,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid, text[]);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -2451,6 +2452,7 @@ create or replace function public.create_order(
   p_po_number text default null,
   p_branding text default null,
   p_stock_description text default null,
+  p_stock_item_names text[] default null,
   p_delivery_address text default null,
   p_priority text default 'medium',
   p_allow_duplicate boolean default false,
@@ -2469,7 +2471,10 @@ declare
   v_location private.locations;
   v_factory_destination private.locations;
   v_stock_item_id uuid;
+  v_first_stock_item_id uuid;
   v_stock_item_created boolean := false;
+  v_stock_item_created_count integer := 0;
+  v_stock_item_count integer := 0;
   v_today date := private.today_local();
   v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
   v_quote_number text := nullif(btrim(p_quote_number), '');
@@ -2487,6 +2492,10 @@ declare
   end;
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
   v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
+  v_stock_item_names text[] := '{}'::text[];
+  v_processed_stock_item_names text[] := '{}'::text[];
+  v_stock_item_name text;
+  v_stock_item_name_key text;
 begin
   v_actor := private.require_user(p_token);
 
@@ -2560,6 +2569,12 @@ begin
     v_factory_destination_location_id := null;
   end if;
 
+  v_stock_item_names := coalesce(p_stock_item_names, array[v_stock_description]);
+
+  if coalesce(array_length(v_stock_item_names, 1), 0) = 0 then
+    v_stock_item_names := array[v_stock_description];
+  end if;
+
   if p_driver_user_id is not null
      and exists (
        select 1
@@ -2626,63 +2641,83 @@ begin
     v_actor.id
   );
 
-  select s.id
-  into v_stock_item_id
-  from private.stock_items s
-  where lower(btrim(s.name)) = lower(v_stock_description)
-    and lower(btrim(s.quote_number)) = lower(v_quote_number)
-    and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
-    and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
-    and lower(btrim(s.po_number)) = lower(v_po_number)
-  limit 1;
+  foreach v_stock_item_name in array v_stock_item_names loop
+    v_stock_item_name := nullif(btrim(v_stock_item_name), '');
+    continue when v_stock_item_name is null;
 
-  if v_stock_item_id is null then
-    begin
-      insert into private.stock_items (
-        name,
-        sku,
-        quote_number,
-        invoice_number,
-        sales_order_number,
-        po_number,
-        unit,
-        notes,
-        created_source,
-        created_by_user_id
-      )
-      values (
-        v_stock_description,
-        '',
-        v_quote_number,
-        v_invoice_number,
-        v_sales_order_number,
-        v_po_number,
-        'units',
-        v_stock_item_notes,
-        'order',
-        v_actor.id
-      )
-      returning id into v_stock_item_id;
+    v_stock_item_name_key := lower(v_stock_item_name);
+    if array_position(v_processed_stock_item_names, v_stock_item_name_key) is not null then
+      continue;
+    end if;
 
-      v_stock_item_created := true;
-    exception
-      when unique_violation then
-        select s.id
-        into v_stock_item_id
-        from private.stock_items s
-        where lower(btrim(s.name)) = lower(v_stock_description)
-          and lower(btrim(s.quote_number)) = lower(v_quote_number)
-          and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
-          and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
-          and lower(btrim(s.po_number)) = lower(v_po_number)
-        limit 1;
-    end;
-  end if;
+    v_processed_stock_item_names := array_append(v_processed_stock_item_names, v_stock_item_name_key);
+    v_stock_item_count := v_stock_item_count + 1;
+
+    select s.id
+    into v_stock_item_id
+    from private.stock_items s
+    where lower(btrim(s.name)) = v_stock_item_name_key
+      and lower(btrim(s.quote_number)) = lower(v_quote_number)
+      and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
+      and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
+      and lower(btrim(s.po_number)) = lower(v_po_number)
+    limit 1;
+
+    if v_stock_item_id is null then
+      begin
+        insert into private.stock_items (
+          name,
+          sku,
+          quote_number,
+          invoice_number,
+          sales_order_number,
+          po_number,
+          unit,
+          notes,
+          created_source,
+          created_by_user_id
+        )
+        values (
+          v_stock_item_name,
+          '',
+          v_quote_number,
+          v_invoice_number,
+          v_sales_order_number,
+          v_po_number,
+          'units',
+          v_stock_item_notes,
+          'order',
+          v_actor.id
+        )
+        returning id into v_stock_item_id;
+
+        v_stock_item_created_count := v_stock_item_created_count + 1;
+      exception
+        when unique_violation then
+          select s.id
+          into v_stock_item_id
+          from private.stock_items s
+          where lower(btrim(s.name)) = v_stock_item_name_key
+            and lower(btrim(s.quote_number)) = lower(v_quote_number)
+            and lower(btrim(s.invoice_number)) = lower(v_invoice_number)
+            and lower(btrim(s.sales_order_number)) = lower(v_sales_order_number)
+            and lower(btrim(s.po_number)) = lower(v_po_number)
+          limit 1;
+      end;
+    end if;
+
+    if v_first_stock_item_id is null then
+      v_first_stock_item_id := v_stock_item_id;
+    end if;
+  end loop;
+
+  v_stock_item_created := v_stock_item_created_count > 0;
 
   return jsonb_build_object(
     'ok', true,
-    'stockItemId', v_stock_item_id,
-    'stockItemCreated', v_stock_item_created
+    'stockItemId', v_first_stock_item_id,
+    'stockItemCreated', v_stock_item_created,
+    'stockItemCount', v_stock_item_count
   );
 end;
 $$;

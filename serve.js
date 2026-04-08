@@ -34,6 +34,7 @@ const ROOT = __dirname;
 const TIME_ZONE = "Africa/Johannesburg";
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
+const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const MIME = {
   ".css": "text/css; charset=UTF-8",
@@ -96,6 +97,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_po_number",
       "p_branding",
       "p_stock_description",
+      "p_stock_item_names",
       "p_delivery_address",
       "p_priority",
       "p_allow_duplicate",
@@ -133,13 +135,22 @@ function getStockUnitLabel(record) {
   return rawUnit;
 }
 
+function isDeliveryOrder(order) {
+  return String(order?.entryType || "").trim().toLowerCase() === "delivery";
+}
+
 function getOrderCompletionLabel(order) {
+  const completionType = String(order?.completionType || "").trim();
+  if (completionType === "office" && isDeliveryOrder(order)) {
+    return "Delivered to client";
+  }
+
   const labels = {
     office: "Dropped at office",
     factory: "Dropped at factory",
   };
 
-  return labels[String(order?.completionType || "").trim()] || "";
+  return labels[completionType] || "";
 }
 
 function getOrderCompletionText(order) {
@@ -283,6 +294,13 @@ async function routeRequest(request, response) {
       return;
     }
 
+    if (request.method === "POST" && cleanPath === "/api/export/email/rollover-test") {
+      const payload = await readJsonBody(request);
+      const result = await mailer.sendCarryOverTestEmail(payload?.token);
+      sendJson(response, 200, result);
+      return;
+    }
+
     if (request.method !== "GET" && request.method !== "HEAD") {
       sendJson(response, 405, { error: "Method not allowed." });
       return;
@@ -409,6 +427,77 @@ function createDatabase() {
 
       return result.rows[0]?.data ?? null;
     },
+    async listOrdersForMailExport() {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const result = await pool.query(`
+        select
+          o.id,
+          concat('ORD-', o.order_number) as "reference",
+          o.order_number as "orderNumber",
+          o.entry_type as "entryType",
+          o.move_to_factory as "moveToFactory",
+          o.factory_destination_location_id as "factoryDestinationLocationId",
+          coalesce(f.name, '') as "factoryDestinationName",
+          coalesce(f.address, '') as "factoryDestinationAddress",
+          o.factory_order_number as "factoryOrderNumber",
+          o.inhouse_order_number as "inhouseOrderNumber",
+          o.factory_order_number as "salesOrderNumber",
+          o.inhouse_order_number as "quoteNumber",
+          o.invoice_number as "invoiceNumber",
+          o.po_number as "poNumber",
+          o.delivery_address as "deliveryAddress",
+          o.branding as "branding",
+          o.stock_description as "stockDescription",
+          o.customer_name as "customerName",
+          o.driver_user_id as "driverUserId",
+          coalesce(d.name, '') as "driverName",
+          o.location_id as "locationId",
+          l.name as "locationName",
+          l.address as "locationAddress",
+          l.location_type as "locationType",
+          l.contact_person as "locationContactPerson",
+          l.contact_number as "locationContactNumber",
+          o.priority as "priority",
+          o.notes as "notes",
+          o.driver_flag_type as "driverFlagType",
+          o.driver_flag_note as "driverFlagNote",
+          o.driver_flagged_at as "driverFlaggedAt",
+          o.driver_flagged_by_user_id as "driverFlaggedByUserId",
+          coalesce(g.name, '') as "driverFlaggedByName",
+          o.picked_up_at as "pickedUpAt",
+          o.picked_up_by_user_id as "pickedUpByUserId",
+          coalesce(i.name, '') as "pickedUpByName",
+          o.completion_type as "completionType",
+          o.completed_by_user_id as "completedByUserId",
+          coalesce(h.name, '') as "completedByName",
+          o.status as "status",
+          to_char(o.scheduled_for, 'YYYY-MM-DD') as "scheduledFor",
+          to_char(o.original_scheduled_for, 'YYYY-MM-DD') as "originalScheduledFor",
+          o.carry_over_count as "carryOverCount",
+          o.created_by_user_id as "createdByUserId",
+          c.name as "createdByName",
+          c.role as "createdByRole",
+          o.created_at as "createdAt",
+          o.completed_at as "completedAt"
+        from private.orders o
+        left join private.app_users d on d.id = o.driver_user_id
+        join private.locations l on l.id = o.location_id
+        left join private.locations f on f.id = o.factory_destination_location_id
+        left join private.app_users g on g.id = o.driver_flagged_by_user_id
+        left join private.app_users h on h.id = o.completed_by_user_id
+        left join private.app_users i on i.id = o.picked_up_by_user_id
+        join private.app_users c on c.id = o.created_by_user_id
+        order by
+          case when o.status = 'active' then 0 else 1 end,
+          o.created_at desc,
+          o.order_number desc
+      `);
+
+      return result.rows;
+    },
     async close() {
       if (pool) {
         await pool.end();
@@ -513,6 +602,7 @@ function createMailer() {
       to: message.to,
       subject: message.subject,
       text: message.text,
+      html: message.html,
       attachments: Array.isArray(message.attachments) ? message.attachments : [],
     });
   }
@@ -594,7 +684,26 @@ function createMailer() {
         subject,
       };
     },
-    async sendCarryOverEmail(rollover) {
+    async sendCarryOverTestEmail(token) {
+      const { currentUser, snapshot } = await getAuthorizedMailContext(
+        token,
+        ["admin", "sales"],
+        "Only admin or sales users can send email.",
+      );
+      const rollover = buildCarryOverTestPayload(snapshot);
+      const result = await this.sendCarryOverEmail(rollover, {
+        allowEmpty: true,
+        requestedByName: currentUser.name,
+        subjectPrefix: "TEST",
+        to: ROLLOVER_TEST_EMAIL,
+      });
+
+      return {
+        ...result,
+        requestedBy: currentUser.name,
+      };
+    },
+    async sendCarryOverEmail(rollover, options = {}) {
       if (!status.configured) {
         throw createHttpError(503, status.reason || "Email delivery is not configured.");
       }
@@ -603,8 +712,9 @@ function createMailer() {
         ? rollover.carriedOrders.filter(Boolean)
         : [];
       const count = Number(rollover?.updatedOrders || carriedOrders.length || 0);
+      const allowEmpty = Boolean(options.allowEmpty);
 
-      if (count <= 0) {
+      if (count <= 0 && !allowEmpty) {
         return {
           ok: true,
           skipped: true,
@@ -613,23 +723,49 @@ function createMailer() {
       }
 
       const dateStamp = String(rollover?.today || "").trim() || new Date().toISOString().slice(0, 10);
+      const csvOrders = Array.isArray(options.orders)
+        ? options.orders.filter(Boolean)
+        : await database.listOrdersForMailExport();
+      const csvFilename = `route-ledger-${dateStamp}.csv`;
+      const csv = buildOrdersCsv(csvOrders);
+      const emailTo = String(options.to || "").trim() || status.to;
+      const summary = buildCarryOverEmailSummary(rollover, csvOrders, {
+        isTest: Boolean(options.subjectPrefix),
+        requestedByName: options.requestedByName,
+        recipient: emailTo,
+      });
       const itemLabel = count === 1 ? "item" : "items";
-      const subject = `Route Ledger carry-over ${dateStamp} (${count} ${itemLabel})`;
-      const text = buildCarryOverEmailText(rollover);
+      const subjectBase = count > 0
+        ? `Route Ledger carry-over ${dateStamp} (${count} ${itemLabel})`
+        : `Route Ledger carry-over ${dateStamp} (no items)`;
+      const subject = options.subjectPrefix
+        ? `${String(options.subjectPrefix).trim()} ${subjectBase}`.trim()
+        : subjectBase;
+      const text = buildCarryOverEmailText(summary);
+      const html = buildCarryOverEmailHtml(summary);
 
       await sendMessage({
         from: status.from,
-        to: status.to,
+        to: emailTo,
         subject,
         text,
+        html,
+        attachments: [
+          {
+            filename: csvFilename,
+            content: csv,
+            contentType: "text/csv; charset=UTF-8",
+          },
+        ],
       });
 
       return {
         ok: true,
-        sentTo: status.to,
+        sentTo: emailTo,
         sentFrom: status.from,
         subject,
         count,
+        csvCount: csvOrders.length,
       };
     },
     async sendDriverTransferEmail(transfer) {
@@ -659,6 +795,7 @@ function createMailer() {
         `Pickup location: ${String(order.locationName || "").trim() || "Unknown"}`,
         `Pickup address: ${String(order.locationAddress || "").trim() || "Unknown"}`,
         `Delivery address: ${String(order.deliveryAddress || "").trim() || "Not set"}`,
+        `Destination: ${getCollectionDestinationLabel(order) || "Not set"}`,
         `Move to factory: ${getMoveToFactoryLabel(order) || "No"}`,
         `Driver issue: ${getOrderDriverIssue(order) || "None"}`,
         `Notes: ${String(order.notes || "").trim() || "None"}`,
@@ -966,6 +1103,18 @@ function getOrderDriverIssue(order) {
   return [label, note].filter(Boolean).join(": ");
 }
 
+function getCollectionDestinationLabel(order) {
+  if (String(order?.entryType || "").trim().toLowerCase() !== "collection") {
+    return "";
+  }
+
+  if (order?.moveToFactory) {
+    return String(order?.factoryDestinationName || "").trim() || "Factory";
+  }
+
+  return "Office";
+}
+
 function formatDateOnly(value) {
   if (!value) {
     return "";
@@ -1043,7 +1192,7 @@ function buildOrderCsvRow(order) {
     order.stockDescription || "",
     order.branding || "",
     order.moveToFactory ? "Yes" : "No",
-    order.factoryDestinationName || "",
+    getCollectionDestinationLabel(order),
     getOrderDriverIssue(order),
     order.notes || "",
     getOrderScheduleSummary(order),
@@ -1070,7 +1219,7 @@ function buildOrdersCsv(orders) {
       "Stock required",
       "Branding",
       "Move to factory",
-      "Factory destination",
+      "Destination",
       "Driver issue",
       "Extra notes",
       "Schedule",
@@ -1137,35 +1286,181 @@ function buildOrderNoticeText(order) {
   return lines.join(" | ");
 }
 
-function buildCarryOverEmailText(rollover) {
+function buildCarryOverTestPayload(snapshot) {
+  const today = String(snapshot?.today || "").trim() || new Date().toISOString().slice(0, 10);
+  const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.filter(Boolean) : [];
+  const carriedOrders = orders
+    .filter((order) =>
+      String(order?.status || "").trim().toLowerCase() === "active"
+      && String(order?.scheduledFor || "").trim() === today
+      && Number(order?.carryOverCount || 0) > 0,
+    )
+    .sort(compareCarryOverEmailOrders);
+
+  return {
+    today,
+    updatedOrders: carriedOrders.length,
+    carriedOrders,
+  };
+}
+
+function compareCarryOverEmailOrders(left, right) {
+  const leftUnassigned = left?.driverUserId ? 1 : 0;
+  const rightUnassigned = right?.driverUserId ? 1 : 0;
+  if (leftUnassigned !== rightUnassigned) {
+    return leftUnassigned - rightUnassigned;
+  }
+
+  const leftDriver = String(left?.driverName || "").trim().toLowerCase();
+  const rightDriver = String(right?.driverName || "").trim().toLowerCase();
+  if (leftDriver !== rightDriver) {
+    return leftDriver.localeCompare(rightDriver);
+  }
+
+  const leftLocation = String(left?.locationName || "").trim().toLowerCase();
+  const rightLocation = String(right?.locationName || "").trim().toLowerCase();
+  if (leftLocation !== rightLocation) {
+    return leftLocation.localeCompare(rightLocation);
+  }
+
+  return Number(left?.orderNumber || 0) - Number(right?.orderNumber || 0);
+}
+
+function buildCarryOverEmailSummary(rollover, csvOrders, options = {}) {
   const carriedOrders = Array.isArray(rollover?.carriedOrders)
-    ? rollover.carriedOrders.filter(Boolean)
+    ? rollover.carriedOrders.filter(Boolean).sort(compareCarryOverEmailOrders)
     : [];
   const count = Number(rollover?.updatedOrders || carriedOrders.length || 0);
   const scheduledFor = String(rollover?.today || "").trim();
-  const groups = groupCarryOverOrdersByDriver(carriedOrders);
+  const assignedCount = carriedOrders.filter((order) => order?.driverUserId).length;
+  const unassignedCount = Math.max(carriedOrders.length - assignedCount, 0);
+
+  return {
+    scheduledFor,
+    count,
+    assignedCount,
+    unassignedCount,
+    csvCount: Array.isArray(csvOrders) ? csvOrders.length : 0,
+    groups: groupCarryOverOrdersByDriver(carriedOrders),
+    isTest: Boolean(options.isTest),
+    requestedByName: String(options.requestedByName || "").trim(),
+    recipient: String(options.recipient || "").trim(),
+  };
+}
+
+function buildCarryOverEmailText(summary) {
   const lines = [
-    "The drivers list rolled open items forward to the next day.",
+    summary?.isTest
+      ? "This is a test send of the Route Ledger carry-over email."
+      : "Open Route Ledger items were rolled forward to the next day.",
     "",
-    `New scheduled date: ${scheduledFor || "Unknown"}`,
-    `Items carried over: ${count}`,
-    "Rolled items were marked as priority stops.",
+    `Scheduled date: ${summary?.scheduledFor || "Unknown"}`,
+    `Rolled items: ${Number(summary?.count || 0)}`,
+    `Assigned: ${Number(summary?.assignedCount || 0)}`,
+    `Unassigned: ${Number(summary?.unassignedCount || 0)}`,
+    `CSV attached: ${Number(summary?.csvCount || 0)} entries`,
   ];
 
-  if (!groups.length) {
-    lines.push("", "No item breakdown was returned with the rollover.");
+  if (summary?.requestedByName) {
+    lines.splice(2, 0, `Requested by: ${summary.requestedByName}`);
+  }
+
+  if (summary?.recipient) {
+    lines.splice(summary?.requestedByName ? 3 : 2, 0, `Sent to: ${summary.recipient}`);
+  }
+
+  if (!Array.isArray(summary?.groups) || !summary.groups.length) {
+    lines.push("", "No rolled-over active items are currently scheduled for this date.");
     return lines.join("\n");
   }
 
-  groups.forEach((group) => {
+  summary.groups.forEach((group) => {
     lines.push("");
     lines.push(`Driver: ${group.driverName} (${group.orders.length})`);
     group.orders.forEach((order) => {
-      lines.push(`- ${buildCarryOverEmailOrderLine(order)}`);
+      lines.push(`- ${getCarryOverEmailOrderTitle(order)}`);
+      buildCarryOverEmailOrderDetails(order).forEach((detail) => {
+        lines.push(`  ${detail.label}: ${detail.value}`);
+      });
     });
   });
 
   return lines.join("\n");
+}
+
+function buildCarryOverEmailHtml(summary) {
+  const groups = Array.isArray(summary?.groups) ? summary.groups : [];
+  const summaryCards = [
+    { label: "Scheduled date", value: summary?.scheduledFor || "Unknown" },
+    { label: "Rolled items", value: String(Number(summary?.count || 0)) },
+    { label: "Assigned", value: String(Number(summary?.assignedCount || 0)) },
+    { label: "Unassigned", value: String(Number(summary?.unassignedCount || 0)) },
+    { label: "CSV attached", value: `${Number(summary?.csvCount || 0)} entries` },
+  ];
+  const intro = summary?.isTest
+    ? "This is a test send of the Route Ledger carry-over email."
+    : "Open Route Ledger items were rolled forward to the next day.";
+  const metaLines = [
+    summary?.requestedByName ? `<p style="margin:0 0 6px;">Requested by: <strong>${escapeHtml(summary.requestedByName)}</strong></p>` : "",
+    summary?.recipient ? `<p style="margin:0 0 18px;">Sent to: <strong>${escapeHtml(summary.recipient)}</strong></p>` : "",
+  ].join("");
+
+  return `<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:24px;background:#f4f1ea;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+    <div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #e5dccb;border-radius:20px;overflow:hidden;">
+      <div style="padding:28px 32px;background:linear-gradient(135deg,#1d3557 0%,#355070 100%);color:#ffffff;">
+        <p style="margin:0 0 8px;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;opacity:0.78;">Route Ledger</p>
+        <h1 style="margin:0;font-size:28px;line-height:1.2;">Carry-over summary</h1>
+        <p style="margin:12px 0 0;font-size:15px;line-height:1.6;max-width:640px;">${escapeHtml(intro)}</p>
+      </div>
+      <div style="padding:28px 32px;">
+        ${metaLines}
+        <div style="margin:0 0 24px;font-size:14px;color:#475569;">The full daily CSV export is attached to this email.</div>
+        <div style="font-size:0;margin:0 -8px 24px;">
+          ${summaryCards.map((card) => `
+            <div style="display:inline-block;vertical-align:top;width:156px;min-width:156px;margin:0 8px 12px;background:#f8fafc;border:1px solid #dbe4ee;border-radius:16px;padding:14px 16px;box-sizing:border-box;">
+              <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:#64748b;margin:0 0 8px;">${escapeHtml(card.label)}</div>
+              <div style="font-size:20px;font-weight:700;color:#0f172a;">${escapeHtml(card.value)}</div>
+            </div>
+          `).join("")}
+        </div>
+        ${
+          groups.length
+            ? groups.map((group) => `
+              <section style="margin:0 0 28px;">
+                <div style="margin:0 0 12px;padding:12px 16px;border-radius:14px;background:#efe8dc;color:#3f3a2f;font-size:16px;font-weight:700;">
+                  ${escapeHtml(group.driverName)} (${group.orders.length})
+                </div>
+                ${group.orders.map((order) => renderCarryOverEmailHtmlCard(order)).join("")}
+              </section>
+            `).join("")
+            : `
+              <div style="padding:18px 20px;border:1px dashed #c8b79d;border-radius:16px;background:#fbf8f3;color:#5b5547;">
+                No rolled-over active items are currently scheduled for this date.
+              </div>
+            `
+        }
+      </div>
+    </div>
+  </body>
+</html>`;
+}
+
+function renderCarryOverEmailHtmlCard(order) {
+  const details = buildCarryOverEmailOrderDetails(order);
+  return `
+    <article style="margin:0 0 14px;padding:18px 20px;border:1px solid #e5e7eb;border-radius:16px;background:#ffffff;">
+      <div style="margin:0 0 10px;font-size:18px;font-weight:700;color:#0f172a;">
+        ${escapeHtml(getCarryOverEmailOrderTitle(order))}
+      </div>
+      ${details.map((detail) => `
+        <p style="margin:0 0 6px;font-size:14px;line-height:1.6;color:#334155;">
+          <strong style="color:#0f172a;">${escapeHtml(detail.label)}:</strong> ${escapeHtml(detail.value)}
+        </p>
+      `).join("")}
+    </article>
+  `;
 }
 
 function groupCarryOverOrdersByDriver(orders) {
@@ -1191,13 +1486,21 @@ function groupCarryOverOrdersByDriver(orders) {
   return groups;
 }
 
-function buildCarryOverEmailOrderLine(order) {
-  const lineParts = [];
+function getCarryOverEmailOrderTitle(order) {
   const reference = String(order?.reference || "").trim();
   const customerName = String(order?.customerName || "").trim();
+  const locationName = String(order?.locationName || "").trim();
+  return [reference || "Route Ledger entry", customerName || "", locationName || ""]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function buildCarryOverEmailOrderDetails(order) {
+  const details = [];
   const entryType = getOrderEntryTypeLabel(order?.entryType);
   const locationName = String(order?.locationName || "").trim();
   const deliveryAddress = String(order?.deliveryAddress || "").trim();
+  const collectionDestination = getCollectionDestinationLabel(order);
   const priority = capitalize(getOrderPriority(order));
   const quoteNumber = String(order?.quoteNumber || "").trim();
   const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
@@ -1206,80 +1509,73 @@ function buildCarryOverEmailOrderLine(order) {
   const scheduleText = buildCarryOverScheduleText(order);
   const noticeText = buildCarryOverEmailNoticeText(order);
 
-  if (reference) {
-    lineParts.push(reference);
-  }
-
-  if (customerName) {
-    lineParts.push(`Customer: ${customerName}`);
-  }
-
   if (entryType) {
-    lineParts.push(entryType);
+    details.push({ label: "Type", value: entryType });
   }
 
   if (locationName) {
-    lineParts.push(`Location: ${locationName}`);
+    details.push({ label: "Location", value: locationName });
   }
 
   if (deliveryAddress) {
-    lineParts.push(`Delivery address: ${deliveryAddress}`);
+    details.push({ label: "Delivery address", value: deliveryAddress });
+  }
+
+  if (collectionDestination) {
+    details.push({ label: "Destination", value: collectionDestination });
   }
 
   if (priority) {
-    lineParts.push(`Priority: ${priority}`);
+    details.push({ label: "Priority", value: priority });
   }
 
-  if (quoteNumber && quoteNumber !== reference) {
-    lineParts.push(`Quote: ${quoteNumber}`);
+  if (quoteNumber) {
+    details.push({ label: "Quote", value: quoteNumber });
   }
 
-  if (salesOrderNumber && salesOrderNumber !== reference && salesOrderNumber !== quoteNumber) {
-    lineParts.push(`Sales order: ${salesOrderNumber}`);
+  if (salesOrderNumber) {
+    details.push({ label: "Sales order", value: salesOrderNumber });
   }
 
   if (invoiceNumber) {
-    lineParts.push(`Invoice: ${invoiceNumber}`);
+    details.push({ label: "Invoice", value: invoiceNumber });
   }
 
   if (poNumber) {
-    lineParts.push(`PO: ${poNumber}`);
+    details.push({ label: "PO", value: poNumber });
   }
 
   if (scheduleText) {
-    lineParts.push(scheduleText);
+    details.push({ label: "Schedule", value: scheduleText });
   }
 
   if (noticeText) {
-    lineParts.push(noticeText);
+    details.push({ label: "Notes", value: noticeText });
   }
 
-  return lineParts.join(" | ");
+  return details;
 }
 
 function buildCarryOverScheduleText(order) {
-  const previousScheduledFor = String(order?.previousScheduledFor || "").trim();
   const scheduledFor = String(order?.scheduledFor || "").trim();
+  const originalScheduledFor = String(order?.originalScheduledFor || "").trim();
   const carryOverCount = Number(order?.carryOverCount || 0);
   const dayLabel = carryOverCount === 1 ? "day" : "days";
-
-  if (previousScheduledFor && scheduledFor && carryOverCount > 0) {
-    return `Moved ${previousScheduledFor} -> ${scheduledFor} (${carryOverCount} ${dayLabel} total)`;
-  }
-
-  if (scheduledFor && carryOverCount > 0) {
-    return `Moved to ${scheduledFor} (${carryOverCount} ${dayLabel} total)`;
-  }
-
-  if (previousScheduledFor && scheduledFor) {
-    return `Moved ${previousScheduledFor} -> ${scheduledFor}`;
-  }
+  const parts = [];
 
   if (scheduledFor) {
-    return `Moved to ${scheduledFor}`;
+    parts.push(`Scheduled for ${scheduledFor}`);
   }
 
-  return "";
+  if (carryOverCount > 0) {
+    parts.push(`Carry-over total: ${carryOverCount} ${dayLabel}`);
+  }
+
+  if (originalScheduledFor && originalScheduledFor !== scheduledFor) {
+    parts.push(`Original date: ${originalScheduledFor}`);
+  }
+
+  return parts.join(" | ");
 }
 
 function buildCarryOverEmailNoticeText(order) {
@@ -1301,6 +1597,15 @@ function buildCarryOverEmailNoticeText(order) {
   }
 
   return parts.join(" ");
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function getOrderEntryTypeLabel(entryType) {
@@ -1388,6 +1693,8 @@ async function sendViaMicrosoftGraph(config, message) {
   if (!recipients.length) {
     throw createHttpError(400, "At least one email recipient is required.");
   }
+  const bodyContent = String(message.html || message.text || "");
+  const bodyType = message.html ? "HTML" : "Text";
   const attachments = Array.isArray(message.attachments)
     ? message.attachments.map((attachment) => ({
         "@odata.type": "#microsoft.graph.fileAttachment",
@@ -1400,8 +1707,8 @@ async function sendViaMicrosoftGraph(config, message) {
     message: {
       subject: message.subject,
       body: {
-        contentType: "Text",
-        content: message.text,
+        contentType: bodyType,
+        content: bodyContent,
       },
       toRecipients: recipients.map((recipient) => ({
         emailAddress: {

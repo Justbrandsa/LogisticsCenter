@@ -632,6 +632,11 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "email-rollover-test" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    await sendRolloverTestEmail();
+    return;
+  }
+
   if (action === "toggle-user" && currentUser.role === "admin") {
     await runMutation(
       "toggle_user_active",
@@ -990,7 +995,8 @@ async function handleClick(event) {
 
   if (action === "complete-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
     const completionType = String(button.dataset.completionType || "").trim() || "office";
-    const completionLabel = getOrderCompletionTypeLabel(completionType).toLowerCase() || "completed";
+    const order = getOrder(String(button.dataset.orderId || "").trim());
+    const completionLabel = getOrderCompletionTypeLabel(completionType, order).toLowerCase() || "completed";
     await runMutation(
       "complete_order",
       {
@@ -1372,6 +1378,7 @@ async function createOrder(formData, currentUser) {
   const poNumber = String(formData.get("poNumber") || "").trim();
   const branding = String(formData.get("branding") || "").trim();
   const stockDescription = String(formData.get("stockDescription") || "").trim();
+  const stockItemNames = getStockItemDisplayLines(stockDescription);
   const deliveryAddress = String(formData.get("deliveryAddress") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
@@ -1415,6 +1422,7 @@ async function createOrder(formData, currentUser) {
       p_po_number: poNumber,
       p_branding: branding,
       p_stock_description: stockDescription,
+      p_stock_item_names: stockItemNames.length ? stockItemNames : null,
       p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
       p_priority: priority,
       p_notice: notice,
@@ -1923,32 +1931,35 @@ function getStockActivityReferenceFields(record) {
   };
 }
 
-function findStockItemForOrder(order) {
-  const orderFields = getStockActivityReferenceFields(order);
+function findMatchingStockItem(record, stockItemName = "") {
+  const recordFields = {
+    ...getStockActivityReferenceFields(record),
+    name: normalizeStockMatchValue(stockItemName || record?.name || record?.stockDescription),
+  };
   let bestMatch = null;
   let bestScore = 0;
 
   state.snapshot.stockItems.forEach((item) => {
     const itemFields = getStockActivityReferenceFields(item);
     const exactTupleMatch = (
-      orderFields.name === itemFields.name
-      && orderFields.quoteNumber === itemFields.quoteNumber
-      && orderFields.salesOrderNumber === itemFields.salesOrderNumber
-      && orderFields.invoiceNumber === itemFields.invoiceNumber
-      && orderFields.poNumber === itemFields.poNumber
+      recordFields.name === itemFields.name
+      && recordFields.quoteNumber === itemFields.quoteNumber
+      && recordFields.salesOrderNumber === itemFields.salesOrderNumber
+      && recordFields.invoiceNumber === itemFields.invoiceNumber
+      && recordFields.poNumber === itemFields.poNumber
     );
 
     let score = exactTupleMatch ? 100 : 0;
     let referenceMatches = 0;
 
     ["quoteNumber", "salesOrderNumber", "invoiceNumber", "poNumber"].forEach((field) => {
-      if (orderFields[field] && itemFields[field] && orderFields[field] === itemFields[field]) {
+      if (recordFields[field] && itemFields[field] && recordFields[field] === itemFields[field]) {
         score += 10;
         referenceMatches += 1;
       }
     });
 
-    if (orderFields.name && itemFields.name && orderFields.name === itemFields.name) {
+    if (recordFields.name && itemFields.name && recordFields.name === itemFields.name) {
       score += 1;
     }
 
@@ -1963,6 +1974,24 @@ function findStockItemForOrder(order) {
   });
 
   return bestMatch;
+}
+
+function getUniqueStockItemNames(value) {
+  const names = getStockItemDisplayLines(value);
+  const seenNames = new Set();
+  const uniqueNames = [];
+
+  names.forEach((name) => {
+    const key = normalizeStockMatchValue(name);
+    if (!key || seenNames.has(key)) {
+      return;
+    }
+
+    seenNames.add(key);
+    uniqueNames.push(name);
+  });
+
+  return uniqueNames;
 }
 
 function getRecentCreatedStockActivities() {
@@ -1998,35 +2027,43 @@ function getRecentOfficeDropActivities() {
   return state.snapshot.orders
     .filter((order) => (
       order.status === "completed"
+      && order.entryType === "collection"
       && order.completionType === "office"
       && isRecentStockMovement(order.completedAt)
     ))
-    .map((order) => {
-      const matchedItem = findStockItemForOrder(order);
+    .flatMap((order) => {
+      const stockItemNames = getUniqueStockItemNames(order.stockDescription);
+      const fallbackNames = stockItemNames.length
+        ? stockItemNames
+        : [String(order.stockDescription || "").trim() || order.reference || "Unknown"];
 
-      return {
-        id: `office-drop-${order.id}`,
-        stockItemId: matchedItem?.id || `office-drop-${order.id}`,
-        itemName: matchedItem?.name || order.stockDescription || order.reference || "Unknown",
-        sku: matchedItem?.sku || "",
-        quoteNumber: matchedItem?.quoteNumber || order.quoteNumber || order.inhouseOrderNumber || "",
-        invoiceNumber: matchedItem?.invoiceNumber || order.invoiceNumber || "",
-        salesOrderNumber: matchedItem?.salesOrderNumber || order.salesOrderNumber || order.factoryOrderNumber || "",
-        poNumber: matchedItem?.poNumber || order.poNumber || "",
-        unit: matchedItem?.unit || "units",
-        movementType: "in",
-        quantity: 0,
-        supplierName: order.locationName || "",
-        driverUserId: order.driverUserId || "",
-        driverName: order.driverName || order.completedByName || "",
-        notes: order.notes || "",
-        createdByUserId: order.completedByUserId || "",
-        createdByName: order.completedByName || "",
-        createdAt: order.completedAt,
-        activityKind: "office_drop",
-        locationName: order.locationName || "",
-        locationAddress: order.locationAddress || "",
-      };
+      return fallbackNames.map((stockItemName, index) => {
+        const matchedItem = findMatchingStockItem(order, stockItemName);
+
+        return {
+          id: `office-drop-${order.id}-${index}`,
+          stockItemId: matchedItem?.id || `office-drop-${order.id}-${index}`,
+          itemName: matchedItem?.name || stockItemName,
+          sku: matchedItem?.sku || "",
+          quoteNumber: matchedItem?.quoteNumber || order.quoteNumber || order.inhouseOrderNumber || "",
+          invoiceNumber: matchedItem?.invoiceNumber || order.invoiceNumber || "",
+          salesOrderNumber: matchedItem?.salesOrderNumber || order.salesOrderNumber || order.factoryOrderNumber || "",
+          poNumber: matchedItem?.poNumber || order.poNumber || "",
+          unit: matchedItem?.unit || "units",
+          movementType: "in",
+          quantity: 0,
+          supplierName: order.locationName || "",
+          driverUserId: order.driverUserId || "",
+          driverName: order.driverName || order.completedByName || "",
+          notes: order.notes || "",
+          createdByUserId: order.completedByUserId || "",
+          createdByName: order.completedByName || "",
+          createdAt: order.completedAt,
+          activityKind: "office_drop",
+          locationName: order.locationName || "",
+          locationAddress: order.locationAddress || "",
+        };
+      });
     });
 }
 
@@ -4865,10 +4902,10 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
       </div>
       <label>
         Stock description
-        <textarea name="stockDescription" placeholder="What stock is on this entry?" required></textarea>
+        <textarea name="stockDescription" placeholder="What stock is on this entry? Put one item per line." required></textarea>
       </label>
       <p class="field-note">
-        Saving this entry will also create the matching stock item automatically in the Stock page if it does not already exist.
+        Saving this entry will also create matching stock items automatically in the Stock page. Put each item on its own line to create separate stock records.
       </p>
       <label>
         Branding
@@ -5015,6 +5052,13 @@ function renderGlobalOrdersSection(viewerRole) {
                   ${state.busy || !state.mailConfigured ? "disabled" : ""}
                 >
                   Test Email
+                </button>
+                <button
+                  class="button button-secondary"
+                  data-action="email-rollover-test"
+                  ${state.busy || !state.mailConfigured ? "disabled" : ""}
+                >
+                  Test Rollover Email
                 </button>
                 <button
                   class="button button-primary"
@@ -5570,6 +5614,56 @@ function getReferenceLines(record) {
   return lines;
 }
 
+function getStockItemDisplayLines(value) {
+  const text = String(value || "").replace(/\r/g, "\n").trim();
+  if (!text) {
+    return [];
+  }
+
+  return text
+    .split(/\n+/)
+    .flatMap((line) => splitStockItemDisplayLine(line))
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function splitStockItemDisplayLine(value) {
+  const line = String(value || "").replace(/\s+/g, " ").trim();
+  if (!line) {
+    return [];
+  }
+
+  const parts = line
+    .split(/\s+(?=\d+\s*x\b)/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.length > 1 ? parts : [line];
+}
+
+function renderStockItemDisplayName(value, options = {}) {
+  const {
+    containerClass = "",
+    lineClass = "",
+    lineTag = "strong",
+    emptyLabel = "Unnamed stock item",
+  } = options;
+  const displayLines = getStockItemDisplayLines(value);
+  const safeTag = lineTag === "h4" ? "h4" : "strong";
+  const combinedLineClass = ["stock-item-name-line", lineClass].filter(Boolean).join(" ");
+  const singleLine = displayLines[0] || emptyLabel;
+
+  if (displayLines.length <= 1) {
+    return `<${safeTag}${combinedLineClass ? ` class="${combinedLineClass}"` : ""}>${escapeHtml(singleLine)}</${safeTag}>`;
+  }
+
+  return `
+    <div class="${["stock-item-name-list", containerClass].filter(Boolean).join(" ")}">
+      ${displayLines.map((line) => `<${safeTag}${combinedLineClass ? ` class="${combinedLineClass}"` : ""}>${escapeHtml(line)}</${safeTag}>`).join("")}
+    </div>
+  `;
+}
+
 function getOrderPrimaryDisplay(order) {
   const quoteNumber = String(order?.quoteNumber || order?.inhouseOrderNumber || "").trim();
   if (quoteNumber) {
@@ -5653,7 +5747,7 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
   return `
     <tr>
       <td data-label="Item">
-        <strong>${escapeHtml(item.name)}</strong>
+        ${renderStockItemDisplayName(item.name)}
         ${activityBadge}
       </td>
       <td data-label="References">${renderReferenceSummary(item)}</td>
@@ -5708,7 +5802,11 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
     <article class="stock-item-mobile-card${isOpen ? " is-open" : ""}">
       <div class="stock-item-mobile-head">
         <div class="stock-item-mobile-copy">
-          <h4 class="stock-item-mobile-title">${escapeHtml(item.name)}</h4>
+          ${renderStockItemDisplayName(item.name, {
+            containerClass: "stock-item-mobile-title-list",
+            lineClass: "stock-item-mobile-title",
+            lineTag: "h4",
+          })}
           <p class="stock-item-mobile-summary">${escapeHtml(referenceSummary)}</p>
           ${activityBadge}
         </div>
@@ -5958,7 +6056,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 data-completion-type="office"
                                 ${state.busy ? " disabled" : ""}
                               >
-                                Dropped at office
+                                ${escapeHtml(getOrderCompletionTypeLabel("office", order) || "Dropped at office")}
                               </button>
                             `
                             : ""
@@ -6200,12 +6298,21 @@ function renderOrderFlagTypeOptions(selectedFlagType = "") {
     .join("");
 }
 
-function getOrderCompletionTypeLabel(completionType) {
-  return ORDER_COMPLETION_LABELS[String(completionType || "").trim()] || "";
+function isDeliveryOrder(order) {
+  return String(order?.entryType || "").trim().toLowerCase() === "delivery";
+}
+
+function getOrderCompletionTypeLabel(completionType, order = null) {
+  const normalized = String(completionType || "").trim();
+  if (normalized === "office" && isDeliveryOrder(order)) {
+    return "Delivered to client";
+  }
+
+  return ORDER_COMPLETION_LABELS[normalized] || "";
 }
 
 function getOrderCompletionLabel(order) {
-  return getOrderCompletionTypeLabel(order?.completionType);
+  return getOrderCompletionTypeLabel(order?.completionType, order);
 }
 
 function getOrderCompletionNoticeText(order) {
@@ -7417,6 +7524,18 @@ function getOrderCsvDriverIssue(order) {
   return [label, note].filter(Boolean).join(": ");
 }
 
+function getCollectionDestinationLabel(order) {
+  if (String(order?.entryType || "").trim().toLowerCase() !== "collection") {
+    return "";
+  }
+
+  if (order?.moveToFactory) {
+    return String(order?.factoryDestinationName || "").trim() || "Factory";
+  }
+
+  return "Office";
+}
+
 function shouldMarkOrderAsRolledOver(order) {
   return Boolean(order?.driverUserId) && Number(order?.carryOverCount || 0) > 0;
 }
@@ -7455,7 +7574,7 @@ function buildOrderCsvRow(order) {
     order.stockDescription || "",
     order.branding || "",
     order.moveToFactory ? "Yes" : "No",
-    order.factoryDestinationName || "",
+    getCollectionDestinationLabel(order),
     getOrderCsvDriverIssue(order),
     order.notes || "",
     getOrderCsvScheduleSummary(order),
@@ -7482,7 +7601,7 @@ function buildOrdersCsvContent(orders) {
       "Stock required",
       "Branding",
       "Move to factory",
-      "Factory destination",
+      "Destination",
       "Driver issue",
       "Extra notes",
       "Schedule",
@@ -7578,6 +7697,39 @@ async function sendTestEmail() {
   }
 }
 
+async function sendRolloverTestEmail() {
+  if (!state.mailConfigured) {
+    showFlash(state.mailConfigReason || "Email delivery is not configured yet.", "error");
+    return;
+  }
+
+  state.busy = true;
+  render();
+
+  try {
+    const payload = await requestJson(`${API_ROOT}/export/email/rollover-test`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ token: sessionToken }),
+    });
+
+    const sentTo = payload?.sentTo || state.artworkTo;
+    const count = Number(payload?.count || 0);
+    const csvCount = Number(payload?.csvCount || 0);
+    const itemLabel = count === 1 ? "item" : "items";
+    const entryLabel = csvCount === 1 ? "entry" : "entries";
+    showFlash(`Rollover test email sent to ${sentTo} with ${count} rolled ${itemLabel} and ${csvCount} CSV ${entryLabel}.`, "success");
+    state.busy = false;
+    render();
+  } catch (error) {
+    state.busy = false;
+    showFlash(normalizeError(error), "error");
+    render();
+  }
+}
+
 function renderOrderNotice(order, emptyLabel = "") {
   const lines = getOrderNoticeLines(order);
   if (!lines.length) {
@@ -7596,6 +7748,7 @@ function getOrderStockDetailItems(order) {
   const stockDescription = String(order?.stockDescription || "").trim();
   const branding = String(order?.branding || "").trim();
   const deliveryAddress = String(order?.deliveryAddress || "").trim();
+  const collectionDestination = getCollectionDestinationLabel(order);
 
   if (stockDescription) {
     items.push({ label: "Stock", value: stockDescription });
@@ -7607,6 +7760,10 @@ function getOrderStockDetailItems(order) {
 
   if (deliveryAddress) {
     items.push({ label: "Delivery address", value: deliveryAddress });
+  }
+
+  if (collectionDestination) {
+    items.push({ label: "Destination", value: collectionDestination });
   }
 
   return items;
@@ -7817,7 +7974,7 @@ function syncMoveToFactoryField(form) {
 
   if (!showDestination) {
     noteEl.textContent = isCollection
-      ? "Check this when the collected stock must be moved to a factory."
+      ? "Leave this unchecked when the collected stock should return to the office."
       : "Switch the entry type to Collection to enable factory transfer.";
     return;
   }
