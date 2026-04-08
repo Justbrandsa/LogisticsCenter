@@ -464,6 +464,14 @@ function createDatabase() {
         throw createHttpError(503, status.reason || "Database connection is not configured.");
       }
 
+      if (functionName === "clear_all_order_priorities") {
+        return this.clearAllOrderPriorities(parameters?.p_token);
+      }
+
+      if (functionName === "clear_order_rollovers") {
+        return this.clearOrderRollovers(parameters?.p_token);
+      }
+
       const definition = RPC_DEFINITIONS[functionName];
       if (!definition) {
         throw createHttpError(404, "Unknown RPC function.");
@@ -556,6 +564,71 @@ function createDatabase() {
       `);
 
       return result.rows;
+    },
+    async clearAllOrderPriorities(token) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const currentUser = await this.getUserByToken(token);
+      if (!currentUser) {
+        throw createHttpError(403, "Invalid session.");
+      }
+      if (currentUser.role !== "admin") {
+        throw createHttpError(403, "Permission denied.");
+      }
+
+      await pool.query(`
+        update private.app_sessions
+        set last_seen_at = now()
+        where token = $1
+      `, [String(token || "").trim()]);
+
+      const result = await pool.query(`
+        update private.orders
+        set priority = 'medium',
+            updated_at = now()
+        where status = 'active'
+          and priority = 'high'
+      `);
+
+      return {
+        ok: true,
+        updatedOrders: result.rowCount || 0,
+      };
+    },
+    async clearOrderRollovers(token) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const currentUser = await this.getUserByToken(token);
+      if (!currentUser) {
+        throw createHttpError(403, "Invalid session.");
+      }
+      if (currentUser.role !== "admin") {
+        throw createHttpError(403, "Permission denied.");
+      }
+
+      await pool.query(`
+        update private.app_sessions
+        set last_seen_at = now()
+        where token = $1
+      `, [String(token || "").trim()]);
+
+      const result = await pool.query(`
+        update private.orders
+        set carry_over_count = 0,
+            original_scheduled_for = scheduled_for,
+            updated_at = now()
+        where status = 'active'
+          and carry_over_count > 0
+      `);
+
+      return {
+        ok: true,
+        updatedOrders: result.rowCount || 0,
+      };
     },
     async getUserByToken(token) {
       if (!pool) {

@@ -3757,7 +3757,6 @@ function renderAdminPageContent() {
       ${renderMetric("Drivers", getDriverUsers().length)}
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
-    ${renderAdminRolloverPanel()}
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
@@ -5065,6 +5064,7 @@ function renderGlobalOrdersSection(viewerRole) {
   const canExport = viewerRole === "admin" || viewerRole === "sales";
   const canDelete = viewerRole === "admin";
   const priorityCount = getActivePriorityOrders().length;
+  const rolloverCount = getActiveCarryOverOrders().length;
 
   return `
     <section class="table-card">
@@ -5112,6 +5112,13 @@ function renderGlobalOrdersSection(viewerRole) {
                         ${state.busy || !priorityCount ? "disabled" : ""}
                       >
                         Clear all priority${priorityCount ? ` (${priorityCount})` : ""}
+                      </button>
+                      <button
+                        class="button button-ghost"
+                        data-action="clear-order-rollovers"
+                        ${state.busy || !rolloverCount ? "disabled" : ""}
+                      >
+                        Clear all rollover${rolloverCount ? ` (${rolloverCount})` : ""}
                       </button>
                     `
                     : ""
@@ -6904,6 +6911,10 @@ function buildGlobalLocationGroupKey(groupKey) {
 function isStopCardOpen(stopCardKey) {
   if (!stopCardKey) {
     return true;
+  }
+
+  if (stopCardKey.startsWith("global-location:")) {
+    return state.driverOpenStops[stopCardKey] === true;
   }
 
   return state.driverOpenStops[stopCardKey] !== false;
