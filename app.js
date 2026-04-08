@@ -637,6 +637,16 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "clear-all-order-priorities" && currentUser.role === "admin") {
+    await clearAllOrderPriorities();
+    return;
+  }
+
+  if (action === "clear-order-rollovers" && currentUser.role === "admin") {
+    await clearOrderRollovers();
+    return;
+  }
+
   if (action === "toggle-user" && currentUser.role === "admin") {
     await runMutation(
       "toggle_user_active",
@@ -1531,6 +1541,54 @@ async function toggleOrderPriority(orderId) {
     nextPriority === PRIORITY_STOP_VALUE
       ? `${order.reference || "Entry"} marked as a priority stop.`
       : `Priority cleared for ${order.reference || "the entry"}.`,
+  );
+}
+
+async function clearAllOrderPriorities() {
+  const priorityOrders = getActivePriorityOrders();
+  const count = priorityOrders.length;
+
+  if (!count) {
+    showFlash("There are no active priority entries to clear.", "error");
+    render();
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Clear priority from ${count} active entr${count === 1 ? "y" : "ies"}?`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  await runMutation(
+    "clear_all_order_priorities",
+    { p_token: sessionToken },
+    `Priority cleared for ${count} active entr${count === 1 ? "y" : "ies"}.`,
+  );
+}
+
+async function clearOrderRollovers() {
+  const rolloverOrders = getActiveCarryOverOrders();
+  const count = rolloverOrders.length;
+
+  if (!count) {
+    showFlash("There are no active rollover entries to clear.", "error");
+    render();
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Clear rollover markers from ${count} active entr${count === 1 ? "y" : "ies"}?`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  await runMutation(
+    "clear_order_rollovers",
+    { p_token: sessionToken },
+    `Rollover cleared for ${count} active entr${count === 1 ? "y" : "ies"}.`,
   );
 }
 
@@ -3699,6 +3757,7 @@ function renderAdminPageContent() {
       ${renderMetric("Drivers", getDriverUsers().length)}
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
+    ${renderAdminRolloverPanel()}
     <section class="panel-grid">
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
@@ -5005,6 +5064,7 @@ function renderGlobalOrdersSection(viewerRole) {
   const page = getPaginationData(filteredLocationGroups, "globalEntries", PAGE_SIZES.globalEntries);
   const canExport = viewerRole === "admin" || viewerRole === "sales";
   const canDelete = viewerRole === "admin";
+  const priorityCount = getActivePriorityOrders().length;
 
   return `
     <section class="table-card">
@@ -5043,6 +5103,19 @@ function renderGlobalOrdersSection(viewerRole) {
           canExport
             ? `
               <div class="action-row">
+                ${
+                  viewerRole === "admin"
+                    ? `
+                      <button
+                        class="button button-ghost"
+                        data-action="clear-all-order-priorities"
+                        ${state.busy || !priorityCount ? "disabled" : ""}
+                      >
+                        Clear all priority${priorityCount ? ` (${priorityCount})` : ""}
+                      </button>
+                    `
+                    : ""
+                }
                 <button class="button button-secondary" data-action="export-global-csv"${state.busy ? " disabled" : ""}>
                   Download CSV
                 </button>
@@ -5085,6 +5158,34 @@ function renderGlobalOrdersSection(viewerRole) {
         }
       </div>
       ${renderPaginationControls("globalEntries", page)}
+    </section>
+  `;
+}
+
+function renderAdminRolloverPanel() {
+  const rolloverCount = getActiveCarryOverOrders().length;
+
+  return `
+    <section class="panel">
+      <div class="table-toolbar">
+        <div>
+          <p class="eyebrow">Admin tools</p>
+          <h3 class="panel-title">Rollover controls</h3>
+          <p class="panel-subtitle">Clear the current rollover markers once the day’s carry-over report has been checked.</p>
+        </div>
+        <div class="chip-row">
+          <span class="chip">${rolloverCount} active rollover entr${rolloverCount === 1 ? "y" : "ies"}</span>
+        </div>
+      </div>
+      <div class="action-row">
+        <button
+          class="button button-secondary"
+          data-action="clear-order-rollovers"
+          ${state.busy || !rolloverCount ? "disabled" : ""}
+        >
+          Clear rollover
+        </button>
+      </div>
     </section>
   `;
 }
@@ -6164,6 +6265,18 @@ function getOrderPriorityRank(order) {
 
 function isPriorityOrder(order) {
   return getOrderPriority(order) === PRIORITY_STOP_VALUE;
+}
+
+function hasCarryOver(order) {
+  return Number(order?.carryOverCount || 0) > 0;
+}
+
+function getActivePriorityOrders() {
+  return getActiveOrders().filter((order) => isPriorityOrder(order));
+}
+
+function getActiveCarryOverOrders() {
+  return getActiveOrders().filter((order) => hasCarryOver(order));
 }
 
 function renderOrderPriorityChip(order) {

@@ -34,6 +34,7 @@ const ROOT = __dirname;
 const TIME_ZONE = "Africa/Johannesburg";
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
+const ADMIN_ACTION_NOTIFICATION_EMAIL = "admin3@giftwrap.co.za";
 const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const MIME = {
@@ -108,6 +109,8 @@ const RPC_DEFINITIONS = Object.freeze({
   },
   assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
   set_order_priority: { params: ["p_token", "p_order_id", "p_priority"] },
+  clear_all_order_priorities: { params: ["p_token"] },
+  clear_order_rollovers: { params: ["p_token"] },
   set_order_flag: { params: ["p_token", "p_order_id", "p_flag_type", "p_note"] },
   pick_up_order: { params: ["p_token", "p_order_id"] },
   complete_order: { params: ["p_token", "p_order_id", "p_completion_type"] },
@@ -243,18 +246,31 @@ async function routeRequest(request, response) {
       const payload = await readJsonBody(request);
       const parameters = payload?.parameters || {};
       const driverTransferEmailContext = await buildDriverTransferEmailContext(functionName, parameters);
+      const adminActionEmailContext = await buildAdminActionEmailContext(functionName, parameters);
       const data = await database.call(functionName, parameters);
       let responseData = data;
-      let warning = "";
+      const warnings = [];
       await maybeSendCarryOverEmail(functionName, data);
       if (driverTransferEmailContext) {
         try {
           await mailer.sendDriverTransferEmail(driverTransferEmailContext);
         } catch (error) {
-          warning = `Admin email could not be sent: ${normalizeErrorMessage(error)}`;
+          warnings.push(`Admin email could not be sent: ${normalizeErrorMessage(error)}`);
           console.error("Failed to send driver transfer email.", error);
         }
       }
+      if (adminActionEmailContext && Number(data?.updatedOrders || 0) > 0) {
+        try {
+          await mailer.sendAdminActionNotification({
+            ...adminActionEmailContext,
+            affectedCount: Number(data?.updatedOrders || adminActionEmailContext.affectedCount || 0),
+          });
+        } catch (error) {
+          warnings.push(`Admin action email could not be sent: ${normalizeErrorMessage(error)}`);
+          console.error("Failed to send admin action email.", error);
+        }
+      }
+      const warning = warnings.join(" ");
       if (warning) {
         responseData = appendWarningToRpcResult(data, warning);
       }
@@ -352,6 +368,49 @@ async function buildDriverTransferEmailContext(functionName, parameters) {
     toDriverName: nextDriver.name || "Unknown driver",
     transferredAt: new Date().toISOString(),
     order,
+  };
+}
+
+async function buildAdminActionEmailContext(functionName, parameters) {
+  if (!["clear_all_order_priorities", "clear_order_rollovers"].includes(functionName)) {
+    return null;
+  }
+
+  const token = String(parameters?.p_token || "").trim();
+  if (!token) {
+    return null;
+  }
+
+  const currentUser = await database.getUserByToken(token);
+  if (!currentUser || currentUser.role !== "admin") {
+    return null;
+  }
+
+  const orders = await database.listOrdersForMailExport();
+  const isPriorityAction = functionName === "clear_all_order_priorities";
+  const affectedOrders = orders.filter((order) => (
+    order.status === "active"
+    && (isPriorityAction
+      ? getOrderPriority(order) === "high"
+      : Number(order.carryOverCount || 0) > 0)
+  ));
+
+  if (!affectedOrders.length) {
+    return null;
+  }
+
+  const actionLabel = isPriorityAction ? "Clear all priority" : "Clear rollover";
+  const detailLabel = isPriorityAction ? "Priority entries cleared" : "Rollover entries cleared";
+
+  return {
+    actionLabel,
+    detailLabel,
+    initiatedByName: currentUser.name || "Admin",
+    initiatedByRole: currentUser.role || "admin",
+    triggeredAt: new Date().toISOString(),
+    affectedCount: affectedOrders.length,
+    affectedOrders: affectedOrders.slice(0, 25),
+    remainingCount: Math.max(affectedOrders.length - 25, 0),
   };
 }
 
@@ -497,6 +556,33 @@ function createDatabase() {
       `);
 
       return result.rows;
+    },
+    async getUserByToken(token) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const cleanToken = String(token || "").trim();
+      if (!cleanToken) {
+        return null;
+      }
+
+      const result = await pool.query(`
+        select
+          u.id,
+          u.name,
+          u.role,
+          u.active
+        from private.app_sessions s
+        join private.app_users u on u.id = s.user_id
+        where s.token = $1
+          and s.expires_at > now()
+          and u.active
+        order by s.created_at desc
+        limit 1
+      `, [cleanToken]);
+
+      return result.rows[0] || null;
     },
     async close() {
       if (pool) {
@@ -817,6 +903,67 @@ function createMailer() {
         subject,
       };
     },
+    async sendAdminActionNotification(notification) {
+      if (!status.configured) {
+        throw createHttpError(503, status.reason || "Email delivery is not configured.");
+      }
+
+      const affectedCount = Number(notification?.affectedCount || 0);
+      if (affectedCount <= 0) {
+        return {
+          ok: true,
+          skipped: true,
+          count: 0,
+        };
+      }
+
+      const actionLabel = String(notification?.actionLabel || "Admin action").trim();
+      const detailLabel = String(notification?.detailLabel || "Affected entries").trim();
+      const initiatedByName = String(notification?.initiatedByName || "Admin").trim() || "Admin";
+      const initiatedByRole = capitalize(String(notification?.initiatedByRole || "admin").trim()) || "Admin";
+      const triggeredAt = formatDateTime(notification?.triggeredAt || new Date().toISOString());
+      const affectedOrders = Array.isArray(notification?.affectedOrders)
+        ? notification.affectedOrders.filter(Boolean)
+        : [];
+      const remainingCount = Number(notification?.remainingCount || 0);
+      const itemLabel = affectedCount === 1 ? "entry" : "entries";
+      const subject = `Route Ledger admin action: ${actionLabel.toLowerCase()} (${affectedCount} ${itemLabel})`;
+      const lines = [
+        "An admin used a bulk Route Ledger action.",
+        "",
+        `Action: ${actionLabel}`,
+        `Performed by: ${initiatedByName} (${initiatedByRole})`,
+        `Time: ${triggeredAt || "Just now"}`,
+        `${detailLabel}: ${affectedCount}`,
+      ];
+
+      if (affectedOrders.length) {
+        lines.push("");
+        lines.push("Entries:");
+        affectedOrders.forEach((order) => {
+          lines.push(`- ${formatAdminActionOrderLine(order)}`);
+        });
+      }
+
+      if (remainingCount > 0) {
+        lines.push(`- Plus ${remainingCount} more entr${remainingCount === 1 ? "y" : "ies"}`);
+      }
+
+      await sendMessage({
+        from: status.from,
+        to: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        subject,
+        text: lines.join("\n"),
+      });
+
+      return {
+        ok: true,
+        sentTo: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        sentFrom: status.from,
+        subject,
+        count: affectedCount,
+      };
+    },
     async sendArtworkRequest(token, payload) {
       const { currentUser, snapshot } = await getAuthorizedMailContext(
         token,
@@ -1103,6 +1250,26 @@ function getOrderDriverIssue(order) {
   return [label, note].filter(Boolean).join(": ");
 }
 
+function formatAdminActionOrderLine(order) {
+  const reference = String(order?.reference || "Unknown").trim() || "Unknown";
+  const locationName = String(order?.locationName || "Unknown location").trim() || "Unknown location";
+  const driverName = String(order?.driverName || "").trim() || "Unassigned";
+  const schedule = getOrderScheduleSummary(order) || "Not scheduled";
+  const references = getOrderReferenceSummary(order);
+  const parts = [
+    reference,
+    locationName,
+    `Driver: ${driverName}`,
+    `Schedule: ${schedule}`,
+  ];
+
+  if (references) {
+    parts.push(references);
+  }
+
+  return parts.join(" | ");
+}
+
 function getCollectionDestinationLabel(order) {
   if (String(order?.entryType || "").trim().toLowerCase() !== "collection") {
     return "";
@@ -1376,11 +1543,14 @@ function buildCarryOverEmailText(summary) {
 
   summary.groups.forEach((group) => {
     lines.push("");
-    lines.push(`Driver: ${group.driverName} (${group.orders.length})`);
-    group.orders.forEach((order) => {
-      lines.push(`- ${getCarryOverEmailOrderTitle(order)}`);
-      buildCarryOverEmailOrderDetails(order).forEach((detail) => {
-        lines.push(`  ${detail.label}: ${detail.value}`);
+    lines.push(`Driver: ${group.driverName} (${group.count})`);
+    group.locationGroups.forEach((locationGroup) => {
+      lines.push(`Location: ${locationGroup.locationName} (${locationGroup.count})`);
+      locationGroup.orders.forEach((order) => {
+        lines.push(`- ${getCarryOverEmailOrderTitle(order)}`);
+        buildCarryOverEmailOrderDetails(order).forEach((detail) => {
+          lines.push(`  ${detail.label}: ${detail.value}`);
+        });
       });
     });
   });
@@ -1430,9 +1600,16 @@ function buildCarryOverEmailHtml(summary) {
             ? groups.map((group) => `
               <section style="margin:0 0 28px;">
                 <div style="margin:0 0 12px;padding:12px 16px;border-radius:14px;background:#efe8dc;color:#3f3a2f;font-size:16px;font-weight:700;">
-                  ${escapeHtml(group.driverName)} (${group.orders.length})
+                  ${escapeHtml(group.driverName)} (${group.count})
                 </div>
-                ${group.orders.map((order) => renderCarryOverEmailHtmlCard(order)).join("")}
+                ${group.locationGroups.map((locationGroup) => `
+                  <section style="margin:0 0 16px;">
+                    <div style="margin:0 0 10px;padding:10px 14px;border-radius:12px;background:#f8f3ea;color:#5b5547;font-size:14px;font-weight:700;">
+                      ${escapeHtml(locationGroup.locationName)} (${locationGroup.count})
+                    </div>
+                    ${locationGroup.orders.map((order) => renderCarryOverEmailHtmlCard(order)).join("")}
+                  </section>
+                `).join("")}
               </section>
             `).join("")
             : `
@@ -1474,16 +1651,38 @@ function groupCarryOverOrdersByDriver(orders) {
     if (!group) {
       group = {
         driverName,
-        orders: [],
+        count: 0,
+        locationGroups: [],
+        locationsByName: new Map(),
       };
       groupedByDriver.set(driverName, group);
       groups.push(group);
     }
 
-    group.orders.push(order);
+    group.count += 1;
+
+    const locationName = String(order?.locationName || "").trim() || "Unknown location";
+    let locationGroup = group.locationsByName.get(locationName);
+
+    if (!locationGroup) {
+      locationGroup = {
+        locationName,
+        count: 0,
+        orders: [],
+      };
+      group.locationsByName.set(locationName, locationGroup);
+      group.locationGroups.push(locationGroup);
+    }
+
+    locationGroup.count += 1;
+    locationGroup.orders.push(order);
   });
 
-  return groups;
+  return groups.map((group) => ({
+    driverName: group.driverName,
+    count: group.count,
+    locationGroups: group.locationGroups,
+  }));
 }
 
 function getCarryOverEmailOrderTitle(order) {

@@ -2867,6 +2867,69 @@ begin
 end;
 $$;
 
+create or replace function public.clear_all_order_priorities(p_token uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_updated_orders integer := 0;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role <> 'admin' then
+    raise exception 'Permission denied';
+  end if;
+
+  update private.orders
+  set priority = 'medium',
+      updated_at = now()
+  where status = 'active'
+    and priority = 'high';
+
+  get diagnostics v_updated_orders = row_count;
+
+  return jsonb_build_object(
+    'ok', true,
+    'updatedOrders', v_updated_orders
+  );
+end;
+$$;
+
+create or replace function public.clear_order_rollovers(p_token uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_updated_orders integer := 0;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role <> 'admin' then
+    raise exception 'Permission denied';
+  end if;
+
+  update private.orders
+  set carry_over_count = 0,
+      original_scheduled_for = scheduled_for,
+      updated_at = now()
+  where status = 'active'
+    and carry_over_count > 0;
+
+  get diagnostics v_updated_orders = row_count;
+
+  return jsonb_build_object(
+    'ok', true,
+    'updatedOrders', v_updated_orders
+  );
+end;
+$$;
+
 create or replace function public.set_order_flag(
   p_token uuid,
   p_order_id uuid,
