@@ -1323,6 +1323,34 @@ function getOrderDriverIssue(order) {
   return [label, note].filter(Boolean).join(": ");
 }
 
+function getOrderPickupCsvValue(order) {
+  const pickedUpBy = String(order?.pickedUpByName || "").trim();
+  const pickedUpAt = formatDateTime(order?.pickedUpAt);
+
+  if (!pickedUpBy && !pickedUpAt) {
+    return "";
+  }
+
+  if (pickedUpBy && pickedUpAt) {
+    return `${pickedUpBy} (${pickedUpAt})`;
+  }
+
+  return pickedUpBy || pickedUpAt;
+}
+
+function getOrderDriverHandoffCsvValue(order) {
+  const pickedUpByUserId = String(order?.pickedUpByUserId || "").trim();
+  const currentDriverUserId = String(order?.driverUserId || "").trim();
+  const pickedUpByName = String(order?.pickedUpByName || "").trim();
+  const currentDriverName = String(order?.driverName || "").trim();
+
+  if (!pickedUpByUserId || !currentDriverUserId || pickedUpByUserId === currentDriverUserId) {
+    return "";
+  }
+
+  return [pickedUpByName || "Picked-up driver", currentDriverName || "Assigned driver"].join(" -> ");
+}
+
 function formatAdminActionOrderLine(order) {
   const reference = String(order?.reference || "Unknown").trim() || "Unknown";
   const locationName = String(order?.locationName || "Unknown location").trim() || "Unknown location";
@@ -1423,6 +1451,8 @@ function buildOrderCsvRow(order) {
   return [
     order.reference || "",
     order.driverName || "Unassigned",
+    getOrderPickupCsvValue(order),
+    getOrderDriverHandoffCsvValue(order),
     order.locationName || "",
     order.locationAddress || "",
     order.deliveryAddress || "",
@@ -1450,6 +1480,8 @@ function buildOrdersCsv(orders) {
     [
       "Reference",
       "Assigned driver",
+      "Picked up by",
+      "Driver handoff",
       "Pickup location",
       "Pickup address",
       "Delivery address",
