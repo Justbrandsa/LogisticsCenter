@@ -6275,7 +6275,7 @@ function isPriorityOrder(order) {
 }
 
 function hasCarryOver(order) {
-  return Number(order?.carryOverCount || 0) > 0;
+  return Boolean(order?.driverUserId) && Number(order?.carryOverCount || 0) > 0;
 }
 
 function getActivePriorityOrders() {

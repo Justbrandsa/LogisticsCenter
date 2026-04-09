@@ -1565,7 +1565,7 @@ function buildCarryOverTestPayload(snapshot) {
     .filter((order) =>
       String(order?.status || "").trim().toLowerCase() === "active"
       && String(order?.scheduledFor || "").trim() === today
-      && Number(order?.carryOverCount || 0) > 0,
+      && shouldMarkOrderAsRolledOver(order),
     )
     .sort(compareCarryOverEmailOrders);
 

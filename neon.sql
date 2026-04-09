@@ -772,6 +772,7 @@ begin
     left join private.app_users i on i.id = o.picked_up_by_user_id
     join private.app_users c on c.id = o.created_by_user_id
     where o.status = 'active'
+      and o.driver_user_id is not null
       and o.scheduled_for < p_today
   ),
   updated_orders as (
@@ -2813,6 +2814,18 @@ begin
 
   update private.orders
   set driver_user_id = p_driver_user_id,
+      scheduled_for = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        else scheduled_for
+      end,
+      original_scheduled_for = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        else original_scheduled_for
+      end,
+      carry_over_count = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then 0
+        else carry_over_count
+      end,
       updated_at = now()
   where id = p_order_id;
 
