@@ -245,6 +245,7 @@ const state = {
   stockSearchQuery: "",
   globalListSearchQuery: "",
   networkSearchQuery: "",
+  entryFormOpen: false,
   stockMovementsSectionOpen: false,
   stockArtworkPanelOpen: false,
   stockArtworkRequestsSectionOpen: false,
@@ -432,6 +433,7 @@ async function refreshPublicState() {
   state.stockScannerPendingItemId = "";
   state.stockScannerPendingCode = "";
   state.assignmentDriverFilter = "";
+  state.entryFormOpen = false;
   state.flaggingOrderId = "";
   state.transferringOrderId = "";
   resetDriverRouteOrigin();
@@ -810,6 +812,15 @@ async function handleClick(event) {
   }
 
   if (!currentUser) {
+    return;
+  }
+
+  if (action === "toggle-entry-form" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    state.entryFormOpen = !state.entryFormOpen;
+    render();
+    if (state.entryFormOpen) {
+      focusOrderForm();
+    }
     return;
   }
 
@@ -1615,7 +1626,7 @@ async function createOrder(formData, currentUser) {
     return;
   }
 
-  await runMutation(
+  const ok = await runMutation(
     "create_order",
     {
       p_token: sessionToken,
@@ -1638,6 +1649,11 @@ async function createOrder(formData, currentUser) {
     },
     driverUserId ? "Entry added to the driver list." : "Entry created in the unassigned queue.",
   );
+
+  if (ok) {
+    state.entryFormOpen = false;
+    render();
+  }
 }
 
 async function saveOrderAssignment(button, currentUser) {
@@ -2073,6 +2089,21 @@ function syncPostRenderUi() {
   if (currentUser?.role === "admin" && state.currentPage === "drivers") {
     drawAdminDriverLocationMap();
   }
+}
+
+function focusOrderForm() {
+  window.requestAnimationFrame(() => {
+    const form = document.querySelector('form[data-form="add-order"]');
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+
+    form.scrollIntoView({ behavior: "smooth", block: "start" });
+    const firstField = form.querySelector('[name="locationId"]');
+    if (firstField instanceof HTMLElement) {
+      firstField.focus();
+    }
+  });
 }
 
 function focusStockItemForm() {
@@ -3593,10 +3624,24 @@ function getNavigationItems(role) {
   ];
 }
 
+function syncEntryFormVisibility(pageId = state.currentPage) {
+  const currentUser = state.snapshot.user;
+  const canUseEntryForm = Boolean(
+    currentUser
+    && (currentUser.role === "admin" || currentUser.role === "sales")
+    && pageId === "entries",
+  );
+
+  if (!canUseEntryForm) {
+    state.entryFormOpen = false;
+  }
+}
+
 function syncCurrentPage() {
   const currentUser = state.snapshot.user;
   if (!currentUser) {
     state.currentPage = "";
+    syncEntryFormVisibility("");
     return;
   }
 
@@ -3610,6 +3655,7 @@ function syncCurrentPage() {
       : items[0].id;
 
   state.currentPage = nextPage;
+  syncEntryFormVisibility(nextPage);
   const targetHash = `#${nextPage}`;
   if (window.location.hash !== targetHash) {
     window.history.replaceState(null, "", `${window.location.pathname}${targetHash}`);
@@ -3628,6 +3674,7 @@ function setCurrentPage(pageId) {
   }
 
   state.currentPage = pageId;
+  syncEntryFormVisibility(pageId);
   window.history.replaceState(null, "", `${window.location.pathname}#${pageId}`);
   render();
 }
@@ -3645,6 +3692,7 @@ function handleHashChange() {
   }
 
   state.currentPage = hashPage;
+  syncEntryFormVisibility(hashPage);
   render();
 }
 
@@ -3966,12 +4014,11 @@ function renderAdminPageContent() {
         <p>Use this page to add live work with an optional driver assignment, then download or email the shared CSV.</p>
       </section>
       ${renderFlash()}
-      <section class="panel">
-        <p class="eyebrow">Global List</p>
-        <h3 class="panel-title">Create a new entry</h3>
-        <p class="panel-subtitle">Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today.</p>
-        ${renderEntryForm(state.snapshot.user, true)}
-      </section>
+      ${renderEntryComposerSection(
+        state.snapshot.user,
+        true,
+        "Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today.",
+      )}
       ${renderGlobalOrdersSection("admin")}
     `;
   }
@@ -4081,12 +4128,11 @@ function renderSalesPageContent() {
         <p>Sales can add work with an optional driver assignment, then download or email the latest global list.</p>
       </section>
       ${renderFlash()}
-      <section class="panel">
-        <p class="eyebrow">Global List</p>
-        <h3 class="panel-title">Create a new entry</h3>
-        <p class="panel-subtitle">Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.</p>
-        ${renderEntryForm(state.snapshot.user, false)}
-      </section>
+      ${renderEntryComposerSection(
+        state.snapshot.user,
+        false,
+        "Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.",
+      )}
       ${renderGlobalOrdersSection("sales")}
     `;
   }
@@ -5200,6 +5246,34 @@ function countOrdersCreatedByCurrentUser() {
   }
 
   return state.snapshot.orders.filter((order) => order.createdByUserId === state.snapshot.user.id).length;
+}
+
+function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitle) {
+  return `
+    <section class="panel entry-composer">
+      <div class="entry-composer-header">
+        <div class="entry-composer-copy">
+          <p class="eyebrow">Global List</p>
+          <h3 class="panel-title">Create a new entry</h3>
+          <p class="panel-subtitle">${escapeHtml(subtitle)}</p>
+        </div>
+        <button
+          type="button"
+          class="button ${state.entryFormOpen ? "button-ghost" : "button-primary"}"
+          data-action="toggle-entry-form"
+          aria-expanded="${state.entryFormOpen ? "true" : "false"}"
+          ${state.busy ? "disabled" : ""}
+        >
+          ${state.entryFormOpen ? "Hide entry form" : "Add new entry"}
+        </button>
+      </div>
+      ${
+        state.entryFormOpen
+          ? `<div class="entry-composer-body">${renderEntryForm(currentUser, allowDuplicateOverride)}</div>`
+          : `<p class="entry-composer-note">Open the form only when you need to capture a new job. The live global list stays visible below for easier scanning.</p>`
+      }
+    </section>
+  `;
 }
 
 function renderEntryForm(currentUser, allowDuplicateOverride) {
