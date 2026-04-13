@@ -1512,20 +1512,20 @@ async function createAccount(formData) {
     userId ? "update_user_account" : "create_user_account",
     userId
       ? {
-          p_token: sessionToken,
-          p_user_id: userId,
-          p_name: name,
-          p_role: role,
-          p_phone: phone,
-          p_password: password || null,
-        }
+        p_token: sessionToken,
+        p_user_id: userId,
+        p_name: name,
+        p_role: role,
+        p_phone: phone,
+        p_password: password || null,
+      }
       : {
-          p_token: sessionToken,
-          p_name: name,
-          p_password: password,
-          p_role: role,
-          p_phone: phone,
-        },
+        p_token: sessionToken,
+        p_name: name,
+        p_password: password,
+        p_role: role,
+        p_phone: phone,
+      },
     userId ? `Account updated: ${name}.` : `${capitalize(role)} account created for ${name}.`,
   );
 
@@ -1552,20 +1552,20 @@ async function createSupplier(formData) {
     supplierId ? "update_supplier" : "create_supplier",
     supplierId
       ? {
-          p_token: sessionToken,
-          p_supplier_id: supplierId,
-          p_name: name,
-          p_contact_person: contactPerson,
-          p_contact_number: contactNumber,
-          p_factory: factory,
-        }
+        p_token: sessionToken,
+        p_supplier_id: supplierId,
+        p_name: name,
+        p_contact_person: contactPerson,
+        p_contact_number: contactNumber,
+        p_factory: factory,
+      }
       : {
-          p_token: sessionToken,
-          p_name: name,
-          p_contact_person: contactPerson,
-          p_contact_number: contactNumber,
-          p_factory: factory,
-        },
+        p_token: sessionToken,
+        p_name: name,
+        p_contact_person: contactPerson,
+        p_contact_number: contactNumber,
+        p_factory: factory,
+      },
     supplierId ? `Supplier updated: ${name}.` : `Supplier added: ${name}.`,
   );
 
@@ -1607,26 +1607,26 @@ async function createLocation(formData) {
     locationId ? "update_location" : "create_location",
     locationId
       ? {
-          p_token: sessionToken,
-          p_location_id: locationId,
-          p_location_type: locationType,
-          p_name: name,
-          p_address: address,
-          p_lat: lat,
-          p_lng: lng,
-          p_contact_person: contactPerson,
-          p_contact_number: contactNumber,
-        }
+        p_token: sessionToken,
+        p_location_id: locationId,
+        p_location_type: locationType,
+        p_name: name,
+        p_address: address,
+        p_lat: lat,
+        p_lng: lng,
+        p_contact_person: contactPerson,
+        p_contact_number: contactNumber,
+      }
       : {
-          p_token: sessionToken,
-          p_location_type: locationType,
-          p_name: name,
-          p_address: address,
-          p_lat: lat,
-          p_lng: lng,
-          p_contact_person: contactPerson,
-          p_contact_number: contactNumber,
-        },
+        p_token: sessionToken,
+        p_location_type: locationType,
+        p_name: name,
+        p_address: address,
+        p_lat: lat,
+        p_lng: lng,
+        p_contact_person: contactPerson,
+        p_contact_number: contactNumber,
+      },
     locationId ? `Location updated: ${name}.` : `Location added: ${name}.`,
   );
 
@@ -2107,29 +2107,29 @@ async function createStockItem(formData) {
     stockItemId ? "update_stock_item" : "create_stock_item",
     stockItemId
       ? {
-          p_token: sessionToken,
-          p_stock_item_id: stockItemId,
-          p_name: name,
-          p_sku: sku,
-          p_quote_number: quoteNumber,
-          p_invoice_number: invoiceNumber,
-          p_sales_order_number: salesOrderNumber,
-          p_po_number: poNumber,
-          p_unit: unitLabel,
-          p_notes: notes,
-        }
+        p_token: sessionToken,
+        p_stock_item_id: stockItemId,
+        p_name: name,
+        p_sku: sku,
+        p_quote_number: quoteNumber,
+        p_invoice_number: invoiceNumber,
+        p_sales_order_number: salesOrderNumber,
+        p_po_number: poNumber,
+        p_unit: unitLabel,
+        p_notes: notes,
+      }
       : {
-          p_token: sessionToken,
-          p_name: name,
-          p_sku: sku,
-          p_quote_number: quoteNumber,
-          p_invoice_number: invoiceNumber,
-          p_sales_order_number: salesOrderNumber,
-          p_po_number: poNumber,
-          p_unit: unitLabel,
-          p_initial_quantity: initialQuantity,
-          p_notes: notes,
-        },
+        p_token: sessionToken,
+        p_name: name,
+        p_sku: sku,
+        p_quote_number: quoteNumber,
+        p_invoice_number: invoiceNumber,
+        p_sales_order_number: salesOrderNumber,
+        p_po_number: poNumber,
+        p_unit: unitLabel,
+        p_initial_quantity: initialQuantity,
+        p_notes: notes,
+      },
     stockItemId ? `Stock item updated: ${name}.` : `Stock item added: ${name}.`,
   );
 
@@ -3214,7 +3214,7 @@ function parseStockQrPayload(rawValue) {
   const normalizedValue = normalizeStockLabelText(value);
   const matchedItem = state.snapshot.stockItems.find((item) => (
     getStockLookupValues(item).includes(normalizedValue)
-      || buildLegacyStockLabelCode(item) === normalizedValue
+    || buildLegacyStockLabelCode(item) === normalizedValue
   ));
   if (matchedItem) {
     return { stockItemId: matchedItem.id };
@@ -3781,10 +3781,9 @@ function renderPageNavigation() {
       <div class="page-nav-section">
         <p class="page-nav-group">Navigation</p>
         <div class="page-nav-items">
-          ${
-            items
-              .map(
-                (item) => `
+          ${items
+      .map(
+        (item) => `
                   <button
                     class="page-nav-link${state.currentPage === item.id ? " is-active" : ""}"
                     data-action="navigate-page"
@@ -3795,9 +3794,9 @@ function renderPageNavigation() {
                     <span class="page-nav-link-text">${escapeHtml(item.label)}</span>
                   </button>
                 `,
-              )
-              .join("")
-          }
+      )
+      .join("")
+    }
         </div>
       </div>
       <div class="page-nav-footer">
@@ -4146,50 +4145,48 @@ function renderRoleGuidePage(role) {
     </section>
     ${renderFlash()}
     <section class="panel-grid guide-grid">
-      ${
-        guide.roleFocus?.length
-          ? renderGuidePanel({
-              eyebrow: "Role scope",
-              title: "What this role is responsible for",
-              items: guide.roleFocus,
-            })
-          : ""
-      }
+      ${guide.roleFocus?.length
+      ? renderGuidePanel({
+        eyebrow: "Role scope",
+        title: "What this role is responsible for",
+        items: guide.roleFocus,
+      })
+      : ""
+    }
       ${renderGuidePanel({
-        eyebrow: "Your pages",
-        title: "What each page helps you do",
-        subtitle: guide.subtitle,
-        items: getNavigationItems(role).map((item) => ({
-          label: item.label,
-          text: guide.pageNotes?.[item.id] || GUIDE_PAGE_SUMMARIES[item.id] || "Use this page for the actions available to your role.",
-        })),
-      })}
-      ${
-        guide.startingChecks?.length
-          ? renderGuidePanel({
-              eyebrow: "Start here",
-              title: "What to check first",
-              items: guide.startingChecks,
-              ordered: true,
-            })
-          : ""
-      }
-      ${renderGuidePanel({
-        eyebrow: "Daily flow",
-        title: "Recommended routine",
-        items: guide.dailyFlow,
+      eyebrow: "Your pages",
+      title: "What each page helps you do",
+      subtitle: guide.subtitle,
+      items: getNavigationItems(role).map((item) => ({
+        label: item.label,
+        text: guide.pageNotes?.[item.id] || GUIDE_PAGE_SUMMARIES[item.id] || "Use this page for the actions available to your role.",
+      })),
+    })}
+      ${guide.startingChecks?.length
+      ? renderGuidePanel({
+        eyebrow: "Start here",
+        title: "What to check first",
+        items: guide.startingChecks,
         ordered: true,
-      })}
+      })
+      : ""
+    }
       ${renderGuidePanel({
-        eyebrow: "Key tasks",
-        title: "What matters most in this role",
-        items: guide.keyTasks,
-      })}
+      eyebrow: "Daily flow",
+      title: "Recommended routine",
+      items: guide.dailyFlow,
+      ordered: true,
+    })}
       ${renderGuidePanel({
-        eyebrow: "Keep in mind",
-        title: "Important tips and limits",
-        items: guide.tips,
-      })}
+      eyebrow: "Key tasks",
+      title: "What matters most in this role",
+      items: guide.keyTasks,
+    })}
+      ${renderGuidePanel({
+      eyebrow: "Keep in mind",
+      title: "Important tips and limits",
+      items: guide.tips,
+    })}
     </section>
   `;
 }
@@ -4246,10 +4243,10 @@ function renderAdminPageContent() {
       </section>
       ${renderFlash()}
       ${renderEntryComposerSection(
-        state.snapshot.user,
-        true,
-        "Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today.",
-      )}
+      state.snapshot.user,
+      true,
+      "Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today.",
+    )}
       ${renderGlobalOrdersSection("admin")}
     `;
   }
@@ -4360,10 +4357,10 @@ function renderSalesPageContent() {
       </section>
       ${renderFlash()}
       ${renderEntryComposerSection(
-        state.snapshot.user,
-        false,
-        "Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.",
-      )}
+      state.snapshot.user,
+      false,
+      "Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.",
+    )}
       ${renderGlobalOrdersSection("sales")}
     `;
   }
@@ -4490,16 +4487,15 @@ function renderStockWorkspace({ viewerRole, title, subtitle }) {
       ${canSeeArtwork ? renderMetric("Artwork requests", state.snapshot.artworkRequests.length) : ""}
     </section>
     ${renderRecentStockActivitySection({ recentInbound, recentOutbound })}
-    ${
-      canManageStock
-        ? `
+    ${canManageStock
+      ? `
           <section class="panel-grid">
             ${renderStockItemPanel(viewerRole)}
             ${renderStockMovementPanel()}
           </section>
           ${renderStockQrPreviewPanel()}
         `
-        : `
+      : `
           <section class="panel-grid">
             ${renderStockReadOnlyPanel()}
           </section>
@@ -4535,22 +4531,20 @@ function renderStockItemPanel(viewerRole) {
       <p class="eyebrow">Stock master</p>
       <h3 class="panel-title">${isEditing ? "Edit stock item" : "Add stock item"}</h3>
       <p class="panel-subtitle">
-        ${
-          isEditing
-            ? "Update the stock master record. Existing movement history stays linked to this item."
-            : "Create the item once with its opening stock and order references, then log movements and artwork requests against it."
-        }
+        ${isEditing
+      ? "Update the stock master record. Existing movement history stays linked to this item."
+      : "Create the item once with its opening stock and order references, then log movements and artwork requests against it."
+    }
       </p>
-      ${
-        isEditing
-          ? `
+      ${isEditing
+      ? `
             <div class="stock-edit-banner">
               <span class="chip">Editing stock item</span>
               <span>Last updated ${escapeHtml(formatDateTime(editingItem.updatedAt || editingItem.createdAt) || "recently")}.</span>
             </div>
           `
-          : ""
-      }
+      : ""
+    }
       <form data-form="add-stock-item">
         <input name="stockItemId" type="hidden" value="${escapeHtml(editingItem?.id || "")}">
         <label>
@@ -4583,28 +4577,26 @@ function renderStockItemPanel(viewerRole) {
             Stock code
             <input name="sku" type="text" value="${escapeHtml(editingItem?.sku || "")}" placeholder="SKU-001">
           </label>
-          ${
-            isEditing
-              ? `
+          ${isEditing
+      ? `
                 <label>
                   On hand now
                   <input type="text" value="${escapeHtml(String(onHandValue))}" disabled>
                 </label>
               `
-              : `
+      : `
                 <label>
                   Opening stock
                   <input name="initialQuantity" type="number" min="1" step="1" inputmode="numeric" placeholder="0" required>
                 </label>
               `
-          }
+    }
         </div>
         <p class="field-note">
-          ${
-            isEditing
-              ? "Use the stock movement form to add or remove quantity."
-              : "Adding the item records this quantity as stock in right away."
-          }
+          ${isEditing
+      ? "Use the stock movement form to add or remove quantity."
+      : "Adding the item records this quantity as stock in right away."
+    }
         </p>
         <label>
           Notes
@@ -4614,15 +4606,14 @@ function renderStockItemPanel(viewerRole) {
           <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
             ${isEditing ? "Save stock item" : "Add stock item"}
           </button>
-          ${
-            isEditing
-              ? `
+          ${isEditing
+      ? `
                 <button type="button" class="button button-ghost" data-action="cancel-edit-stock-item"${state.busy ? " disabled" : ""}>
                   Cancel
                 </button>
               `
-              : ""
-          }
+      : ""
+    }
         </div>
       </form>
     </article>
@@ -4641,15 +4632,13 @@ function renderStockMovementPanel() {
       <p class="eyebrow">Stock ledger</p>
       <h3 class="panel-title">${isEditing ? "Edit stock movement" : "Log stock in or out"}</h3>
       <p class="panel-subtitle">
-        ${
-          isEditing
-            ? "Update the selected movement. The original logged time and recorded-by details stay unchanged."
-            : "Every stock movement is timestamped and linked to the staff member who recorded it."
-        }
+        ${isEditing
+      ? "Update the selected movement. The original logged time and recorded-by details stay unchanged."
+      : "Every stock movement is timestamped and linked to the staff member who recorded it."
+    }
       </p>
-      ${
-        isEditing
-          ? `
+      ${isEditing
+      ? `
             <div class="stock-edit-banner">
               <span class="chip ${movementType === "in" ? "chip-success" : "chip-warning"}">
                 ${movementType === "in" ? "Editing receipt" : "Editing issue"}
@@ -4660,25 +4649,24 @@ function renderStockMovementPanel() {
               </span>
             </div>
           `
-          : ""
-      }
+      : ""
+    }
       <div class="action-row">
         <button type="button" class="button button-secondary" data-action="open-stock-scanner"${state.busy ? " disabled" : ""}>
           Scan QR
         </button>
-        ${
-          isEditing
-            ? `
+        ${isEditing
+      ? `
               <button type="button" class="button button-ghost" data-action="cancel-edit-stock-movement"${state.busy ? " disabled" : ""}>
                 Cancel edit
               </button>
             `
-            : `
+      : `
               <button type="button" class="button button-ghost" data-action="clear-stock-selection"${state.busy || !state.stockMovementSelectedItemId ? " disabled" : ""}>
                 Clear selection
               </button>
             `
-        }
+    }
       </div>
       ${renderStockScannerPanel()}
       <form data-form="add-stock-movement">
@@ -4760,11 +4748,10 @@ function renderArtworkRequestPanel(viewerRole) {
         <button type="submit" class="button button-secondary"${state.busy || !state.mailConfigured ? " disabled" : ""}>
           Send artwork request
         </button>
-        ${
-          !state.mailConfigured
-            ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
-            : ""
-        }
+        ${!state.mailConfigured
+        ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
+        : ""
+      }
       </form>
     `,
   });
@@ -4784,13 +4771,12 @@ function renderStockItemsSection(viewerRole) {
           <p class="eyebrow">Stock register</p>
           <h3 class="panel-title">On-hand summary</h3>
           <p class="panel-subtitle">
-            ${
-              readOnlyView
-                ? "Sales can search the live stock register and see which items have arrived, but only admin or logistics can change stock records."
-                : allowDelete
-                ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
-                : "Each item stays linked to its movement and artwork history for traceability."
-            }
+            ${readOnlyView
+      ? "Sales can search the live stock register and see which items have arrived, but only admin or logistics can change stock records."
+      : allowDelete
+        ? "Admins can delete stock items at any time. Deleting an item also removes its movement and artwork history."
+        : "Each item stays linked to its movement and artwork history for traceability."
+    }
           </p>
           <p class="stock-results-note">${escapeHtml(getStockItemSearchSummary(filteredItems.length, totalItems))}</p>
         </div>
@@ -4806,11 +4792,10 @@ function renderStockItemsSection(viewerRole) {
               spellcheck="false"
               data-stock-search
             >
-            ${
-              state.stockSearchQuery
-                ? `<button type="button" class="button button-ghost" data-action="clear-stock-search"${state.busy ? " disabled" : ""}>Clear</button>`
-                : ""
-            }
+            ${state.stockSearchQuery
+      ? `<button type="button" class="button button-ghost" data-action="clear-stock-search"${state.busy ? " disabled" : ""}>Clear</button>`
+      : ""
+    }
           </div>
         </label>
       </div>
@@ -4828,24 +4813,22 @@ function renderStockItemsSection(viewerRole) {
             </tr>
           </thead>
           <tbody>
-            ${
-              filteredItems.length
-                ? filteredItems.map((item) => renderStockItemRow(item, viewerRole, latestMovementByItemId)).join("")
-                : `
+            ${filteredItems.length
+      ? filteredItems.map((item) => renderStockItemRow(item, viewerRole, latestMovementByItemId)).join("")
+      : `
                   <tr>
                     <td colspan="7">${totalItems ? "No stock items match this search." : "No stock items added yet."}</td>
                   </tr>
                 `
-            }
+    }
           </tbody>
         </table>
       </div>
       <div class="stock-item-mobile-list">
-        ${
-          filteredItems.length
-            ? filteredItems.map((item) => renderStockItemCard(item, viewerRole, latestMovementByItemId)).join("")
-            : `<div class="empty-state">${escapeHtml(totalItems ? "No stock items match this search." : "No stock items added yet.")}</div>`
-        }
+        ${filteredItems.length
+      ? filteredItems.map((item) => renderStockItemCard(item, viewerRole, latestMovementByItemId)).join("")
+      : `<div class="empty-state">${escapeHtml(totalItems ? "No stock items match this search." : "No stock items added yet.")}</div>`
+    }
       </div>
     </section>
   `;
@@ -4865,17 +4848,17 @@ function renderRecentStockActivitySection({ recentInbound, recentOutbound }) {
       </div>
       <div class="recent-stock-grid">
         ${renderRecentStockActivityColumn({
-          title: "Recently arrived",
-          subtitle: "Latest stock-in activity, manually created stock items, and driver office drops per stock line.",
-          emptyLabel: `No stock arrived, was created, or was dropped at the office in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
-          movements: recentInbound,
-        })}
+    title: "Recently arrived",
+    subtitle: "Latest stock-in activity, manually created stock items, and driver office drops per stock line.",
+    emptyLabel: `No stock arrived, was created, or was dropped at the office in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
+    movements: recentInbound,
+  })}
         ${renderRecentStockActivityColumn({
-          title: "Recently shipped",
-          subtitle: "Latest stock-out activity per item.",
-          emptyLabel: `No stock shipped in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
-          movements: recentOutbound,
-        })}
+    title: "Recently shipped",
+    subtitle: "Latest stock-out activity per item.",
+    emptyLabel: `No stock shipped in the last ${STOCK_RECENT_ACTIVITY_HOURS} hours.`,
+    movements: recentOutbound,
+  })}
       </div>
     </section>
   `;
@@ -4893,15 +4876,14 @@ function renderRecentStockActivityColumn({ title, subtitle, emptyLabel, movement
         </div>
         <span class="chip ${isInbound ? "chip-success" : "chip-warning"}">${escapeHtml(String(movements.length))}</span>
       </div>
-      ${
-        movements.length
-          ? `
+      ${movements.length
+      ? `
             <div class="recent-stock-list">
               ${movements.map((movement) => renderRecentStockActivityEntry(movement)).join("")}
             </div>
           `
-          : `<p class="stock-results-note">${escapeHtml(emptyLabel)}</p>`
-      }
+      : `<p class="stock-results-note">${escapeHtml(emptyLabel)}</p>`
+    }
     </article>
   `;
 }
@@ -4918,13 +4900,13 @@ function renderRecentStockActivityEntry(movement) {
   const quantityLabel = isCreatedActivity
     ? "New item"
     : isOfficeDropActivity
-    ? "Office drop"
-    : `${Number(movement.quantity || 0)} ${unitLabel}`;
+      ? "Office drop"
+      : `${Number(movement.quantity || 0)} ${unitLabel}`;
   const partyLabel = isCreatedActivity
     ? "Stock item created"
     : isOfficeDropActivity
-    ? (movement.driverName ? `Dropped at office by ${movement.driverName}` : "Dropped at office")
-    : getStockMovementPartyLabel(movement);
+      ? (movement.driverName ? `Dropped at office by ${movement.driverName}` : "Dropped at office")
+      : getStockMovementPartyLabel(movement);
   const locationLabel = isOfficeDropActivity
     ? [movement.locationName, movement.locationAddress].filter(Boolean).join(" | ")
     : "";
@@ -4977,15 +4959,14 @@ function renderStockMovementsSection(viewerRole) {
             </tr>
           </thead>
           <tbody>
-            ${
-              state.snapshot.stockMovements.length
-                ? state.snapshot.stockMovements.map((movement) => renderStockMovementRow(movement, viewerRole)).join("")
-                : `
+            ${state.snapshot.stockMovements.length
+        ? state.snapshot.stockMovements.map((movement) => renderStockMovementRow(movement, viewerRole)).join("")
+        : `
                   <tr>
                     <td colspan="8">No stock movements logged yet.</td>
                   </tr>
                 `
-            }
+      }
           </tbody>
         </table>
       </div>
@@ -5022,10 +5003,9 @@ function renderStockQrPreviewPanel() {
           </button>
         </div>
       </div>
-      ${
-        state.stockQrBusy
-          ? '<p class="field-note">Generating QR label...</p>'
-          : `
+      ${state.stockQrBusy
+      ? '<p class="field-note">Generating QR label...</p>'
+      : `
             <div class="qr-preview-body">
               <div class="qr-preview-code">${state.stockQrSvg}</div>
               <div class="qr-preview-meta">
@@ -5036,7 +5016,7 @@ function renderStockQrPreviewPanel() {
               </div>
             </div>
           `
-      }
+    }
     </section>
   `;
 }
@@ -5051,9 +5031,8 @@ function renderStockScannerPanel() {
   return `
     <section class="scanner-panel">
       <p class="field-note">${escapeHtml(state.stockScannerStatus || getStockScannerHint())}</p>
-      ${
-        pendingItem
-          ? `
+      ${pendingItem
+      ? `
             <div class="scan-confirm-card">
               <p class="eyebrow">Scan found</p>
               <h4 class="panel-title">${escapeHtml(pendingItem.name)}</h4>
@@ -5075,7 +5054,7 @@ function renderStockScannerPanel() {
               </div>
             </div>
           `
-          : `
+      : `
             <div class="scanner-grid">
               <div class="scanner-video-wrap">
                 <video data-stock-scanner-video class="scanner-video" muted autoplay playsinline></video>
@@ -5084,9 +5063,8 @@ function renderStockScannerPanel() {
                 <button type="button" class="button button-primary" data-action="start-stock-camera"${state.busy || !canUseLiveStockScanner() ? " disabled" : ""}>
                   Start camera
                 </button>
-                ${
-                  state.stockScannerZoomSupported
-                    ? `
+                ${state.stockScannerZoomSupported
+        ? `
                       <label class="scanner-zoom">
                         Zoom
                         <input
@@ -5100,8 +5078,8 @@ function renderStockScannerPanel() {
                         <span class="field-note">Move closer first. Use zoom only if the QR still looks soft.</span>
                       </label>
                     `
-                    : ""
-                }
+        : ""
+      }
                 <label class="scanner-upload">
                   Upload QR image
                   <input type="file" accept="image/*" capture="environment" data-stock-scan-upload${supportsStockQrDetection() ? "" : " disabled"}>
@@ -5121,7 +5099,7 @@ function renderStockScannerPanel() {
               </div>
             </div>
           `
-      }
+    }
     </section>
   `;
 }
@@ -5147,15 +5125,14 @@ function renderArtworkRequestsSection() {
             </tr>
           </thead>
           <tbody>
-            ${
-              state.snapshot.artworkRequests.length
-                ? state.snapshot.artworkRequests.map((request) => renderArtworkRequestRow(request)).join("")
-                : `
+            ${state.snapshot.artworkRequests.length
+        ? state.snapshot.artworkRequests.map((request) => renderArtworkRequestRow(request)).join("")
+        : `
                   <tr>
                     <td colspan="6">No artwork requests sent yet.</td>
                   </tr>
                 `
-            }
+      }
           </tbody>
         </table>
       </div>
@@ -5212,15 +5189,14 @@ function renderDriverPageContent() {
       <p id="route-map-status" class="route-map-status hidden"></p>
     </section>
     <section class="driver-grid">
-      ${
-        plan.stops.length
-          ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver", currentUser.id)).join("")
-          : `
+      ${plan.stops.length
+      ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver", currentUser.id)).join("")
+      : `
             <div class="empty-state">
               No active entries are scheduled for you today. Future-dated work will appear here on the scheduled day.
             </div>
           `
-      }
+    }
     </section>
   `;
 }
@@ -5249,11 +5225,10 @@ function renderAccountPanel() {
       <p class="eyebrow">Accounts</p>
       <h3 class="panel-title">${isEditing ? "Edit team member" : "Add team member"}</h3>
       <p class="panel-subtitle">
-        ${
-          isEditing
-            ? "Update the selected account details. Leave the password blank to keep the current password."
-            : "Create admin, sales, driver, or logistics accounts with name-based login."
-        }
+        ${isEditing
+      ? "Update the selected account details. Leave the password blank to keep the current password."
+      : "Create admin, sales, driver, or logistics accounts with name-based login."
+    }
       </p>
       <form data-form="add-account">
         <input name="userId" type="hidden" value="${escapeHtml(editingUser?.id || "")}">
@@ -5294,15 +5269,14 @@ function renderAccountPanel() {
           <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
             ${isEditing ? "Save account" : "Create account"}
           </button>
-          ${
-            isEditing
-              ? `
+          ${isEditing
+      ? `
                 <button type="button" class="button button-ghost" data-action="cancel-edit-user"${state.busy ? " disabled" : ""}>
                   Cancel
                 </button>
               `
-              : ""
-          }
+      : ""
+    }
         </div>
       </form>
     </article>
@@ -5324,11 +5298,10 @@ function renderSupplierNetworkSection() {
         <p class="eyebrow">Locations</p>
         <h3 class="panel-title">${isEditingLocation ? "Edit location" : "Add location"}</h3>
         <p class="panel-subtitle">
-          ${
-            isEditingLocation
-              ? "Update the selected location details. Contact details and coordinates can be left blank when unavailable."
-              : "Contact details and coordinates can be left blank when they are not available."
-          }
+          ${isEditingLocation
+      ? "Update the selected location details. Contact details and coordinates can be left blank when unavailable."
+      : "Contact details and coordinates can be left blank when they are not available."
+    }
         </p>
         <form data-form="add-location">
           <input name="locationId" type="hidden" value="${escapeHtml(editingLocation?.id || "")}">
@@ -5374,15 +5347,14 @@ function renderSupplierNetworkSection() {
             <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
               ${isEditingLocation ? "Save location" : "Add location"}
             </button>
-            ${
-              isEditingLocation
-                ? `
+            ${isEditingLocation
+      ? `
                   <button type="button" class="button button-ghost" data-action="cancel-edit-location"${state.busy ? " disabled" : ""}>
                     Cancel
                   </button>
                 `
-                : ""
-            }
+      : ""
+    }
           </div>
         </form>
         <div class="table-toolbar stock-table-toolbar">
@@ -5401,11 +5373,10 @@ function renderSupplierNetworkSection() {
                 spellcheck="false"
                 data-network-search
               >
-              ${
-                state.networkSearchQuery
-                  ? `<button type="button" class="button button-ghost" data-action="clear-network-search"${state.busy ? " disabled" : ""}>Clear</button>`
-                  : ""
-              }
+              ${state.networkSearchQuery
+      ? `<button type="button" class="button button-ghost" data-action="clear-network-search"${state.busy ? " disabled" : ""}>Clear</button>`
+      : ""
+    }
             </div>
           </label>
         </div>
@@ -5421,15 +5392,14 @@ function renderSupplierNetworkSection() {
               </tr>
             </thead>
             <tbody>
-              ${
-                filteredLocations.length
-                  ? filteredLocations.map((location) => renderLocationRow(location)).join("")
-                  : `
+              ${filteredLocations.length
+      ? filteredLocations.map((location) => renderLocationRow(location)).join("")
+      : `
                     <tr>
                       <td colspan="5">${totalLocations ? "No locations match this search." : "No locations added yet."}</td>
                     </tr>
                   `
-              }
+    }
             </tbody>
           </table>
         </div>
@@ -5456,15 +5426,14 @@ function renderUsersSection() {
             </tr>
           </thead>
           <tbody>
-            ${
-              state.snapshot.users.length
-                ? state.snapshot.users.map((user) => renderUserRow(user)).join("")
-                : `
+            ${state.snapshot.users.length
+      ? state.snapshot.users.map((user) => renderUserRow(user)).join("")
+      : `
                   <tr>
                     <td colspan="5">No users available.</td>
                   </tr>
                 `
-            }
+    }
           </tbody>
         </table>
       </div>
@@ -5492,10 +5461,10 @@ function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitl
           <p class="eyebrow">Global List</p>
           <h3 class="panel-title">${isEditing ? "Edit entry" : "Create a new entry"}</h3>
           <p class="panel-subtitle">${escapeHtml(
-            isEditing
-              ? "Update the entry details, then save the correction back into the system."
-              : subtitle,
-          )}</p>
+    isEditing
+      ? "Update the entry details, then save the correction back into the system."
+      : subtitle,
+  )}</p>
         </div>
         <button
           type="button"
@@ -5507,20 +5476,18 @@ function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitl
           ${isEditing ? "Close editor" : isOpen ? "Hide entry form" : "Add new entry"}
         </button>
       </div>
-      ${
-        isOpen
-          ? `
+      ${isOpen
+      ? `
               <div class="entry-composer-body">
-                ${
-                  isEditing
-                    ? `<p class="field-note">Editing updates the saved entry details. Existing stock item records are not renamed automatically, so correct stock references separately if needed.</p>`
-                    : ""
-                }
+                ${isEditing
+        ? `<p class="field-note">Editing updates the saved entry details. Existing stock item records are not renamed automatically, so correct stock references separately if needed.</p>`
+        : ""
+      }
                 ${renderEntryForm(currentUser, allowDuplicateOverride, { order: editingOrder })}
               </div>
             `
-          : `<p class="entry-composer-note">Open the form only when you need to capture a new job. The live global list stays visible below for easier scanning.</p>`
-      }
+      : `<p class="entry-composer-note">Open the form only when you need to capture a new job. The live global list stays visible below for easier scanning.</p>`
+    }
     </section>
   `;
 }
@@ -5626,11 +5593,10 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
         <textarea name="stockDescription" placeholder="What stock is on this entry? Put one item per line." required>${escapeHtml(stockDescription)}</textarea>
       </label>
       <p class="field-note">
-        ${
-          isEditing
-            ? "This updates the entry details shown in the live route list. If the stock item records also need correction, update those separately in the Stock page."
-            : "Saving this entry will also create matching stock items automatically in the Stock page. Put each item on its own line to create separate stock records."
-        }
+        ${isEditing
+      ? "This updates the entry details shown in the live route list. If the stock item records also need correction, update those separately in the Stock page."
+      : "Saving this entry will also create matching stock items automatically in the Stock page. Put each item on its own line to create separate stock records."
+    }
       </p>
       <label>
         Branding
@@ -5653,9 +5619,8 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
         Notice
         <textarea name="notice" placeholder="Special instruction, handover note, or anything dispatch should keep on the order">${escapeHtml(notice)}</textarea>
       </label>
-      ${
-        allowDuplicateOverride
-          ? `
+      ${allowDuplicateOverride
+      ? `
             <label class="inline-check">
               <input type="checkbox" name="allowDuplicate">
               Admin override for duplicate or return stop
@@ -5664,17 +5629,16 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
               This only lets admins send a driver back to a stop they already completed today, or keep two active entries with the same quote number on that driver's list.
             </p>
           `
-          : ""
-      }
+      : ""
+    }
       <div class="action-row">
         <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
           ${isEditing ? "Save changes" : "Create entry"}
         </button>
-        ${
-          isEditing
-            ? `<button type="button" class="button button-ghost" data-action="cancel-edit-order"${state.busy ? " disabled" : ""}>Cancel</button>`
-            : ""
-        }
+        ${isEditing
+      ? `<button type="button" class="button button-ghost" data-action="cancel-edit-order"${state.busy ? " disabled" : ""}>Cancel</button>`
+      : ""
+    }
       </div>
     </form>
   `;
@@ -5713,15 +5677,14 @@ function renderAssignmentManager(viewerRole) {
             </tr>
           </thead>
           <tbody>
-            ${
-              page.items.length
-                ? page.items.map((order) => renderAssignmentRow(order, viewerRole)).join("")
-                : `
+            ${page.items.length
+      ? page.items.map((order) => renderAssignmentRow(order, viewerRole)).join("")
+      : `
                   <tr>
                     <td colspan="6">No active entries match this driver filter.</td>
                   </tr>
                 `
-            }
+    }
           </tbody>
         </table>
       </div>
@@ -5747,11 +5710,10 @@ function renderGlobalOrdersSection(viewerRole) {
           <p class="eyebrow">Global List</p>
           <h3 class="panel-title">All visible entries</h3>
           <p class="panel-subtitle">
-            ${
-              canDelete
-                ? "This view groups every visible entry by pickup location. Expand a location to review the orders there, and admins can still remove entries if needed."
-                : "This view groups every visible entry by pickup location. Expand a location to review the orders there."
-            }
+            ${canDelete
+      ? "This view groups every visible entry by pickup location. Expand a location to review the orders there, and admins can still remove entries if needed."
+      : "This view groups every visible entry by pickup location. Expand a location to review the orders there."
+    }
           </p>
           <p class="stock-results-note">${escapeHtml(getGlobalListSearchSummary(filteredLocationGroups, locationGroups.length, sortedOrders.length))}</p>
         </div>
@@ -5766,20 +5728,17 @@ function renderGlobalOrdersSection(viewerRole) {
               spellcheck="false"
               data-global-list-search
             >
-            ${
-              state.globalListSearchQuery
-                ? `<button type="button" class="button button-ghost" data-action="clear-global-list-search"${state.busy ? " disabled" : ""}>Clear</button>`
-                : ""
-            }
+            ${state.globalListSearchQuery
+      ? `<button type="button" class="button button-ghost" data-action="clear-global-list-search"${state.busy ? " disabled" : ""}>Clear</button>`
+      : ""
+    }
           </div>
         </label>
-        ${
-          canExport
-            ? `
+        ${canExport
+      ? `
               <div class="action-row">
-                ${
-                  viewerRole === "admin"
-                    ? `
+                ${viewerRole === "admin"
+        ? `
                       <button
                         class="button button-ghost"
                         data-action="clear-all-order-priorities"
@@ -5795,8 +5754,8 @@ function renderGlobalOrdersSection(viewerRole) {
                         Clear all rollover${rolloverCount ? ` (${rolloverCount})` : ""}
                       </button>
                     `
-                    : ""
-                }
+        : ""
+      }
                 <button class="button button-secondary" data-action="export-global-csv"${state.busy ? " disabled" : ""}>
                   Download CSV
                 </button>
@@ -5823,20 +5782,18 @@ function renderGlobalOrdersSection(viewerRole) {
                 </button>
               </div>
             `
-            : ""
-        }
+      : ""
+    }
       </div>
-      ${
-        canExport && !state.mailConfigured
-          ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
-          : ""
-      }
+      ${canExport && !state.mailConfigured
+      ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
+      : ""
+    }
       <div class="global-location-groups">
-        ${
-          page.items.length
-            ? page.items.map((group) => renderGlobalLocationGroup(group, viewerRole)).join("")
-            : `<div class="empty-state">${escapeHtml(sortedOrders.length ? "No entries or locations match this search." : "No entries available yet.")}</div>`
-        }
+        ${page.items.length
+      ? page.items.map((group) => renderGlobalLocationGroup(group, viewerRole)).join("")
+      : `<div class="empty-state">${escapeHtml(sortedOrders.length ? "No entries or locations match this search." : "No entries available yet.")}</div>`
+    }
       </div>
       ${renderPaginationControls("globalEntries", page)}
     </section>
@@ -5958,9 +5915,8 @@ function renderGlobalLocationGroup(group, viewerRole) {
         </div>
       </div>
       <div class="action-row stop-actions">
-        ${
-          navigationUrl
-            ? `
+        ${navigationUrl
+      ? `
               <a
                 class="button button-primary"
                 href="${escapeHtml(navigationUrl)}"
@@ -5970,8 +5926,8 @@ function renderGlobalLocationGroup(group, viewerRole) {
                 Navigate
               </a>
             `
-            : ""
-        }
+      : ""
+    }
         <button
           type="button"
           class="button button-ghost"
@@ -5982,15 +5938,14 @@ function renderGlobalLocationGroup(group, viewerRole) {
           ${isOpen ? "Hide entries" : "Show entries"}
         </button>
       </div>
-      ${
-        isOpen
-          ? `
+      ${isOpen
+      ? `
             <div class="location-group-orders">
               ${group.orders.map((order) => renderGlobalOrderCard(order, viewerRole)).join("")}
             </div>
           `
-          : ""
-      }
+      : ""
+    }
     </article>
   `;
 }
@@ -6008,11 +5963,10 @@ function renderGlobalOrderCard(order, viewerRole) {
         <div>
           <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
           <div class="order-meta">
-            ${
-              referenceLines.length
-                ? referenceLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")
-                : '<span>No order references</span>'
-            }
+            ${referenceLines.length
+      ? referenceLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")
+      : '<span>No order references</span>'
+    }
           </div>
         </div>
         <div class="chip-row">
@@ -6022,11 +5976,10 @@ function renderGlobalOrderCard(order, viewerRole) {
           ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
           ${renderOrderFlagChip(order)}
-          ${
-            order.driverUserId
-              ? `<span class="chip">Driver: ${escapeHtml(getDriverDisplayName(order))}</span>`
-              : '<span class="chip chip-warning">Unassigned</span>'
-          }
+          ${order.driverUserId
+      ? `<span class="chip">Driver: ${escapeHtml(getDriverDisplayName(order))}</span>`
+      : '<span class="chip chip-warning">Unassigned</span>'
+    }
           ${renderStatusChip(order.status)}
         </div>
       </div>
@@ -6035,13 +5988,11 @@ function renderGlobalOrderCard(order, viewerRole) {
       <p class="order-card-meta-note">
         ${escapeHtml(`Created by ${order.createdByName || "Unknown"}${createdAt ? ` on ${createdAt}` : ""}`)}
       </p>
-      ${
-        canEdit || canDelete
-          ? `
+      ${canEdit || canDelete
+      ? `
             <div class="action-row">
-              ${
-                canEdit
-                  ? `
+              ${canEdit
+        ? `
                     <button
                       class="button button-secondary"
                       data-action="edit-order"
@@ -6051,8 +6002,8 @@ function renderGlobalOrderCard(order, viewerRole) {
                       Edit
                     </button>
                   `
-                  : ""
-              }
+        : ""
+      }
               <button
                 class="button button-danger"
                 data-action="delete-order"
@@ -6064,8 +6015,8 @@ function renderGlobalOrderCard(order, viewerRole) {
               </button>
             </div>
           `
-          : ""
-      }
+      : ""
+    }
     </div>
   `;
 }
@@ -6087,24 +6038,21 @@ function renderDriverListOverview(viewerRole) {
             <div class="chip-row">
               <span class="chip">${plan.totalOrders} entries</span>
               <span class="chip">${plan.totalKm.toFixed(1)} km</span>
-              ${
-                plan.priorityStopCount
-                  ? `<span class="chip chip-priority-high">${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? "" : "s"}</span>`
-                  : ""
-              }
-              ${
-                duplicateCount
-                  ? `<span class="chip chip-warning">${duplicateCount} duplicate order${duplicateCount === 1 ? "" : "s"}</span>`
-                  : ""
-              }
+              ${plan.priorityStopCount
+          ? `<span class="chip chip-priority-high">${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? "" : "s"}</span>`
+          : ""
+        }
+              ${duplicateCount
+          ? `<span class="chip chip-warning">${duplicateCount} duplicate order${duplicateCount === 1 ? "" : "s"}</span>`
+          : ""
+        }
             </div>
           </div>
           <p class="panel-subtitle">Active pickup route sequence.</p>
-          ${
-            plan.stops.length
-              ? plan.stops.map((stop, index) => renderStopCard(stop, index, viewerRole, driver.id)).join("")
-              : '<div class="empty-state">No active work on this driver list.</div>'
-          }
+          ${plan.stops.length
+          ? plan.stops.map((stop, index) => renderStopCard(stop, index, viewerRole, driver.id)).join("")
+          : '<div class="empty-state">No active work on this driver list.</div>'
+        }
         </article>
       `;
     })
@@ -6175,11 +6123,10 @@ function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.r
             </tr>
           </thead>
           <tbody>
-            ${
-              page.items.length
-                ? page.items
-                    .map(
-                      (order) => `
+            ${page.items.length
+      ? page.items
+        .map(
+          (order) => `
                         <tr>
                           <td data-label="Quote">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
                           <td data-label="Other references">${renderOrderListReferenceSummary(order)}</td>
@@ -6188,9 +6135,8 @@ function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.r
                             ${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}<br>
                             <span class="muted">${escapeHtml(getOrderCompletionLabel(order) || "Completed")}</span>
                           </td>
-                          ${
-                            canEdit
-                              ? `
+                          ${canEdit
+              ? `
                                 <td data-label="Action">
                                   <button
                                     class="button button-secondary"
@@ -6202,18 +6148,18 @@ function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.r
                                   </button>
                                 </td>
                               `
-                              : ""
-                          }
+              : ""
+            }
                         </tr>
                       `,
-                    )
-                    .join("")
-                : `
+        )
+        .join("")
+      : `
                   <tr>
                     <td colspan="${canEdit ? "5" : "4"}">No completed entries yet.</td>
                   </tr>
                 `
-            }
+    }
           </tbody>
         </table>
       </div>
@@ -6246,9 +6192,8 @@ function renderGlobalOrderRow(order, viewerRole) {
       <td data-label="Status">${renderStatusChip(order.status)}</td>
       <td data-label="Notice">${renderOrderNotice(order, "None")}</td>
       <td data-label="Created">${escapeHtml(formatDateTime(order.createdAt))}</td>
-      ${
-        canDelete
-          ? `
+      ${canDelete
+      ? `
             <td data-label="Actions">
               <div class="action-row">
                 <button
@@ -6263,8 +6208,8 @@ function renderGlobalOrderRow(order, viewerRole) {
               </div>
             </td>
           `
-          : ""
-      }
+      : ""
+    }
     </tr>
   `;
 }
@@ -6300,16 +6245,15 @@ function renderAssignmentRow(order, viewerRole) {
           <select data-assignment-driver data-order-id="${order.id}">
             ${renderDriverOptions(order.driverUserId || "", true)}
           </select>
-          ${
-            viewerRole === "admin"
-              ? `
+          ${viewerRole === "admin"
+      ? `
                 <label class="inline-check assignment-inline">
                   <input type="checkbox" data-assignment-allow-duplicate data-order-id="${order.id}">
                   Admin override
                 </label>
               `
-              : ""
-          }
+      : ""
+    }
         </div>
       </td>
       <td data-label="Action">
@@ -6603,15 +6547,14 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
       <td data-label="Notes">${escapeHtml(item.notes || "None")}</td>
       <td data-label="Updated">${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
       <td data-label="Actions">
-        ${
-          actions.length
-            ? `
+        ${actions.length
+      ? `
               <div class="action-row">
                 ${actions.join("")}
               </div>
             `
-            : '<span class="muted">View only</span>'
-        }
+      : '<span class="muted">View only</span>'
+    }
       </td>
     </tr>
   `;
@@ -6650,10 +6593,10 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
       <div class="stock-item-mobile-head">
         <div class="stock-item-mobile-copy">
           ${renderStockItemDisplayName(item.name, {
-            containerClass: "stock-item-mobile-title-list",
-            lineClass: "stock-item-mobile-title",
-            lineTag: "h4",
-          })}
+    containerClass: "stock-item-mobile-title-list",
+    lineClass: "stock-item-mobile-title",
+    lineTag: "h4",
+  })}
           <p class="stock-item-mobile-summary">${escapeHtml(referenceSummary)}</p>
           ${activityBadge}
         </div>
@@ -6670,9 +6613,8 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
           </button>
         </div>
       </div>
-      ${
-        isOpen
-          ? `
+      ${isOpen
+      ? `
             <div class="stock-item-mobile-body">
               <div class="stock-item-mobile-grid">
                 <div class="stock-item-mobile-field">
@@ -6697,8 +6639,8 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
               </div>
             </div>
           `
-          : ""
-      }
+      : ""
+    }
     </article>
   `;
 }
@@ -6722,9 +6664,8 @@ function renderStockMovementRow(movement, viewerRole) {
       <td data-label="Notes">${escapeHtml(movement.notes || "None")}</td>
       <td data-label="Recorded by">${escapeHtml(movement.createdByName || "Unknown")}</td>
       <td data-label="Actions">
-        ${
-          canEdit
-            ? `
+        ${canEdit
+      ? `
               <div class="action-row">
                 <button
                   class="button button-secondary"
@@ -6736,8 +6677,8 @@ function renderStockMovementRow(movement, viewerRole) {
                 </button>
               </div>
             `
-            : '<span class="muted">View only</span>'
-        }
+      : '<span class="muted">View only</span>'
+    }
       </td>
     </tr>
   `;
@@ -6789,9 +6730,8 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
         </div>
       </div>
       <div class="action-row stop-actions">
-        ${
-          navigationUrl
-            ? `
+        ${navigationUrl
+      ? `
               <a
                 class="button button-primary"
                 href="${escapeHtml(navigationUrl)}"
@@ -6801,8 +6741,8 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                 Navigate
               </a>
             `
-            : ""
-        }
+      : ""
+    }
         <button
           type="button"
           class="button button-ghost"
@@ -6813,24 +6753,23 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
           ${isOpen ? "Hide orders" : "Show orders"}
         </button>
       </div>
-      ${
-        isOpen
-          ? `
+      ${isOpen
+      ? `
             <div class="stop-orders">
         ${stop.orders
-          .map((order) => {
-            const isFlagging = state.flaggingOrderId === order.id;
-            const isTransferring = state.transferringOrderId === order.id;
-            const canFlag = allowFlag && order.status === "active";
-            const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
-            const isPriority = isPriorityOrder(order);
-            const pickedUp = isOrderPickedUp(order);
-            const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
-            const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
-            const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
-            const canEdit = viewerRole === "admin" && order.status === "active";
+        .map((order) => {
+          const isFlagging = state.flaggingOrderId === order.id;
+          const isTransferring = state.transferringOrderId === order.id;
+          const canFlag = allowFlag && order.status === "active";
+          const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
+          const isPriority = isPriorityOrder(order);
+          const pickedUp = isOrderPickedUp(order);
+          const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
+          const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
+          const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
+          const canEdit = viewerRole === "admin" && order.status === "active";
 
-            return `
+          return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
                 <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
                 <div class="order-meta">
@@ -6849,13 +6788,11 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                 </div>
                 ${renderOrderNotice(order)}
                 <p>${escapeHtml(order.locationName || stop.location.name)}<br>${escapeHtml(order.locationAddress || stop.location.address)}</p>
-                ${
-                  allowComplete || allowDelete || canFlag || allowPriority
-                    ? `
+                ${allowComplete || allowDelete || canFlag || allowPriority
+              ? `
                       <div class="action-row">
-                        ${
-                          canEdit
-                            ? `
+                        ${canEdit
+                ? `
                               <button
                                 class="button button-secondary"
                                 data-action="edit-order"
@@ -6865,11 +6802,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 Edit
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          allowPriority
-                            ? `
+                : ""
+              }
+                        ${allowPriority
+                ? `
                               <button
                                 class="button ${isPriority ? "button-secondary" : "button-primary"}"
                                 data-action="toggle-order-priority"
@@ -6879,11 +6815,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 ${isPriority ? "Clear priority" : "Make priority"}
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          canMarkPickedUp
-                            ? `
+                : ""
+              }
+                        ${canMarkPickedUp
+                ? `
                               <button
                                 class="button button-primary"
                                 data-action="pick-up-order"
@@ -6893,11 +6828,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 Picked up
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          canTransfer
-                            ? `
+                : ""
+              }
+                        ${canTransfer
+                ? `
                               <button
                                 class="button button-secondary"
                                 data-action="toggle-transfer-order"
@@ -6907,11 +6841,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 ${isTransferring ? "Cancel transfer" : "Transfer"}
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          canDropAtOffice
-                            ? `
+                : ""
+              }
+                        ${canDropAtOffice
+                ? `
                               <button
                                 class="button button-primary"
                                 data-action="complete-order"
@@ -6922,11 +6855,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 ${escapeHtml(getOrderCompletionTypeLabel("office", order) || "Dropped at office")}
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          canDropAtFactory
-                            ? `
+                : ""
+              }
+                        ${canDropAtFactory
+                ? `
                               <button
                                 class="button button-secondary"
                                 data-action="complete-order"
@@ -6937,11 +6869,10 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 Dropped at factory
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          canFlag
-                            ? `
+                : ""
+              }
+                        ${canFlag
+                ? `
                               <button
                                 class="button button-ghost"
                                 data-action="toggle-order-flag"
@@ -6951,31 +6882,30 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                                 ${isFlagging ? "Cancel flag" : order.driverFlagType ? "Update flag" : "Flag issue"}
                               </button>
                             `
-                            : ""
-                        }
-                        ${
-                          allowDelete
-                            ? `
+                : ""
+              }
+                        ${allowDelete
+                ? `
                               <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"${state.busy ? " disabled" : ""}>
                                 Delete
                               </button>
                             `
-                            : ""
-                        }
+                : ""
+              }
                       </div>
                     `
-                    : ""
-                }
+              : ""
+            }
                 ${isTransferring ? renderOrderTransferForm(order) : ""}
                 ${isFlagging ? renderOrderFlagForm(order) : ""}
               </div>
             `;
-          })
-          .join("")}
+        })
+        .join("")}
             </div>
           `
-          : ""
-      }
+      : ""
+    }
     </article>
   `;
 }
@@ -7098,9 +7028,8 @@ function renderOrderFlagForm(order) {
         <button type="button" class="button button-ghost" data-action="cancel-order-flag"${state.busy ? " disabled" : ""}>
           Cancel
         </button>
-        ${
-          hasFlag
-            ? `
+        ${hasFlag
+      ? `
               <button
                 type="button"
                 class="button button-secondary"
@@ -7111,8 +7040,8 @@ function renderOrderFlagForm(order) {
                 Clear flag
               </button>
             `
-            : ""
-        }
+      : ""
+    }
       </div>
     </form>
   `;
