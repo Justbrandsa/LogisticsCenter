@@ -576,6 +576,10 @@ function scheduleSnapshotAutoRefresh() {
   }, AUTO_REFRESH_INTERVAL_MS);
 }
 
+function isEntryFormSessionActive() {
+  return Boolean(state.entryFormOpen || state.editingOrderId);
+}
+
 async function runSnapshotAutoRefresh() {
   if (!sessionToken) {
     stopSnapshotAutoRefresh();
@@ -592,6 +596,10 @@ async function runSnapshotAutoRefresh() {
 
 function shouldDeferSnapshotAutoRefresh() {
   if (state.busy || state.booting || state.stockScannerOpen || state.stockQrBusy || state.stockQrSharing) {
+    return true;
+  }
+
+  if (isEntryFormSessionActive()) {
     return true;
   }
 
@@ -852,6 +860,8 @@ async function handleClick(event) {
     render();
     if (willOpen) {
       focusOrderForm();
+    } else {
+      void refreshSnapshot({ silent: true });
     }
     return;
   }
@@ -1840,10 +1850,12 @@ function cancelOrderEdit() {
 
   if (returnPage && returnPage !== "entries") {
     setCurrentPage(returnPage);
+    void refreshSnapshot({ silent: true });
     return;
   }
 
   render();
+  void refreshSnapshot({ silent: true });
 }
 
 async function saveOrderAssignment(button, currentUser) {
@@ -3722,6 +3734,14 @@ function getUserInitials(name) {
 
 function getSnapshotRefreshSummary() {
   const lastRefreshLabel = formatPreciseDateTime(state.lastSnapshotRefreshAt);
+  if (isEntryFormSessionActive()) {
+    if (!lastRefreshLabel) {
+      return "Auto refresh is paused while the entry form is open. Save or close the form to sync again.";
+    }
+
+    return `Last refresh ${lastRefreshLabel}. Auto refresh is paused while the entry form is open.`;
+  }
+
   if (!lastRefreshLabel) {
     return `Auto refresh every ${Math.round(AUTO_REFRESH_INTERVAL_MS / 1000)} sec. Waiting for first sync.`;
   }
