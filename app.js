@@ -231,6 +231,8 @@ const state = {
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
+  editingOrderId: "",
+  orderEditReturnPage: "",
   editingStockItemId: "",
   editingStockMovementId: "",
   stockMovementSelectedItemId: "",
@@ -421,6 +423,8 @@ async function refreshPublicState() {
   state.editingUserId = "";
   state.editingSupplierId = "";
   state.editingLocationId = "";
+  state.editingOrderId = "";
+  state.orderEditReturnPage = "";
   state.editingStockItemId = "";
   state.editingStockMovementId = "";
   state.stockMovementSelectedItemId = "";
@@ -474,6 +478,13 @@ async function refreshSnapshot(options = {}) {
     if (state.editingLocationId && !state.snapshot.locations.some((location) => location.id === state.editingLocationId)) {
       state.editingLocationId = "";
     }
+    if (
+      state.editingOrderId
+      && !state.snapshot.orders.some((order) => order.id === state.editingOrderId && order.status === "active")
+    ) {
+      state.editingOrderId = "";
+      state.orderEditReturnPage = "";
+    }
     if (state.editingStockItemId && !state.snapshot.stockItems.some((item) => item.id === state.editingStockItemId)) {
       state.editingStockItemId = "";
     }
@@ -511,6 +522,10 @@ async function refreshSnapshot(options = {}) {
       && !state.snapshot.users.some((user) => user.id === state.assignmentDriverFilter && user.role === "driver")
     ) {
       state.assignmentDriverFilter = "";
+    }
+    if (state.editingOrderId && state.snapshot.user?.role !== "admin") {
+      state.editingOrderId = "";
+      state.orderEditReturnPage = "";
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -711,6 +726,7 @@ function normalizeError(error) {
 
   if (
     lowerMessage.includes("function public.create_order")
+    || lowerMessage.includes("function public.update_order")
     || lowerMessage.includes("function public.assign_order")
     || lowerMessage.includes("function public.record_driver_position")
     || lowerMessage.includes("column \"last_known_lat\"")
@@ -762,6 +778,10 @@ async function handleSubmit(event) {
 
   if (formId === "add-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     await createOrder(formData, currentUser);
+  }
+
+  if (formId === "edit-order" && currentUser.role === "admin") {
+    await updateOrder(formData, currentUser);
   }
 
   if (formId === "flag-order" && (currentUser.role === "admin" || currentUser.role === "driver")) {
@@ -816,11 +836,26 @@ async function handleClick(event) {
   }
 
   if (action === "toggle-entry-form" && (currentUser.role === "admin" || currentUser.role === "sales")) {
-    state.entryFormOpen = !state.entryFormOpen;
+    const willOpen = !state.entryFormOpen;
+    state.entryFormOpen = willOpen;
+    if (!state.entryFormOpen) {
+      state.editingOrderId = "";
+      state.orderEditReturnPage = "";
+    }
     render();
-    if (state.entryFormOpen) {
+    if (willOpen) {
       focusOrderForm();
     }
+    return;
+  }
+
+  if (action === "edit-order" && currentUser.role === "admin") {
+    openOrderEditor(String(button.dataset.orderId || "").trim());
+    return;
+  }
+
+  if (action === "cancel-edit-order" && currentUser.role === "admin") {
+    cancelOrderEdit();
     return;
   }
 
@@ -1262,7 +1297,7 @@ function handleChange(event) {
     return;
   }
 
-  const orderForm = target.closest('form[data-form="add-order"]');
+  const orderForm = target.closest('form[data-form="add-order"], form[data-form="edit-order"]');
   if (
     orderForm instanceof HTMLFormElement
     && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]') || target.matches('[name="moveToFactory"]'))
@@ -1651,9 +1686,141 @@ async function createOrder(formData, currentUser) {
   );
 
   if (ok) {
+    state.editingOrderId = "";
+    state.orderEditReturnPage = "";
     state.entryFormOpen = false;
     render();
   }
+}
+
+async function updateOrder(formData, currentUser) {
+  const orderId = String(formData.get("orderId") || state.editingOrderId || "").trim();
+  const driverUserId = String(formData.get("driverUserId") || "").trim();
+  const locationId = String(formData.get("locationId") || "").trim();
+  const entryType = String(formData.get("entryType") || "delivery").trim();
+  const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
+  const quoteNumber = String(formData.get("quoteNumber") || "").trim();
+  const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
+  const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
+  const poNumber = String(formData.get("poNumber") || "").trim();
+  const branding = String(formData.get("branding") || "").trim();
+  const stockDescription = String(formData.get("stockDescription") || "").trim();
+  const deliveryAddress = String(formData.get("deliveryAddress") || "").trim();
+  const notice = String(formData.get("notice") || "").trim();
+  const moveToFactory = formData.get("moveToFactory") === "on";
+  const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
+  const allowDuplicate = formData.get("allowDuplicate") === "on";
+
+  if (!orderId) {
+    showFlash("That entry could not be found for editing.", "error");
+    render();
+    return;
+  }
+
+  if (!locationId || !entryType || !quoteNumber) {
+    showFlash("Pickup location, entry type, and quote number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!stockDescription) {
+    showFlash("Stock description is required so drivers know what stock is on this entry.", "error");
+    render();
+    return;
+  }
+
+  if (entryType === "delivery" && !deliveryAddress) {
+    showFlash("Delivery address is required for delivery entries.", "error");
+    render();
+    return;
+  }
+
+  if (moveToFactory && !factoryDestinationLocationId) {
+    showFlash("Select which factory the collected stock should go to.", "error");
+    render();
+    return;
+  }
+
+  const ok = await runMutation(
+    "update_order",
+    {
+      p_token: sessionToken,
+      p_order_id: orderId,
+      p_driver_user_id: driverUserId || null,
+      p_location_id: locationId,
+      p_entry_type: entryType,
+      p_quote_number: quoteNumber,
+      p_sales_order_number: salesOrderNumber,
+      p_invoice_number: invoiceNumber,
+      p_po_number: poNumber,
+      p_branding: branding,
+      p_stock_description: stockDescription,
+      p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
+      p_priority: priority,
+      p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
+      p_notice: notice,
+      p_move_to_factory: moveToFactory,
+      p_factory_destination_location_id: moveToFactory ? factoryDestinationLocationId : null,
+    },
+    "Entry updated.",
+  );
+
+  if (!ok) {
+    return;
+  }
+
+  const returnPage = state.orderEditReturnPage;
+  state.editingOrderId = "";
+  state.orderEditReturnPage = "";
+  state.entryFormOpen = false;
+
+  if (returnPage && returnPage !== "entries") {
+    state.currentPage = returnPage;
+    syncEntryFormVisibility(returnPage);
+    window.history.replaceState(null, "", `${window.location.pathname}#${returnPage}`);
+    render();
+    return;
+  }
+
+  render();
+}
+
+function openOrderEditor(orderId) {
+  const order = getOrder(orderId);
+  if (!order || order.status !== "active") {
+    showFlash("Only active entries can be edited.", "error");
+    render();
+    return;
+  }
+
+  state.flaggingOrderId = "";
+  state.transferringOrderId = "";
+  state.editingOrderId = order.id;
+  state.orderEditReturnPage = state.currentPage && state.currentPage !== "entries" ? state.currentPage : "";
+  state.entryFormOpen = true;
+
+  if (state.currentPage === "entries") {
+    render();
+    focusOrderForm();
+    return;
+  }
+
+  setCurrentPage("entries");
+  focusOrderForm();
+}
+
+function cancelOrderEdit() {
+  const returnPage = state.orderEditReturnPage;
+  state.editingOrderId = "";
+  state.orderEditReturnPage = "";
+  state.entryFormOpen = false;
+
+  if (returnPage && returnPage !== "entries") {
+    setCurrentPage(returnPage);
+    return;
+  }
+
+  render();
 }
 
 async function saveOrderAssignment(button, currentUser) {
@@ -2073,10 +2240,13 @@ function render() {
 }
 
 function syncPostRenderUi() {
-  const orderForm = document.querySelector('form[data-form="add-order"]');
-  if (orderForm instanceof HTMLFormElement) {
-    syncMoveToFactoryField(orderForm);
-  }
+  document
+    .querySelectorAll('form[data-form="add-order"], form[data-form="edit-order"]')
+    .forEach((form) => {
+      if (form instanceof HTMLFormElement) {
+        syncMoveToFactoryField(form);
+      }
+    });
 
   const stockMovementForm = document.querySelector('form[data-form="add-stock-movement"]');
   if (stockMovementForm instanceof HTMLFormElement) {
@@ -2093,7 +2263,7 @@ function syncPostRenderUi() {
 
 function focusOrderForm() {
   window.requestAnimationFrame(() => {
-    const form = document.querySelector('form[data-form="add-order"]');
+    const form = document.querySelector('form[data-form="edit-order"], form[data-form="add-order"]');
     if (!(form instanceof HTMLFormElement)) {
       return;
     }
@@ -2404,6 +2574,14 @@ function normalizeSearchValue(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function getSearchTerms(query) {
+  return String(query || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
 function matchesStockSearch(record, query = state.stockSearchQuery) {
   const needle = normalizeStockSearchValue(query);
   if (!needle) {
@@ -2522,19 +2700,22 @@ function getGlobalListSearchSummary(filteredGroups, totalGroups, totalEntries) {
 }
 
 function matchesNetworkSearch(location, query = state.networkSearchQuery) {
-  const needle = normalizeSearchValue(query);
-  if (!needle) {
+  const searchTerms = getSearchTerms(query);
+  if (!searchTerms.length) {
     return true;
   }
 
-  return [
+  const fields = [
     location?.name,
     location?.locationType,
     location?.address,
     location?.contactPerson,
     location?.contactNumber,
-    location?.notes,
-  ].some((value) => normalizeSearchValue(value).includes(needle));
+  ]
+    .map((value) => normalizeSearchValue(value))
+    .filter(Boolean);
+
+  return searchTerms.every((term) => fields.some((value) => value.includes(term)));
 }
 
 function getFilteredNetworkLocations() {
@@ -3634,6 +3815,13 @@ function syncEntryFormVisibility(pageId = state.currentPage) {
 
   if (!canUseEntryForm) {
     state.entryFormOpen = false;
+    state.editingOrderId = "";
+    state.orderEditReturnPage = "";
+  }
+
+  if (state.editingOrderId && currentUser?.role !== "admin") {
+    state.editingOrderId = "";
+    state.orderEditReturnPage = "";
   }
 }
 
@@ -5157,6 +5345,7 @@ function renderSupplierNetworkSection() {
         <div class="table-toolbar stock-table-toolbar">
           <div class="stock-section-copy">
             <p class="stock-results-note">${escapeHtml(getNetworkSearchSummary(filteredLocations.length, totalLocations))}</p>
+            <p class="network-search-hint">Search visible location fields as you type. Use multiple words to narrow the list by name, type, address, or contact.</p>
           </div>
           <label class="stock-search">
             Search locations
@@ -5164,7 +5353,7 @@ function renderSupplierNetworkSection() {
               <input
                 type="search"
                 value="${escapeHtml(state.networkSearchQuery)}"
-                placeholder="Name, type, address, contact"
+                placeholder="Try: factory sandton or giftwrap office"
                 autocomplete="off"
                 spellcheck="false"
                 data-network-search
@@ -5249,47 +5438,84 @@ function countOrdersCreatedByCurrentUser() {
 }
 
 function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitle) {
+  const editingOrder = getEditingOrder();
+  const isEditing = Boolean(editingOrder);
+  const isOpen = state.entryFormOpen || isEditing;
+
   return `
     <section class="panel entry-composer">
       <div class="entry-composer-header">
         <div class="entry-composer-copy">
           <p class="eyebrow">Global List</p>
-          <h3 class="panel-title">Create a new entry</h3>
-          <p class="panel-subtitle">${escapeHtml(subtitle)}</p>
+          <h3 class="panel-title">${isEditing ? "Edit entry" : "Create a new entry"}</h3>
+          <p class="panel-subtitle">${escapeHtml(
+            isEditing
+              ? "Update the live entry details, then save the correction back into the route list."
+              : subtitle,
+          )}</p>
         </div>
         <button
           type="button"
-          class="button ${state.entryFormOpen ? "button-ghost" : "button-primary"}"
+          class="button ${isOpen ? "button-ghost" : "button-primary"}"
           data-action="toggle-entry-form"
-          aria-expanded="${state.entryFormOpen ? "true" : "false"}"
+          aria-expanded="${isOpen ? "true" : "false"}"
           ${state.busy ? "disabled" : ""}
         >
-          ${state.entryFormOpen ? "Hide entry form" : "Add new entry"}
+          ${isEditing ? "Close editor" : isOpen ? "Hide entry form" : "Add new entry"}
         </button>
       </div>
       ${
-        state.entryFormOpen
-          ? `<div class="entry-composer-body">${renderEntryForm(currentUser, allowDuplicateOverride)}</div>`
+        isOpen
+          ? `
+              <div class="entry-composer-body">
+                ${
+                  isEditing
+                    ? `<p class="field-note">Editing updates the live entry. Existing stock item records are not renamed automatically, so correct stock references separately if needed.</p>`
+                    : ""
+                }
+                ${renderEntryForm(currentUser, allowDuplicateOverride, { order: editingOrder })}
+              </div>
+            `
           : `<p class="entry-composer-note">Open the form only when you need to capture a new job. The live global list stays visible below for easier scanning.</p>`
       }
     </section>
   `;
 }
 
-function renderEntryForm(currentUser, allowDuplicateOverride) {
+function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
+  const editingOrder = options.order || null;
+  const isEditing = Boolean(editingOrder);
+  const formId = isEditing ? "edit-order" : "add-order";
+  const selectedDriverId = String(editingOrder?.driverUserId || "").trim();
+  const selectedLocationId = String(editingOrder?.locationId || "").trim();
+  const entryType = String(editingOrder?.entryType || "delivery").trim() || "delivery";
+  const createdByName = String(editingOrder?.createdByName || currentUser.name || "").trim();
+  const deliveryAddress = String(editingOrder?.deliveryAddress || "").trim();
+  const quoteNumber = String(editingOrder?.quoteNumber || "").trim();
+  const salesOrderNumber = String(editingOrder?.salesOrderNumber || "").trim();
+  const invoiceNumber = String(editingOrder?.invoiceNumber || "").trim();
+  const poNumber = String(editingOrder?.poNumber || "").trim();
+  const stockDescription = String(editingOrder?.stockDescription || "").trim();
+  const branding = String(editingOrder?.branding || "").trim();
+  const moveToFactory = Boolean(editingOrder?.moveToFactory);
+  const factoryDestinationLocationId = String(editingOrder?.factoryDestinationLocationId || "").trim();
+  const notice = String(editingOrder?.notes || "").trim();
+  const isPriority = getOrderPriority(editingOrder) === PRIORITY_STOP_VALUE;
+
   return `
-    <form data-form="add-order">
+    <form data-form="${formId}">
+      ${isEditing ? `<input type="hidden" name="orderId" value="${escapeHtml(editingOrder?.id || "")}">` : ""}
       <div class="form-grid">
         <label>
           Driver
           <select name="driverUserId">
-            ${renderDriverOptions("", true)}
+            ${renderDriverOptions(selectedDriverId, true)}
           </select>
         </label>
         <label>
           Pickup location
           <select name="locationId" required>
-            ${renderLocationOptions()}
+            ${renderLocationOptions(selectedLocationId)}
           </select>
         </label>
       </div>
@@ -5300,13 +5526,13 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
         <label>
           Collection or delivery
           <select name="entryType" required>
-            <option value="collection">Collection</option>
-            <option value="delivery" selected>Delivery</option>
+            <option value="collection"${entryType === "collection" ? " selected" : ""}>Collection</option>
+            <option value="delivery"${entryType === "delivery" ? " selected" : ""}>Delivery</option>
           </select>
         </label>
         <label>
-          Created by
-          <input class="readonly-field" type="text" value="${escapeHtml(currentUser.name)}" readonly>
+          ${isEditing ? "Originally created by" : "Created by"}
+          <input class="readonly-field" type="text" value="${escapeHtml(createdByName)}" readonly>
         </label>
       </div>
       <label class="hidden" data-delivery-address-field>
@@ -5315,54 +5541,58 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           name="deliveryAddress"
           placeholder="Required for delivery entries"
           data-delivery-address-input
-        ></textarea>
+        >${escapeHtml(deliveryAddress)}</textarea>
       </label>
       <p class="field-note hidden" data-delivery-address-note>
         Add the address the driver must deliver this order to.
       </p>
       <label class="inline-check">
-        <input type="checkbox" name="priority">
+        <input type="checkbox" name="priority"${isPriority ? " checked" : ""}>
         Mark this as a priority stop
       </label>
       <div class="form-grid">
         <label>
           Quote number
-          <input name="quoteNumber" type="text" required>
+          <input name="quoteNumber" type="text" value="${escapeHtml(quoteNumber)}" required>
         </label>
         <label>
           Sales order number
-          <input name="salesOrderNumber" type="text" placeholder="Optional">
+          <input name="salesOrderNumber" type="text" value="${escapeHtml(salesOrderNumber)}" placeholder="Optional">
         </label>
       </div>
       <div class="form-grid">
         <label>
           Invoice number
-          <input name="invoiceNumber" type="text" placeholder="Optional">
+          <input name="invoiceNumber" type="text" value="${escapeHtml(invoiceNumber)}" placeholder="Optional">
         </label>
         <label>
           PO number
-          <input name="poNumber" type="text" placeholder="Optional">
+          <input name="poNumber" type="text" value="${escapeHtml(poNumber)}" placeholder="Optional">
         </label>
       </div>
       <label>
         Stock description
-        <textarea name="stockDescription" placeholder="What stock is on this entry? Put one item per line." required></textarea>
+        <textarea name="stockDescription" placeholder="What stock is on this entry? Put one item per line." required>${escapeHtml(stockDescription)}</textarea>
       </label>
       <p class="field-note">
-        Saving this entry will also create matching stock items automatically in the Stock page. Put each item on its own line to create separate stock records.
+        ${
+          isEditing
+            ? "This updates the entry details shown in the live route list. If the stock item records also need correction, update those separately in the Stock page."
+            : "Saving this entry will also create matching stock items automatically in the Stock page. Put each item on its own line to create separate stock records."
+        }
       </p>
       <label>
         Branding
-        <input name="branding" type="text" placeholder="Optional">
+        <input name="branding" type="text" value="${escapeHtml(branding)}" placeholder="Optional">
       </label>
       <label class="inline-check">
-        <input type="checkbox" name="moveToFactory" disabled>
+        <input type="checkbox" name="moveToFactory" disabled${moveToFactory ? " checked" : ""}>
         Move collected stock to a factory
       </label>
       <label class="hidden" data-move-to-factory-destination>
         Destination factory
         <select name="factoryDestinationLocationId">
-          ${renderFactoryLocationOptions()}
+          ${renderFactoryLocationOptions(factoryDestinationLocationId)}
         </select>
       </label>
       <p class="field-note" data-move-to-factory-note>
@@ -5370,7 +5600,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
       </p>
       <label>
         Notice
-        <textarea name="notice" placeholder="Special instruction, handover note, or anything dispatch should keep on the order"></textarea>
+        <textarea name="notice" placeholder="Special instruction, handover note, or anything dispatch should keep on the order">${escapeHtml(notice)}</textarea>
       </label>
       ${
         allowDuplicateOverride
@@ -5385,9 +5615,16 @@ function renderEntryForm(currentUser, allowDuplicateOverride) {
           `
           : ""
       }
-      <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
-        Create entry
-      </button>
+      <div class="action-row">
+        <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+          ${isEditing ? "Save changes" : "Create entry"}
+        </button>
+        ${
+          isEditing
+            ? `<button type="button" class="button button-ghost" data-action="cancel-edit-order"${state.busy ? " disabled" : ""}>Cancel</button>`
+            : ""
+        }
+      </div>
     </form>
   `;
 }
@@ -5709,6 +5946,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
 
 function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
+  const canEdit = viewerRole === "admin" && order.status === "active";
   const isPriority = isPriorityOrder(order);
   const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
@@ -5746,14 +5984,28 @@ function renderGlobalOrderCard(order, viewerRole) {
         ${escapeHtml(`Created by ${order.createdByName || "Unknown"}${createdAt ? ` on ${createdAt}` : ""}`)}
       </p>
       ${
-        canDelete
+        canEdit || canDelete
           ? `
             <div class="action-row">
+              ${
+                canEdit
+                  ? `
+                    <button
+                      class="button button-secondary"
+                      data-action="edit-order"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      Edit
+                    </button>
+                  `
+                  : ""
+              }
               <button
                 class="button button-danger"
                 data-action="delete-order"
                 data-order-id="${order.id}"
-                data-order-reference="${escapeHtml(order.reference)}"
+                data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"
                 ${state.busy ? " disabled" : ""}
               >
                 Delete
@@ -5933,7 +6185,7 @@ function renderGlobalOrderRow(order, viewerRole) {
                   class="button button-danger"
                   data-action="delete-order"
                   data-order-id="${order.id}"
-                  data-order-reference="${escapeHtml(order.reference)}"
+                  data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"
                   ${state.busy ? " disabled" : ""}
                 >
                   Delete
@@ -6108,6 +6360,45 @@ function getReferenceLines(record) {
   return lines;
 }
 
+function getOrderQuoteNumber(order) {
+  return String(order?.quoteNumber || "").trim();
+}
+
+function getOrderSalesOrderNumber(order) {
+  const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
+  if (!salesOrderNumber) {
+    return "";
+  }
+
+  const orderNumber = String(order?.orderNumber || "").trim();
+  if (orderNumber && salesOrderNumber.toLowerCase() === `legacy-${orderNumber}`.toLowerCase()) {
+    return "";
+  }
+
+  return salesOrderNumber;
+}
+
+function getVisibleOrderReferenceLines(order) {
+  const invoiceNumber = String(order?.invoiceNumber || "").trim();
+  const poNumber = String(order?.poNumber || "").trim();
+  const lines = [];
+  const salesOrderNumber = getOrderSalesOrderNumber(order);
+
+  if (salesOrderNumber) {
+    lines.push(`SO ${salesOrderNumber}`);
+  }
+
+  if (invoiceNumber) {
+    lines.push(`Invoice ${invoiceNumber}`);
+  }
+
+  if (poNumber) {
+    lines.push(`PO ${poNumber}`);
+  }
+
+  return lines;
+}
+
 function getStockItemDisplayLines(value) {
   const text = String(value || "").replace(/\r/g, "\n").trim();
   if (!text) {
@@ -6159,26 +6450,17 @@ function renderStockItemDisplayName(value, options = {}) {
 }
 
 function getOrderPrimaryDisplay(order) {
-  const quoteNumber = String(order?.quoteNumber || order?.inhouseOrderNumber || "").trim();
+  const quoteNumber = getOrderQuoteNumber(order);
   if (quoteNumber) {
     return `Quote ${quoteNumber}`;
   }
 
-  return String(order?.reference || "").trim() || "Entry";
+  const orderNumber = String(order?.orderNumber || "").trim();
+  return orderNumber ? `Entry ${orderNumber}` : "Entry";
 }
 
 function getOrderListReferenceLines(order) {
-  const lines = [];
-  const orderReference = String(order?.reference || "").trim();
-
-  if (orderReference) {
-    lines.push(orderReference);
-  }
-
-  return [
-    ...lines,
-    ...getReferenceLines(order).filter((line) => !line.startsWith("Quote ")),
-  ];
+  return getVisibleOrderReferenceLines(order);
 }
 
 function renderOrderListReferenceSummary(order, emptyLabel = "No order references") {
@@ -6475,6 +6757,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
             const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
             const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
             const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
+            const canEdit = viewerRole === "admin" && order.status === "active";
 
             return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
@@ -6498,6 +6781,20 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                   allowComplete || allowDelete || canFlag || allowPriority
                     ? `
                       <div class="action-row">
+                        ${
+                          canEdit
+                            ? `
+                              <button
+                                class="button button-secondary"
+                                data-action="edit-order"
+                                data-order-id="${order.id}"
+                                ${state.busy ? " disabled" : ""}
+                              >
+                                Edit
+                              </button>
+                            `
+                            : ""
+                        }
                         ${
                           allowPriority
                             ? `
@@ -6587,7 +6884,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                         ${
                           allowDelete
                             ? `
-                              <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(order.reference)}"${state.busy ? " disabled" : ""}>
+                              <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"${state.busy ? " disabled" : ""}>
                                 Delete
                               </button>
                             `
@@ -6973,17 +7270,18 @@ function renderStockItemOptions(selectedStockItemId = "") {
     .join("");
 }
 
-function renderLocationOptions() {
+function renderLocationOptions(selectedLocationId = "") {
   if (!state.snapshot.locations.length) {
     return '<option value="">Create a location first</option>';
   }
 
-  return state.snapshot.locations
-    .map((location) => {
+  return [
+    `<option value=""${selectedLocationId ? "" : " selected"}>Select a location</option>`,
+    ...state.snapshot.locations.map((location) => {
       const typeLabel = location.locationType ? ` - ${escapeHtml(capitalize(location.locationType))}` : "";
-      return `<option value="${location.id}">${escapeHtml(location.name)}${typeLabel}</option>`;
-    })
-    .join("");
+      return `<option value="${location.id}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(location.name)}${typeLabel}</option>`;
+    }),
+  ].join("");
 }
 
 function getUsersByRole(role) {
@@ -7063,6 +7361,10 @@ function getEditingSupplier() {
 
 function getEditingLocation() {
   return state.editingLocationId ? getLocation(state.editingLocationId) : null;
+}
+
+function getEditingOrder() {
+  return state.editingOrderId ? getOrder(state.editingOrderId) : null;
 }
 
 function getOrdersForDriver(driverUserId) {
@@ -8025,7 +8327,7 @@ function changePage(pageKey, page) {
 }
 
 function getOrderCsvReferenceSummary(order) {
-  return getReferenceLines(order).join(" | ");
+  return getVisibleOrderReferenceLines(order).join(" | ");
 }
 
 function getOrderCsvDriverIssue(order) {
@@ -8101,7 +8403,7 @@ function getOrderCsvScheduleSummary(order) {
 
 function buildOrderCsvRow(order) {
   return [
-    order.reference || "",
+    getOrderQuoteNumber(order),
     getDriverDisplayName(order),
     getOrderPickupCsvValue(order),
     getOrderDriverHandoffCsvValue(order),
@@ -8130,7 +8432,7 @@ function buildOrdersCsvContent(orders) {
   const lineBreak = "\r\n";
   const rows = [
     [
-      "Reference",
+      "Quote",
       "Assigned driver",
       "Picked up by",
       "Driver handoff",
@@ -8139,7 +8441,7 @@ function buildOrdersCsvContent(orders) {
       "Delivery address",
       "Entry type",
       "Priority",
-      "Order references",
+      "Other references",
       "Stock required",
       "Branding",
       "Move to factory",

@@ -335,6 +335,49 @@ create index if not exists orders_status_scheduled_idx
 create index if not exists orders_factory_destination_idx
   on private.orders (factory_destination_location_id);
 
+create table if not exists private.order_delete_log (
+  id uuid primary key default public.gen_random_uuid(),
+  order_id uuid not null,
+  order_number bigint,
+  reference text not null default '',
+  quote_number text not null default '',
+  sales_order_number text not null default '',
+  invoice_number text not null default '',
+  po_number text not null default '',
+  entry_type text not null default 'delivery',
+  priority text not null default 'medium',
+  delivery_address text not null default '',
+  branding text not null default '',
+  stock_description text not null default '',
+  notes text not null default '',
+  move_to_factory boolean not null default false,
+  factory_destination_location_id uuid,
+  factory_destination_name text not null default '',
+  factory_destination_address text not null default '',
+  location_id uuid,
+  location_name text not null default '',
+  location_address text not null default '',
+  driver_user_id uuid,
+  driver_name text not null default '',
+  created_by_user_id uuid,
+  created_by_name text not null default '',
+  created_at timestamptz,
+  scheduled_for date,
+  original_scheduled_for date,
+  carry_over_count integer not null default 0,
+  status text not null default 'active',
+  deleted_by_user_id uuid references private.app_users(id) on delete set null,
+  deleted_by_name text not null default '',
+  deleted_by_role text not null default '',
+  deleted_at timestamptz not null default now(),
+  notification_attempts integer not null default 0,
+  last_notification_error text not null default '',
+  notification_sent_at timestamptz
+);
+
+create index if not exists order_delete_log_pending_idx
+  on private.order_delete_log (notification_sent_at, deleted_at);
+
 create table if not exists private.stock_items (
   id uuid primary key default public.gen_random_uuid(),
   name text not null,
@@ -2723,6 +2766,207 @@ begin
 end;
 $$;
 
+drop function if exists public.update_order(uuid, uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
+drop function if exists public.update_order(uuid, uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean);
+
+create or replace function public.update_order(
+  p_token uuid,
+  p_order_id uuid,
+  p_driver_user_id uuid,
+  p_location_id uuid,
+  p_entry_type text,
+  p_quote_number text,
+  p_sales_order_number text default null,
+  p_invoice_number text default null,
+  p_po_number text default null,
+  p_branding text default null,
+  p_stock_description text default null,
+  p_delivery_address text default null,
+  p_priority text default 'medium',
+  p_allow_duplicate boolean default false,
+  p_notice text default null,
+  p_move_to_factory boolean default false,
+  p_factory_destination_location_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor private.app_users;
+  v_order private.orders;
+  v_driver private.app_users;
+  v_location private.locations;
+  v_factory_destination private.locations;
+  v_today date := private.today_local();
+  v_entry_type text := lower(nullif(btrim(p_entry_type), ''));
+  v_quote_number text := nullif(btrim(p_quote_number), '');
+  v_sales_order_number text := coalesce(nullif(btrim(p_sales_order_number), ''), '');
+  v_invoice_number text := coalesce(nullif(btrim(p_invoice_number), ''), '');
+  v_po_number text := coalesce(nullif(btrim(p_po_number), ''), '');
+  v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
+  v_stock_description text := nullif(btrim(p_stock_description), '');
+  v_delivery_address text := coalesce(nullif(btrim(p_delivery_address), ''), '');
+  v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
+  v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
+  v_move_to_factory boolean := coalesce(p_move_to_factory, false);
+  v_factory_destination_location_id uuid := case when coalesce(p_move_to_factory, false) then p_factory_destination_location_id else null end;
+begin
+  v_actor := private.require_user(p_token);
+
+  if v_actor.role <> 'admin' then
+    raise exception 'Permission denied';
+  end if;
+
+  select *
+  into v_order
+  from private.orders
+  where id = p_order_id;
+
+  if v_order.id is null then
+    raise exception 'Order not found.';
+  end if;
+
+  if v_order.status <> 'active' then
+    raise exception 'Only active entries can be edited.';
+  end if;
+
+  if v_entry_type not in ('collection', 'delivery') then
+    raise exception 'Entry type must be collection or delivery.';
+  end if;
+
+  if v_quote_number is null then
+    raise exception 'Quote number is required.';
+  end if;
+
+  if v_stock_description is null then
+    raise exception 'Stock description is required.';
+  end if;
+
+  if v_entry_type = 'delivery' and v_delivery_address = '' then
+    raise exception 'Delivery address is required for delivery entries.';
+  elsif v_entry_type <> 'delivery' then
+    v_delivery_address := '';
+  end if;
+
+  if v_priority not in ('high', 'medium', 'low') then
+    raise exception 'Choose a valid priority.';
+  end if;
+
+  if p_driver_user_id is not null then
+    select *
+    into v_driver
+    from private.app_users
+    where id = p_driver_user_id
+      and role = 'driver'
+      and active;
+
+    if v_driver.id is null then
+      raise exception 'Driver not found.';
+    end if;
+  end if;
+
+  select *
+  into v_location
+  from private.locations
+  where id = p_location_id;
+
+  if v_location.id is null then
+    raise exception 'Location not found.';
+  end if;
+
+  if v_move_to_factory and v_entry_type <> 'collection' then
+    raise exception 'Only collection entries can be marked to move stock to a factory.';
+  end if;
+
+  if v_move_to_factory and v_factory_destination_location_id is null then
+    raise exception 'Select which factory the collected stock should go to.';
+  end if;
+
+  if v_move_to_factory then
+    select *
+    into v_factory_destination
+    from private.locations
+    where id = v_factory_destination_location_id
+      and location_type in ('factory', 'both');
+
+    if v_factory_destination.id is null then
+      raise exception 'Factory destination not found.';
+    end if;
+  else
+    v_factory_destination_location_id := null;
+  end if;
+
+  if p_driver_user_id is not null
+     and exists (
+       select 1
+       from private.orders
+       where id <> p_order_id
+         and driver_user_id = p_driver_user_id
+         and inhouse_order_number = v_quote_number
+         and status = 'active'
+     )
+     and not coalesce(p_allow_duplicate, false) then
+    raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
+  end if;
+
+  if p_driver_user_id is not null
+     and exists (
+       select 1
+       from private.orders
+       where id <> p_order_id
+         and driver_user_id = p_driver_user_id
+         and location_id = p_location_id
+         and status = 'completed'
+         and scheduled_for = v_today
+     )
+     and not coalesce(p_allow_duplicate, false) then
+    raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
+  end if;
+
+  update private.orders
+  set customer_name = v_quote_number,
+      driver_user_id = p_driver_user_id,
+      location_id = p_location_id,
+      entry_type = v_entry_type,
+      factory_order_number = v_sales_order_number,
+      inhouse_order_number = v_quote_number,
+      invoice_number = v_invoice_number,
+      po_number = v_po_number,
+      branding = v_branding,
+      stock_description = v_stock_description,
+      delivery_address = v_delivery_address,
+      priority = case
+        when v_order.driver_user_id is not null
+          and p_driver_user_id is null
+          and v_order.carry_over_count > 0
+          and v_priority = 'high'
+        then 'medium'
+        else v_priority
+      end,
+      notes = v_notice,
+      move_to_factory = v_move_to_factory,
+      factory_destination_location_id = v_factory_destination_location_id,
+      scheduled_for = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        else scheduled_for
+      end,
+      original_scheduled_for = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        else original_scheduled_for
+      end,
+      carry_over_count = case
+        when v_order.driver_user_id is null or p_driver_user_id is null then 0
+        else carry_over_count
+      end,
+      updated_at = now()
+  where id = p_order_id;
+
+  return jsonb_build_object('ok', true, 'orderId', p_order_id);
+end;
+$$;
+
 drop function if exists public.assign_order(uuid, uuid, uuid);
 drop function if exists public.assign_order(uuid, uuid, uuid, boolean);
 
@@ -3142,13 +3386,93 @@ set search_path = ''
 as $$
 declare
   v_actor private.app_users;
+  v_log_id uuid;
 begin
   v_actor := private.require_user(p_token, array['admin']);
+
+  insert into private.order_delete_log (
+    order_id,
+    order_number,
+    reference,
+    quote_number,
+    sales_order_number,
+    invoice_number,
+    po_number,
+    entry_type,
+    priority,
+    delivery_address,
+    branding,
+    stock_description,
+    notes,
+    move_to_factory,
+    factory_destination_location_id,
+    factory_destination_name,
+    factory_destination_address,
+    location_id,
+    location_name,
+    location_address,
+    driver_user_id,
+    driver_name,
+    created_by_user_id,
+    created_by_name,
+    created_at,
+    scheduled_for,
+    original_scheduled_for,
+    carry_over_count,
+    status,
+    deleted_by_user_id,
+    deleted_by_name,
+    deleted_by_role
+  )
+  select
+    o.id,
+    o.order_number,
+    concat('ORD-', o.order_number),
+    coalesce(o.inhouse_order_number, ''),
+    coalesce(o.factory_order_number, ''),
+    coalesce(o.invoice_number, ''),
+    coalesce(o.po_number, ''),
+    o.entry_type,
+    o.priority,
+    coalesce(o.delivery_address, ''),
+    coalesce(o.branding, ''),
+    coalesce(o.stock_description, ''),
+    coalesce(o.notes, ''),
+    o.move_to_factory,
+    o.factory_destination_location_id,
+    coalesce(f.name, ''),
+    coalesce(f.address, ''),
+    o.location_id,
+    coalesce(l.name, ''),
+    coalesce(l.address, ''),
+    o.driver_user_id,
+    coalesce(d.name, ''),
+    o.created_by_user_id,
+    coalesce(c.name, ''),
+    o.created_at,
+    o.scheduled_for,
+    o.original_scheduled_for,
+    o.carry_over_count,
+    o.status,
+    v_actor.id,
+    coalesce(v_actor.name, ''),
+    coalesce(v_actor.role, '')
+  from private.orders o
+  join private.locations l on l.id = o.location_id
+  left join private.locations f on f.id = o.factory_destination_location_id
+  left join private.app_users d on d.id = o.driver_user_id
+  left join private.app_users c on c.id = o.created_by_user_id
+  where o.id = p_order_id
+  returning id into v_log_id;
+
+  if v_log_id is null then
+    raise exception 'Order not found.';
+  end if;
 
   delete from private.orders
   where id = p_order_id;
 
-  return jsonb_build_object('ok', true, 'deletedBy', v_actor.id);
+  return jsonb_build_object('ok', true, 'deletedBy', v_actor.id, 'deleteLogId', v_log_id);
 end;
 $$;
 

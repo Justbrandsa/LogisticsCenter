@@ -13,6 +13,7 @@ Logictics Centre is a Neon-backed browser app for managing driver-separated pick
 - Admin and sales users can download the global list as CSV, send it to `admin3@giftwrap.co.za`, or run a test email.
 - Microsoft Graph delivery sends from `artwork3@giftwrap.co.za` once `mail-config.js` or the `MAIL_*` environment variables are configured.
 - When active driver-list items roll forward to a new day, the server emails a grouped carry-over breakdown to the configured `MAIL_TO` recipient.
+- Deleted entries are written to a server-side delete log before removal, and the server batches unsent delete-log emails every 10 minutes.
 - The UI now uses role-based dynamic page navigation instead of one long scrolling screen.
 
 ## Files
@@ -34,6 +35,7 @@ Logictics Centre is a Neon-backed browser app for managing driver-separated pick
 5. Run `neon.sql` against your Neon database.
 6. Start the local server with `node serve.js`.
 7. Open `http://127.0.0.1:4173/`.
+8. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
 
 ## Microsoft Graph mail
 

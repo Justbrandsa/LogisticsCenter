@@ -35,6 +35,8 @@ const TIME_ZONE = "Africa/Johannesburg";
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
 const ADMIN_ACTION_NOTIFICATION_EMAIL = "admin3@giftwrap.co.za";
+const DELETE_LOG_EMAIL_POLL_MS = 10 * 60 * 1000;
+const DELETE_LOG_CRON_PATH = "/api/jobs/order-delete-log-email";
 const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const MIME = {
@@ -107,6 +109,27 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_factory_destination_location_id",
     ],
   },
+  update_order: {
+    params: [
+      "p_token",
+      "p_order_id",
+      "p_driver_user_id",
+      "p_location_id",
+      "p_entry_type",
+      "p_quote_number",
+      "p_sales_order_number",
+      "p_invoice_number",
+      "p_po_number",
+      "p_branding",
+      "p_stock_description",
+      "p_delivery_address",
+      "p_priority",
+      "p_allow_duplicate",
+      "p_notice",
+      "p_move_to_factory",
+      "p_factory_destination_location_id",
+    ],
+  },
   assign_order: { params: ["p_token", "p_order_id", "p_driver_user_id", "p_allow_duplicate"] },
   set_order_priority: { params: ["p_token", "p_order_id", "p_priority"] },
   clear_all_order_priorities: { params: ["p_token"] },
@@ -124,6 +147,8 @@ const liveReloadClients = new Set();
 let liveReloadWatcherStarted = false;
 let liveReloadTimer = null;
 let liveReloadPendingFile = "";
+let deleteLogNotificationTimer = null;
+let deleteLogNotificationPromise = null;
 
 function getStockUnitLabel(record) {
   const rawUnit = String(record?.unit || "").trim();
@@ -175,6 +200,7 @@ function getOrderCompletionText(order) {
 
 function startServer() {
   startLiveReloadWatcher();
+  startOrderDeleteLogPolling();
 
   const server = http.createServer((request, response) => {
     void routeRequest(request, response);
@@ -206,10 +232,12 @@ function startServer() {
   });
 
   process.on("SIGINT", () => {
+    stopOrderDeleteLogPolling();
     void database.close().finally(() => process.exit(0));
   });
 
   process.on("SIGTERM", () => {
+    stopOrderDeleteLogPolling();
     void database.close().finally(() => process.exit(0));
   });
 }
@@ -238,6 +266,20 @@ async function routeRequest(request, response) {
         mailTo: mailer.getStatus().to,
         artworkTo: mailer.getStatus().artworkTo,
       });
+      return;
+    }
+
+    if ((request.method === "GET" || request.method === "POST") && cleanPath === DELETE_LOG_CRON_PATH) {
+      if (!isAuthorizedJobRequest(request)) {
+        sendJson(response, 401, { error: "Unauthorized." });
+        return;
+      }
+
+      const result = await processOrderDeleteLogNotifications({
+        source: "cron",
+        allowConcurrentWait: true,
+      });
+      sendJson(response, 200, result);
       return;
     }
 
@@ -565,6 +607,103 @@ function createDatabase() {
 
       return result.rows;
     },
+    async listPendingOrderDeleteNotifications(limit = 100) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 250));
+      const result = await pool.query(`
+        select
+          id,
+          order_id as "orderId",
+          order_number as "orderNumber",
+          reference,
+          quote_number as "quoteNumber",
+          sales_order_number as "salesOrderNumber",
+          invoice_number as "invoiceNumber",
+          po_number as "poNumber",
+          entry_type as "entryType",
+          priority,
+          delivery_address as "deliveryAddress",
+          branding,
+          stock_description as "stockDescription",
+          notes,
+          move_to_factory as "moveToFactory",
+          factory_destination_location_id as "factoryDestinationLocationId",
+          factory_destination_name as "factoryDestinationName",
+          factory_destination_address as "factoryDestinationAddress",
+          location_id as "locationId",
+          location_name as "locationName",
+          location_address as "locationAddress",
+          driver_user_id as "driverUserId",
+          driver_name as "driverName",
+          created_by_user_id as "createdByUserId",
+          created_by_name as "createdByName",
+          created_at as "createdAt",
+          to_char(scheduled_for, 'YYYY-MM-DD') as "scheduledFor",
+          to_char(original_scheduled_for, 'YYYY-MM-DD') as "originalScheduledFor",
+          carry_over_count as "carryOverCount",
+          status,
+          deleted_by_user_id as "deletedByUserId",
+          deleted_by_name as "deletedByName",
+          deleted_by_role as "deletedByRole",
+          deleted_at as "deletedAt",
+          notification_attempts as "notificationAttempts",
+          last_notification_error as "lastNotificationError",
+          notification_sent_at as "notificationSentAt"
+        from private.order_delete_log
+        where notification_sent_at is null
+        order by deleted_at asc, id asc
+        limit $1
+      `, [safeLimit]);
+
+      return result.rows;
+    },
+    async markOrderDeleteNotificationsSent(logIds) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const cleanIds = Array.isArray(logIds)
+        ? logIds.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      if (!cleanIds.length) {
+        return 0;
+      }
+
+      const result = await pool.query(`
+        update private.order_delete_log
+        set notification_sent_at = now(),
+            notification_attempts = notification_attempts + 1,
+            last_notification_error = ''
+        where id = any($1::uuid[])
+      `, [cleanIds]);
+
+      return result.rowCount || 0;
+    },
+    async markOrderDeleteNotificationFailure(logIds, errorMessage) {
+      if (!pool) {
+        throw createHttpError(503, status.reason || "Database connection is not configured.");
+      }
+
+      const cleanIds = Array.isArray(logIds)
+        ? logIds.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      if (!cleanIds.length) {
+        return 0;
+      }
+
+      const message = String(errorMessage || "").trim() || "Delete-log email failed.";
+      const result = await pool.query(`
+        update private.order_delete_log
+        set notification_attempts = notification_attempts + 1,
+            last_notification_error = $2
+        where id = any($1::uuid[])
+      `, [cleanIds, message]);
+
+      return result.rowCount || 0;
+    },
     async clearAllOrderPriorities(token) {
       if (!pool) {
         throw createHttpError(503, status.reason || "Database connection is not configured.");
@@ -685,6 +824,105 @@ async function maybeSendCarryOverEmail(functionName, payload) {
     await mailer.sendCarryOverEmail(rollover);
   } catch (error) {
     console.error("Failed to send carry-over email.", error);
+  }
+}
+
+function startOrderDeleteLogPolling() {
+  if (deleteLogNotificationTimer) {
+    return;
+  }
+
+  const runPoll = (source) => {
+    void processOrderDeleteLogNotifications({ source }).catch((error) => {
+      console.error("Failed to process delete-log notifications.", error);
+    });
+  };
+
+  runPoll("startup");
+  deleteLogNotificationTimer = setInterval(() => {
+    runPoll("interval");
+  }, DELETE_LOG_EMAIL_POLL_MS);
+
+  if (typeof deleteLogNotificationTimer.unref === "function") {
+    deleteLogNotificationTimer.unref();
+  }
+}
+
+function stopOrderDeleteLogPolling() {
+  if (!deleteLogNotificationTimer) {
+    return;
+  }
+
+  clearInterval(deleteLogNotificationTimer);
+  deleteLogNotificationTimer = null;
+}
+
+function isAuthorizedJobRequest(request) {
+  const secret = String(process.env.CRON_SECRET || "").trim();
+  if (!secret) {
+    return true;
+  }
+
+  const authorization = String(request?.headers?.authorization || "").trim();
+  return authorization === `Bearer ${secret}`;
+}
+
+async function processOrderDeleteLogNotifications(options = {}) {
+  const {
+    source = "manual",
+    allowConcurrentWait = false,
+  } = options;
+
+  if (deleteLogNotificationPromise) {
+    return allowConcurrentWait
+      ? deleteLogNotificationPromise
+      : { ok: true, skipped: true, reason: "Delete-log notification job already running." };
+  }
+
+  deleteLogNotificationPromise = (async () => {
+    if (!database.getStatus().configured) {
+      return { ok: true, skipped: true, reason: "Database connection is not configured." };
+    }
+
+    const pendingEntries = await database.listPendingOrderDeleteNotifications();
+    if (!pendingEntries.length) {
+      return { ok: true, skipped: true, reason: "No pending delete-log entries.", count: 0, source };
+    }
+
+    if (!mailer.getStatus().configured) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: mailer.getStatus().reason || "Email delivery is not configured.",
+        count: pendingEntries.length,
+        source,
+      };
+    }
+
+    const logIds = pendingEntries
+      .map((entry) => String(entry?.id || "").trim())
+      .filter(Boolean);
+
+    try {
+      const mailResult = await mailer.sendOrderDeleteLogEmail(pendingEntries);
+      await database.markOrderDeleteNotificationsSent(logIds);
+      return {
+        ok: true,
+        count: pendingEntries.length,
+        source,
+        sentTo: mailResult?.sentTo || "",
+        subject: mailResult?.subject || "",
+      };
+    } catch (error) {
+      await database.markOrderDeleteNotificationFailure(logIds, normalizeErrorMessage(error));
+      throw error;
+    }
+  })();
+
+  try {
+    return await deleteLogNotificationPromise;
+  } finally {
+    deleteLogNotificationPromise = null;
   }
 }
 
@@ -938,15 +1176,15 @@ function createMailer() {
       }
 
       const transferredAt = formatDateTime(transfer?.transferredAt || new Date().toISOString());
-      const subject = `Driver transfer: ${order.reference || "Route Ledger entry"} -> ${transfer?.toDriverName || "New driver"}`;
+      const subject = `Driver transfer: ${getOrderPrimaryDisplay(order) || "Route Ledger entry"} -> ${transfer?.toDriverName || "New driver"}`;
       const text = [
         "A driver transferred an active Route Ledger entry.",
         "",
         `Transferred by: ${transfer?.initiatedByName || "Driver"}`,
         `From driver: ${transfer?.fromDriverName || "Unknown driver"}`,
         `To driver: ${transfer?.toDriverName || "Unknown driver"}`,
-        `Reference: ${order.reference || "Unknown"}`,
-        `Order references: ${getOrderReferenceSummary(order) || "None"}`,
+        `Entry: ${getOrderPrimaryDisplay(order) || "Unknown"}`,
+        `Other references: ${getOrderOtherReferenceLines(order).join(" | ") || "None"}`,
         `Stock required: ${String(order.stockDescription || "").trim() || "Not set"}`,
         `Branding: ${String(order.branding || "").trim() || "None"}`,
         `Entry type: ${getOrderEntryTypeLabel(order.entryType) || "Not set"}`,
@@ -1015,6 +1253,58 @@ function createMailer() {
         lines.push("Entries:");
         affectedOrders.forEach((order) => {
           lines.push(`- ${formatAdminActionOrderLine(order)}`);
+        });
+      }
+
+      if (remainingCount > 0) {
+        lines.push(`- Plus ${remainingCount} more entr${remainingCount === 1 ? "y" : "ies"}`);
+      }
+
+      await sendMessage({
+        from: status.from,
+        to: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        subject,
+        text: lines.join("\n"),
+      });
+
+      return {
+        ok: true,
+        sentTo: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        sentFrom: status.from,
+        subject,
+        count: affectedCount,
+      };
+    },
+    async sendOrderDeleteLogEmail(entries) {
+      if (!status.configured) {
+        throw createHttpError(503, status.reason || "Email delivery is not configured.");
+      }
+
+      const items = Array.isArray(entries) ? entries.filter(Boolean) : [];
+      const affectedCount = items.length;
+      if (!affectedCount) {
+        return {
+          ok: true,
+          skipped: true,
+          count: 0,
+        };
+      }
+
+      const previewItems = items.slice(0, 25);
+      const remainingCount = Math.max(affectedCount - previewItems.length, 0);
+      const itemLabel = affectedCount === 1 ? "entry" : "entries";
+      const subject = `Logictics Centre delete log (${affectedCount} ${itemLabel})`;
+      const lines = [
+        "One or more entries were deleted and captured in the server delete log.",
+        "",
+        `Deleted entries: ${affectedCount}`,
+      ];
+
+      if (previewItems.length) {
+        lines.push("");
+        lines.push("Deleted items:");
+        previewItems.forEach((entry) => {
+          lines.push(`- ${formatDeletedOrderLogLine(entry)}`);
         });
       }
 
@@ -1286,16 +1576,39 @@ function buildRpcQuery(functionName, parameterCount) {
   return `select public.${functionName}(${placeholders}) as data`;
 }
 
-function getOrderReferenceSummary(order) {
+function getOrderQuoteNumber(order) {
+  return String(order?.quoteNumber || "").trim();
+}
+
+function getOrderSalesOrderNumber(order) {
+  const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
+  if (!salesOrderNumber) {
+    return "";
+  }
+
+  const orderNumber = String(order?.orderNumber || "").trim();
+  if (orderNumber && salesOrderNumber.toLowerCase() === `legacy-${orderNumber}`.toLowerCase()) {
+    return "";
+  }
+
+  return salesOrderNumber;
+}
+
+function getOrderPrimaryDisplay(order) {
+  const quoteNumber = getOrderQuoteNumber(order);
+  if (quoteNumber) {
+    return `Quote ${quoteNumber}`;
+  }
+
+  const orderNumber = String(order?.orderNumber || "").trim();
+  return orderNumber ? `Entry ${orderNumber}` : "Entry";
+}
+
+function getOrderOtherReferenceLines(order) {
   const lines = [];
-  const quoteNumber = String(order?.quoteNumber || order?.inhouseOrderNumber || "").trim();
-  const salesOrderNumber = String(order?.salesOrderNumber || order?.factoryOrderNumber || "").trim();
+  const salesOrderNumber = getOrderSalesOrderNumber(order);
   const invoiceNumber = String(order?.invoiceNumber || "").trim();
   const poNumber = String(order?.poNumber || "").trim();
-
-  if (quoteNumber) {
-    lines.push(`Quote ${quoteNumber}`);
-  }
 
   if (salesOrderNumber) {
     lines.push(`SO ${salesOrderNumber}`);
@@ -1309,7 +1622,12 @@ function getOrderReferenceSummary(order) {
     lines.push(`PO ${poNumber}`);
   }
 
-  return lines.join(" | ");
+  return lines;
+}
+
+function getOrderReferenceSummary(order) {
+  const primary = getOrderPrimaryDisplay(order);
+  return [primary, ...getOrderOtherReferenceLines(order)].filter(Boolean).join(" | ");
 }
 
 function getOrderPriority(order) {
@@ -1352,11 +1670,11 @@ function getOrderDriverHandoffCsvValue(order) {
 }
 
 function formatAdminActionOrderLine(order) {
-  const reference = String(order?.reference || "Unknown").trim() || "Unknown";
+  const reference = getOrderPrimaryDisplay(order);
   const locationName = String(order?.locationName || "Unknown location").trim() || "Unknown location";
   const driverName = String(order?.driverName || "").trim() || "Unassigned";
   const schedule = getOrderScheduleSummary(order) || "Not scheduled";
-  const references = getOrderReferenceSummary(order);
+  const references = getOrderOtherReferenceLines(order).join(" | ");
   const parts = [
     reference,
     locationName,
@@ -1449,7 +1767,7 @@ function getOrderScheduleSummary(order) {
 
 function buildOrderCsvRow(order) {
   return [
-    order.reference || "",
+    getOrderQuoteNumber(order),
     order.driverName || "Unassigned",
     getOrderPickupCsvValue(order),
     getOrderDriverHandoffCsvValue(order),
@@ -1458,7 +1776,7 @@ function buildOrderCsvRow(order) {
     order.deliveryAddress || "",
     getOrderEntryTypeLabel(order.entryType),
     capitalize(getOrderPriority(order)),
-    getOrderReferenceSummary(order),
+    getOrderOtherReferenceLines(order).join(" | "),
     order.stockDescription || "",
     order.branding || "",
     order.moveToFactory ? "Yes" : "No",
@@ -1478,7 +1796,7 @@ function buildOrdersCsv(orders) {
   const lineBreak = "\r\n";
   const rows = [
     [
-      "Reference",
+      "Quote",
       "Assigned driver",
       "Picked up by",
       "Driver handoff",
@@ -1487,7 +1805,7 @@ function buildOrdersCsv(orders) {
       "Delivery address",
       "Entry type",
       "Priority",
-      "Order references",
+      "Other references",
       "Stock required",
       "Branding",
       "Move to factory",
@@ -1791,12 +2109,35 @@ function groupCarryOverOrdersByDriver(orders) {
 }
 
 function getCarryOverEmailOrderTitle(order) {
-  const reference = String(order?.reference || "").trim();
+  const reference = getOrderPrimaryDisplay(order);
   const customerName = String(order?.customerName || "").trim();
   const locationName = String(order?.locationName || "").trim();
   return [reference || "Route Ledger entry", customerName || "", locationName || ""]
     .filter(Boolean)
     .join(" | ");
+}
+
+function formatDeletedOrderLogLine(entry) {
+  const reference = getOrderPrimaryDisplay(entry);
+  const locationName = String(entry?.locationName || "Unknown location").trim() || "Unknown location";
+  const driverName = String(entry?.driverName || "").trim() || "Unassigned";
+  const deletedByName = String(entry?.deletedByName || "Unknown user").trim() || "Unknown user";
+  const deletedByRole = capitalize(String(entry?.deletedByRole || "").trim()) || "User";
+  const deletedAt = formatDateTime(entry?.deletedAt) || "Just now";
+  const otherReferences = getOrderOtherReferenceLines(entry).join(" | ");
+  const parts = [
+    reference,
+    locationName,
+    `Driver: ${driverName}`,
+    `Deleted by: ${deletedByName} (${deletedByRole})`,
+    `Deleted at: ${deletedAt}`,
+  ];
+
+  if (otherReferences) {
+    parts.push(otherReferences);
+  }
+
+  return parts.join(" | ");
 }
 
 function buildCarryOverEmailOrderDetails(order) {
@@ -1806,8 +2147,8 @@ function buildCarryOverEmailOrderDetails(order) {
   const deliveryAddress = String(order?.deliveryAddress || "").trim();
   const collectionDestination = getCollectionDestinationLabel(order);
   const priority = capitalize(getOrderPriority(order));
-  const quoteNumber = String(order?.quoteNumber || "").trim();
-  const salesOrderNumber = String(order?.salesOrderNumber || "").trim();
+  const quoteNumber = getOrderQuoteNumber(order);
+  const salesOrderNumber = getOrderSalesOrderNumber(order);
   const invoiceNumber = String(order?.invoiceNumber || "").trim();
   const poNumber = String(order?.poNumber || "").trim();
   const scheduleText = buildCarryOverScheduleText(order);
