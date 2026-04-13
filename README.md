@@ -2,6 +2,10 @@
 
 Route Ledger is a Neon-backed browser app for managing driver-separated pickup and delivery entries.
 
+## User guide
+
+- End-user walkthrough: [USER-WALKTHROUGH.md](USER-WALKTHROUGH.md)
+
 ## Current workflow
 
 - The browser talks only to the local Node server.

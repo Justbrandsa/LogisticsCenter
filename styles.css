@@ -375,6 +375,53 @@ button:disabled,
   padding: 1rem;
 }
 
+.guide-hero .chip-row {
+  margin-top: 0.85rem;
+}
+
+.guide-grid {
+  align-items: start;
+}
+
+.guide-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.guide-panel .panel-subtitle {
+  margin-bottom: 0;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--muted);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.guide-list li {
+  padding-left: 0.1rem;
+}
+
+.guide-list strong {
+  color: var(--text);
+}
+
+.guide-note {
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(27, 106, 90, 0.08);
+  color: var(--muted);
+}
+
+.guide-sidebar-card .button,
+.guide-sidebar-card button {
+  width: 100%;
+}
+
 .summary-panel {
   min-height: 100%;
 }

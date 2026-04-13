@@ -33,6 +33,135 @@ const PAGE_SIZES = {
   driverLists: 3,
   completedEntries: 10,
 };
+const GUIDE_PAGE_SUMMARIES = Object.freeze({
+  dashboard: "Start here for the live summary of the workspace.",
+  entries: "Create work, search the grouped global register, and handle CSV or email actions.",
+  assignments: "Move active work onto drivers or back to the queue.",
+  stock: "Review stock activity, QR tools, movement history, and artwork requests according to your permissions.",
+  network: "Maintain the pickup and factory locations used throughout the app.",
+  users: "Manage team accounts, roles, passwords, and driver phone numbers.",
+  drivers: "Review each driver's live stop sequence and route context.",
+  route: "Work through your assigned stops, navigate to locations, and update entry progress.",
+  completed: "Review work already finished and separated from the live route.",
+  guide: "Read the walkthrough for your current role.",
+});
+const ROLE_GUIDES = Object.freeze({
+  admin: {
+    title: "How to use the admin workspace",
+    subtitle: "Admins can create work, dispatch it, maintain master data, and clean up the live system when needed.",
+    overview: "This guide changes with the signed-in role. As an admin, you have the widest set of controls, including account management, location maintenance, duplicate overrides, stock item editing, and delete actions.",
+    pageNotes: {
+      dashboard: "Check open entries, unassigned work, driver coverage, and completed items at a glance.",
+      entries: "Create entries, group them by pickup location, and send or download the live CSV.",
+      assignments: "Load queued work onto drivers, rebalance active work, or return items to Unassigned.",
+      stock: "Manage stock items, correct movement records, use QR tools, and send artwork requests.",
+      network: "Maintain supplier and factory pickup locations, addresses, and optional coordinates.",
+      users: "Create, edit, disable, or delete admin, sales, driver, and logistics accounts.",
+      drivers: "Review each driver's live route sequence and the last recorded driver positions.",
+    },
+    dailyFlow: [
+      "Start on Dashboard to review open work, unassigned entries, driver count, and completed items.",
+      "Use Global List to create new work and review the grouped live register.",
+      "Move queued work onto drivers from Assignments once dispatch is ready.",
+      "Check Driver Lists to confirm route order, priority stops, and recorded driver positions.",
+      "Use Stock for QR labels, movement corrections, and artwork requests.",
+    ],
+    keyTasks: [
+      { label: "Create entries", text: "Saving an entry also creates matching stock items from the stock description." },
+      { label: "Dispatch cleanly", text: "Leave items Unassigned until the route is ready, then allocate them from Assignments." },
+      { label: "Use override carefully", text: "Admin override is intended for deliberate duplicates or same-day return stops." },
+      { label: "Protect history", text: "Deleting a stock item also removes its movement and artwork history." },
+    ],
+    tips: [
+      "Search before creating duplicates, especially when a quote or stop may already be active.",
+      "Add coordinates to locations when possible so route maps can optimize stop order.",
+      "Clear rollover markers only after the carry-over report has been checked.",
+    ],
+  },
+  sales: {
+    title: "How to use the sales workspace",
+    subtitle: "Sales can create work, assign active items, review live driver queues, and share the global CSV.",
+    overview: "The sales role is focused on creating and dispatching work. You can move quickly through live entries without accessing admin-only override, delete, or stock-edit controls.",
+    pageNotes: {
+      dashboard: "Monitor driver coverage, your entry volume, open work, and unassigned items.",
+      entries: "Create entries, review the grouped live list, and handle CSV or email actions.",
+      assignments: "Work through the unassigned queue and rebalance active work when route plans change.",
+      stock: "Use stock as a read-only reference for recent arrivals, on-hand quantities, and history.",
+      drivers: "Review the live queues per driver and confirm the current stop order.",
+    },
+    dailyFlow: [
+      "Create new work from Global List and leave the driver Unassigned if dispatch will decide later.",
+      "Use Assignments to work through the unassigned queue and rebalance active entries.",
+      "Check Driver Lists to confirm what each driver is carrying today.",
+      "Download or email the CSV once the live list is ready to share.",
+    ],
+    keyTasks: [
+      { label: "Create work", text: "Enter the quote first, then add stock description, pickup location, and delivery details if needed." },
+      { label: "Assign work", text: "Use the Assignments filter to focus on Unassigned items and load them onto drivers quickly." },
+      { label: "Share the list", text: "Use Download CSV, Test Email, or Email CSV from Global List." },
+      { label: "Check stock", text: "Use Stock for visibility into recent arrivals and what is currently on hand." },
+    ],
+    tips: [
+      "Sales cannot use admin override, delete entries, or edit stock records.",
+      "Duplicate checks and completed-stop protection still apply when a driver is selected.",
+      "Search Global List before creating a new entry for the same quote or location.",
+    ],
+  },
+  logistics: {
+    title: "How to use the logistics workspace",
+    subtitle: "Logistics is centered on stock visibility, movement logging, QR workflows, and artwork requests.",
+    overview: "The logistics role keeps the stock ledger current without exposing user management or dispatch controls. Everything you need lives on the Stock page.",
+    pageNotes: {
+      dashboard: "Check stock totals, movement volume, and artwork request counts at a glance.",
+      stock: "Add stock items, log stock in and out, use QR labels, and send artwork requests.",
+    },
+    dailyFlow: [
+      "Review Recent activity to see what arrived or shipped in the last 24 hours.",
+      "Add new stock items when fresh work is received and link them to the right references.",
+      "Log stock in and stock out movements as they happen.",
+      "Use QR labels or QR scanning to speed up item selection.",
+      "Send artwork requests when the next production step needs to begin.",
+    ],
+    keyTasks: [
+      { label: "Add stock", text: "Each new stock item needs a description, at least one reference, and a positive opening quantity." },
+      { label: "Log movements", text: "Record supplier details for stock in and the driver for stock out so the ledger stays traceable." },
+      { label: "Use QR tools", text: "Open QR from the stock register or use Scan QR inside the movement form." },
+      { label: "Request artwork", text: "Send quantity and notes directly from the stock workspace when artwork is needed." },
+    ],
+    tips: [
+      "Logistics can add stock items and manage movements, but only admins can edit or delete an existing stock item.",
+      "If live camera scanning fails, upload a QR image or type the printed QR value manually.",
+      "If email buttons are disabled, mail delivery is not configured yet.",
+    ],
+  },
+  driver: {
+    title: "How to use the driver workspace",
+    subtitle: "Drivers only see their own live route and completed work, keeping the day focused and simple.",
+    overview: "Your guide is built around the Route page. Work through stops in order, keep the office updated with follow-up notes, and move finished work onto Completed.",
+    pageNotes: {
+      route: "Open your stops in order, navigate to each location, and update entry progress as the job moves.",
+      completed: "Review the jobs you already finished without cluttering the live route.",
+    },
+    dailyFlow: [
+      "Open Route and allow location access if you want the map to start from your current position.",
+      "Work through each stop in order and use Navigate when you need directions.",
+      "Mark an item Picked up once it is on the vehicle.",
+      "Complete the item when it reaches the client, office, or factory destination.",
+      "Use Flag issue or Transfer whenever the route plan changes or a stop cannot be completed.",
+    ],
+    keyTasks: [
+      { label: "Navigate", text: "Use the Navigate button to open the stop directly in Google Maps." },
+      { label: "Progress work", text: "Mark entries Picked up before completing them so handover history stays clear." },
+      { label: "Flag problems", text: "Use Not collected or Not yet ready and add a driver note the office can act on." },
+      { label: "Transfer items", text: "Move an active entry to another active driver when the route needs to change." },
+    ],
+    tips: [
+      "Completed items leave the Route page and appear on Completed.",
+      "If location access is blocked, route planning starts from the Johannesburg Dispatch Hub instead.",
+      "Priority stops are highlighted first when the route can be mapped with coordinates.",
+    ],
+  },
+});
 const HUB = {
   label: "Johannesburg Dispatch Hub",
   lat: -26.2041,
@@ -3283,6 +3412,7 @@ function getNavigationItems(role) {
       { id: "network", label: "Network" },
       { id: "users", label: "Users" },
       { id: "drivers", label: "Driver Lists" },
+      { id: "guide", label: "Guide" },
     ];
   }
 
@@ -3293,6 +3423,7 @@ function getNavigationItems(role) {
       { id: "assignments", label: "Assignments" },
       { id: "stock", label: "Stock" },
       { id: "drivers", label: "Driver Lists" },
+      { id: "guide", label: "Guide" },
     ];
   }
 
@@ -3300,12 +3431,14 @@ function getNavigationItems(role) {
     return [
       { id: "dashboard", label: "Dashboard" },
       { id: "stock", label: "Stock" },
+      { id: "guide", label: "Guide" },
     ];
   }
 
   return [
     { id: "route", label: "Route" },
     { id: "completed", label: "Completed" },
+    { id: "guide", label: "Guide" },
   ];
 }
 
@@ -3551,6 +3684,7 @@ function renderAdminScreen() {
           </p>
           <p class="muted">Use the Global List page for CSV delivery and the Stock page for artwork requests.</p>
         </div>
+        ${renderGuideSidebarCard("admin")}
       </aside>
       <div class="content">
         ${renderAdminPageContent()}
@@ -3583,6 +3717,7 @@ function renderSalesScreen() {
           </p>
           <p class="muted">Sales users can test email delivery, but they still cannot bypass duplicate checks or send a driver back to a stop they already completed today.</p>
         </div>
+        ${renderGuideSidebarCard("sales")}
       </aside>
       <div class="content">
         ${renderSalesPageContent()}
@@ -3618,6 +3753,7 @@ function renderLogisticsScreen() {
           </p>
           <p class="muted">Use the Stock page to log movements, review history, and send artwork requests once stock is queued.</p>
         </div>
+        ${renderGuideSidebarCard("logistics")}
       </aside>
       <div class="content">
         ${renderLogisticsPageContent()}
@@ -3649,12 +3785,116 @@ function renderDriverScreen() {
             page.
           </p>
         </div>
+        ${renderGuideSidebarCard("driver")}
       </aside>
       <div class="content">
         ${renderDriverPageContent()}
       </div>
     </section>
   `;
+}
+
+function renderGuideSidebarCard(role) {
+  const guide = ROLE_GUIDES[role];
+  if (!guide) {
+    return "";
+  }
+
+  return `
+    <div class="sidebar-card guide-sidebar-card">
+      <h3>Guide</h3>
+      <p class="muted">${escapeHtml(guide.subtitle)}</p>
+      <button class="button button-ghost" data-action="navigate-page" data-page-id="guide"${state.busy ? " disabled" : ""}>
+        Open Guide
+      </button>
+    </div>
+  `;
+}
+
+function renderRoleGuidePage(role) {
+  const guide = ROLE_GUIDES[role];
+  if (!guide) {
+    return "";
+  }
+
+  return `
+    <section class="hero-card guide-hero">
+      <p class="eyebrow">${escapeHtml(capitalize(role))} guide</p>
+      <h2>${escapeHtml(guide.title)}</h2>
+      <p>${escapeHtml(guide.overview)}</p>
+      <div class="chip-row">
+        <span class="chip chip-role-${escapeHtml(role)}">${escapeHtml(capitalize(role))}</span>
+        <span class="chip">${escapeHtml(String(getNavigationItems(role).length))} pages</span>
+        <span class="chip">Role-based walkthrough</span>
+      </div>
+    </section>
+    ${renderFlash()}
+    <section class="panel-grid guide-grid">
+      ${renderGuidePanel({
+        eyebrow: "Your pages",
+        title: "What each page is for",
+        subtitle: guide.subtitle,
+        items: getNavigationItems(role).map((item) => ({
+          label: item.label,
+          text: guide.pageNotes?.[item.id] || GUIDE_PAGE_SUMMARIES[item.id] || "Use this page for the actions available to your role.",
+        })),
+      })}
+      ${renderGuidePanel({
+        eyebrow: "Daily flow",
+        title: "Recommended routine",
+        items: guide.dailyFlow,
+        ordered: true,
+      })}
+      ${renderGuidePanel({
+        eyebrow: "Key tasks",
+        title: "What matters most in this role",
+        items: guide.keyTasks,
+      })}
+      ${renderGuidePanel({
+        eyebrow: "Keep in mind",
+        title: "Important tips and limits",
+        items: guide.tips,
+      })}
+    </section>
+  `;
+}
+
+function renderGuidePanel({ eyebrow, title, subtitle = "", items = [], ordered = false }) {
+  return `
+    <article class="panel guide-panel">
+      <p class="eyebrow">${escapeHtml(eyebrow)}</p>
+      <h3 class="panel-title">${escapeHtml(title)}</h3>
+      ${subtitle ? `<p class="panel-subtitle">${escapeHtml(subtitle)}</p>` : ""}
+      ${renderGuideList(items, ordered)}
+    </article>
+  `;
+}
+
+function renderGuideList(items = [], ordered = false) {
+  if (!items.length) {
+    return '<p class="guide-note">No guide items are available for this role yet.</p>';
+  }
+
+  const tagName = ordered ? "ol" : "ul";
+  return `
+    <${tagName} class="guide-list">
+      ${items.map((item) => renderGuideListItem(item)).join("")}
+    </${tagName}>
+  `;
+}
+
+function renderGuideListItem(item) {
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    const label = String(item.label || "").trim();
+    const text = String(item.text || "").trim();
+    if (label && text) {
+      return `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(text)}</li>`;
+    }
+
+    return `<li>${escapeHtml(label || text || "")}</li>`;
+  }
+
+  return `<li>${escapeHtml(String(item || "").trim())}</li>`;
 }
 
 function renderAdminPageContent() {
@@ -3744,6 +3984,10 @@ function renderAdminPageContent() {
     `;
   }
 
+  if (state.currentPage === "guide") {
+    return renderRoleGuidePage("admin");
+  }
+
   return `
     <section class="hero-card">
       <p class="eyebrow">Dashboard</p>
@@ -3828,6 +4072,10 @@ function renderSalesPageContent() {
     `;
   }
 
+  if (state.currentPage === "guide") {
+    return renderRoleGuidePage("sales");
+  }
+
   return `
     <section class="hero-card">
       <p class="eyebrow">Dashboard</p>
@@ -3861,6 +4109,10 @@ function renderLogisticsPageContent() {
       title: "Logistics stock workspace",
       subtitle: "Manage stock in, stock out, and artwork requests without leaving the logistics workflow.",
     });
+  }
+
+  if (state.currentPage === "guide") {
+    return renderRoleGuidePage("logistics");
   }
 
   return `
@@ -4582,6 +4834,10 @@ function renderDriverPageContent() {
   const currentUser = state.snapshot.user;
   const plan = getRoutePlan(currentUser.id);
   const completedOrders = getCompletedOrders(currentUser.id);
+
+  if (state.currentPage === "guide") {
+    return renderRoleGuidePage("driver");
+  }
 
   if (state.currentPage === "completed") {
     return `
