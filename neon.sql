@@ -687,6 +687,55 @@ as $$
   );
 $$;
 
+create or replace function private.ensure_office_location(p_actor_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_location_id uuid;
+begin
+  select l.id
+  into v_location_id
+  from private.locations l
+  where l.supplier_id is null
+    and lower(btrim(l.name)) = 'office'
+  order by l.created_at
+  limit 1;
+
+  if v_location_id is null then
+    insert into private.locations (
+      supplier_id,
+      location_type,
+      name,
+      address,
+      lat,
+      lng,
+      contact_person,
+      contact_number,
+      notes,
+      created_by
+    )
+    values (
+      null,
+      'supplier',
+      'Office',
+      'Giftwrap Office',
+      null,
+      null,
+      '',
+      '',
+      'System pickup location for office-origin entries.',
+      p_actor_id
+    )
+    returning id into v_location_id;
+  end if;
+
+  return v_location_id;
+end;
+$$;
+
 create or replace function private.issue_session(p_user_id uuid)
 returns uuid
 language plpgsql
@@ -739,6 +788,22 @@ begin
   where token = p_token;
 
   return v_user;
+end;
+$$;
+
+do $$
+declare
+  v_user_id uuid;
+begin
+  select id
+  into v_user_id
+  from private.app_users
+  order by created_at
+  limit 1;
+
+  if v_user_id is not null then
+    perform private.ensure_office_location(v_user_id);
+  end if;
 end;
 $$;
 
@@ -949,6 +1014,8 @@ begin
   insert into private.app_users (name, role, password_hash)
   values (v_name, 'admin', private.hash_password(v_password))
   returning * into v_user;
+
+  perform private.ensure_office_location(v_user.id);
 
   v_token := private.issue_session(v_user.id);
 
@@ -1842,6 +1909,10 @@ begin
     raise exception 'Location name and address are required.';
   end if;
 
+  if lower(v_name) = 'office' then
+    raise exception 'Office already exists as a built-in location. Edit it instead.';
+  end if;
+
   if (p_lat is null) <> (p_lng is null) then
     raise exception 'Latitude and longitude must both be provided, or both left blank.';
   end if;
@@ -1893,6 +1964,7 @@ set search_path = ''
 as $$
 declare
   v_actor private.app_users;
+  v_existing private.locations;
   v_location_type text := lower(nullif(btrim(p_location_type), ''));
   v_name text := nullif(btrim(p_name), '');
   v_address text := nullif(btrim(p_address), '');
@@ -1913,12 +1985,23 @@ begin
     raise exception 'Latitude and longitude must both be provided, or both left blank.';
   end if;
 
-  if not exists (
-    select 1
-    from private.locations
-    where id = p_location_id
-  ) then
+  select *
+  into v_existing
+  from private.locations
+  where id = p_location_id;
+
+  if v_existing.id is null then
     raise exception 'Location not found.';
+  end if;
+
+  if v_existing.supplier_id is null and lower(btrim(v_existing.name)) = 'office' then
+    if lower(v_name) <> 'office' then
+      raise exception 'Office is a built-in location and must stay named Office.';
+    end if;
+
+    v_location_type := 'supplier';
+  elsif lower(v_name) = 'office' then
+    raise exception 'Office is reserved as a built-in location.';
   end if;
 
   update private.locations
@@ -1946,8 +2029,22 @@ set search_path = ''
 as $$
 declare
   v_actor private.app_users;
+  v_location private.locations;
 begin
   v_actor := private.require_user(p_token, array['admin']);
+
+  select *
+  into v_location
+  from private.locations
+  where id = p_location_id;
+
+  if v_location.id is null then
+    raise exception 'Location not found.';
+  end if;
+
+  if v_location.supplier_id is null and lower(btrim(v_location.name)) = 'office' then
+    raise exception 'Office is a built-in location and cannot be deleted.';
+  end if;
 
   if exists (
     select 1
@@ -2828,8 +2925,8 @@ begin
     raise exception 'Order not found.';
   end if;
 
-  if v_order.status <> 'active' then
-    raise exception 'Only active entries can be edited.';
+  if v_order.status not in ('active', 'completed') then
+    raise exception 'This entry cannot be edited.';
   end if;
 
   if v_entry_type not in ('collection', 'delivery') then
@@ -2898,7 +2995,8 @@ begin
     v_factory_destination_location_id := null;
   end if;
 
-  if p_driver_user_id is not null
+  if v_order.status = 'active'
+     and p_driver_user_id is not null
      and exists (
        select 1
        from private.orders
@@ -2911,7 +3009,8 @@ begin
     raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
   end if;
 
-  if p_driver_user_id is not null
+  if v_order.status = 'active'
+     and p_driver_user_id is not null
      and exists (
        select 1
        from private.orders
@@ -2938,7 +3037,8 @@ begin
       stock_description = v_stock_description,
       delivery_address = v_delivery_address,
       priority = case
-        when v_order.driver_user_id is not null
+        when v_order.status = 'active'
+          and v_order.driver_user_id is not null
           and p_driver_user_id is null
           and v_order.carry_over_count > 0
           and v_priority = 'high'
@@ -2949,15 +3049,18 @@ begin
       move_to_factory = v_move_to_factory,
       factory_destination_location_id = v_factory_destination_location_id,
       scheduled_for = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        when v_order.status = 'active'
+          and (v_order.driver_user_id is null or p_driver_user_id is null) then v_today
         else scheduled_for
       end,
       original_scheduled_for = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
+        when v_order.status = 'active'
+          and (v_order.driver_user_id is null or p_driver_user_id is null) then v_today
         else original_scheduled_for
       end,
       carry_over_count = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then 0
+        when v_order.status = 'active'
+          and (v_order.driver_user_id is null or p_driver_user_id is null) then 0
         else carry_over_count
       end,
       updated_at = now()

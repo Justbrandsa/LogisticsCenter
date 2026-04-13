@@ -480,7 +480,7 @@ async function refreshSnapshot(options = {}) {
     }
     if (
       state.editingOrderId
-      && !state.snapshot.orders.some((order) => order.id === state.editingOrderId && order.status === "active")
+      && !state.snapshot.orders.some((order) => order.id === state.editingOrderId)
     ) {
       state.editingOrderId = "";
       state.orderEditReturnPage = "";
@@ -723,6 +723,13 @@ function normalizeError(error) {
   const candidate = error.message || error.details || error.hint;
   const message = candidate || "Something went wrong.";
   const lowerMessage = String(message).toLowerCase();
+
+  if (
+    lowerMessage.includes("unknown rpc function")
+    || lowerMessage.includes("request failed with status 404")
+  ) {
+    return "The running server is missing this update. Restart node serve.js, refresh the app, then try again.";
+  }
 
   if (
     lowerMessage.includes("function public.create_order")
@@ -1787,8 +1794,8 @@ async function updateOrder(formData, currentUser) {
 
 function openOrderEditor(orderId) {
   const order = getOrder(orderId);
-  if (!order || order.status !== "active") {
-    showFlash("Only active entries can be edited.", "error");
+  if (!order) {
+    showFlash("That entry could not be found for editing.", "error");
     render();
     return;
   }
@@ -5450,7 +5457,7 @@ function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitl
           <h3 class="panel-title">${isEditing ? "Edit entry" : "Create a new entry"}</h3>
           <p class="panel-subtitle">${escapeHtml(
             isEditing
-              ? "Update the live entry details, then save the correction back into the route list."
+              ? "Update the entry details, then save the correction back into the system."
               : subtitle,
           )}</p>
         </div>
@@ -5470,7 +5477,7 @@ function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitl
               <div class="entry-composer-body">
                 ${
                   isEditing
-                    ? `<p class="field-note">Editing updates the live entry. Existing stock item records are not renamed automatically, so correct stock references separately if needed.</p>`
+                    ? `<p class="field-note">Editing updates the saved entry details. Existing stock item records are not renamed automatically, so correct stock references separately if needed.</p>`
                     : ""
                 }
                 ${renderEntryForm(currentUser, allowDuplicateOverride, { order: editingOrder })}
@@ -5946,7 +5953,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
 
 function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
-  const canEdit = viewerRole === "admin" && order.status === "active";
+  const canEdit = viewerRole === "admin";
   const isPriority = isPriorityOrder(order);
   const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
@@ -6102,9 +6109,10 @@ function renderAdminDriverLocationSection() {
   `;
 }
 
-function renderCompletedOrders(driverUserId) {
+function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.role || "") {
   const completed = getCompletedOrders(driverUserId).sort(orderDisplaySort);
   const page = getPaginationData(completed, "completedEntries", PAGE_SIZES.completedEntries);
+  const canEdit = viewerRole === "admin";
 
   return `
     <section class="table-card">
@@ -6118,6 +6126,7 @@ function renderCompletedOrders(driverUserId) {
               <th>Other references</th>
               <th>Type</th>
               <th>Completed</th>
+              ${canEdit ? "<th>Action</th>" : ""}
             </tr>
           </thead>
           <tbody>
@@ -6134,13 +6143,29 @@ function renderCompletedOrders(driverUserId) {
                             ${escapeHtml(formatDateTime(order.completedAt) || "Not completed")}<br>
                             <span class="muted">${escapeHtml(getOrderCompletionLabel(order) || "Completed")}</span>
                           </td>
+                          ${
+                            canEdit
+                              ? `
+                                <td data-label="Action">
+                                  <button
+                                    class="button button-secondary"
+                                    data-action="edit-order"
+                                    data-order-id="${order.id}"
+                                    ${state.busy ? " disabled" : ""}
+                                  >
+                                    Edit
+                                  </button>
+                                </td>
+                              `
+                              : ""
+                          }
                         </tr>
                       `,
                     )
                     .join("")
                 : `
                   <tr>
-                    <td colspan="4">No completed entries yet.</td>
+                    <td colspan="${canEdit ? "5" : "4"}">No completed entries yet.</td>
                   </tr>
                 `
             }
@@ -7270,15 +7295,33 @@ function renderStockItemOptions(selectedStockItemId = "") {
     .join("");
 }
 
+function isSystemOfficeLocation(location) {
+  return String(location?.name || "").trim().toLowerCase() === "office";
+}
+
 function renderLocationOptions(selectedLocationId = "") {
   if (!state.snapshot.locations.length) {
     return '<option value="">Create a location first</option>';
   }
 
+  const sortedLocations = [...state.snapshot.locations].sort((left, right) => {
+    const leftOfficeRank = isSystemOfficeLocation(left) ? 0 : 1;
+    const rightOfficeRank = isSystemOfficeLocation(right) ? 0 : 1;
+    if (leftOfficeRank !== rightOfficeRank) {
+      return leftOfficeRank - rightOfficeRank;
+    }
+
+    return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+      sensitivity: "base",
+    });
+  });
+
   return [
     `<option value=""${selectedLocationId ? "" : " selected"}>Select a location</option>`,
-    ...state.snapshot.locations.map((location) => {
-      const typeLabel = location.locationType ? ` - ${escapeHtml(capitalize(location.locationType))}` : "";
+    ...sortedLocations.map((location) => {
+      const typeLabel = !isSystemOfficeLocation(location) && location.locationType
+        ? ` - ${escapeHtml(capitalize(location.locationType))}`
+        : "";
       return `<option value="${location.id}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(location.name)}${typeLabel}</option>`;
     }),
   ].join("");
