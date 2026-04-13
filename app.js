@@ -1630,6 +1630,7 @@ async function createOrder(formData, currentUser) {
   const driverUserId = String(formData.get("driverUserId") || "").trim();
   const locationId = String(formData.get("locationId") || "").trim();
   const entryType = String(formData.get("entryType") || "delivery").trim();
+  const scheduledFor = String(formData.get("scheduledFor") || getDefaultScheduledDateValue()).trim();
   const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
@@ -1646,6 +1647,12 @@ async function createOrder(formData, currentUser) {
 
   if (!locationId || !entryType || !quoteNumber) {
     showFlash("Pickup location, entry type, and quote number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!scheduledFor) {
+    showFlash("Choose which date this entry should appear on the driver list.", "error");
     render();
     return;
   }
@@ -1683,6 +1690,7 @@ async function createOrder(formData, currentUser) {
       p_stock_description: stockDescription,
       p_stock_item_names: stockItemNames.length ? stockItemNames : null,
       p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
+      p_scheduled_for: scheduledFor,
       p_priority: priority,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
@@ -1705,6 +1713,7 @@ async function updateOrder(formData, currentUser) {
   const driverUserId = String(formData.get("driverUserId") || "").trim();
   const locationId = String(formData.get("locationId") || "").trim();
   const entryType = String(formData.get("entryType") || "delivery").trim();
+  const scheduledFor = String(formData.get("scheduledFor") || getDefaultScheduledDateValue()).trim();
   const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
@@ -1726,6 +1735,12 @@ async function updateOrder(formData, currentUser) {
 
   if (!locationId || !entryType || !quoteNumber) {
     showFlash("Pickup location, entry type, and quote number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!scheduledFor) {
+    showFlash("Choose which date this entry should appear on the driver list.", "error");
     render();
     return;
   }
@@ -1763,6 +1778,7 @@ async function updateOrder(formData, currentUser) {
       p_branding: branding,
       p_stock_description: stockDescription,
       p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
+      p_scheduled_for: scheduledFor,
       p_priority: priority,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
       p_notice: notice,
@@ -5129,7 +5145,7 @@ function renderArtworkRequestsSection() {
 
 function renderDriverPageContent() {
   const currentUser = state.snapshot.user;
-  const plan = getRoutePlan(currentUser.id);
+  const plan = getRoutePlan(currentUser.id, { scheduledFor: getLiveScheduleDate() });
   const completedOrders = getCompletedOrders(currentUser.id);
 
   if (state.currentPage === "guide") {
@@ -5157,7 +5173,7 @@ function renderDriverPageContent() {
     <section class="hero-card">
       <p class="eyebrow">Route</p>
       <h2>Optimized run sheet for your live active entries</h2>
-      <p>You only see the entries assigned to your name. Completing an entry removes it from the live route sequence.</p>
+      <p>You only see the entries assigned to your name for the live date. Completing an entry removes it from the live route sequence.</p>
     </section>
     ${renderFlash()}
     <section class="metrics">
@@ -5181,7 +5197,7 @@ function renderDriverPageContent() {
           ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver", currentUser.id)).join("")
           : `
             <div class="empty-state">
-              No active entries are assigned to you right now. When work is loaded for you, it will appear here.
+              No active entries are scheduled for you today. Future-dated work will appear here on the scheduled day.
             </div>
           `
       }
@@ -5496,6 +5512,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
   const selectedDriverId = String(editingOrder?.driverUserId || "").trim();
   const selectedLocationId = String(editingOrder?.locationId || "").trim();
   const entryType = String(editingOrder?.entryType || "delivery").trim() || "delivery";
+  const scheduledFor = String(editingOrder?.scheduledFor || getDefaultScheduledDateValue()).trim();
   const createdByName = String(editingOrder?.createdByName || currentUser.name || "").trim();
   const deliveryAddress = String(editingOrder?.deliveryAddress || "").trim();
   const quoteNumber = String(editingOrder?.quoteNumber || "").trim();
@@ -5529,7 +5546,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
       <p class="field-note">
         Leave the driver as Unassigned if dispatch will allocate it later.
       </p>
-      <div class="form-grid">
+      <div class="form-grid-3">
         <label>
           Collection or delivery
           <select name="entryType" required>
@@ -5538,10 +5555,17 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
           </select>
         </label>
         <label>
+          Scheduled date
+          <input name="scheduledFor" type="date" value="${escapeHtml(scheduledFor)}" required>
+        </label>
+        <label>
           ${isEditing ? "Originally created by" : "Created by"}
           <input class="readonly-field" type="text" value="${escapeHtml(createdByName)}" readonly>
         </label>
       </div>
+      <p class="field-note">
+        Use a future date to plan work ahead of time. The daily CSV and email export only include entries scheduled for the live date.
+      </p>
       <label class="hidden" data-delivery-address-field>
         Delivery address
         <textarea
@@ -5973,6 +5997,7 @@ function renderGlobalOrderCard(order, viewerRole) {
         </div>
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
+          ${renderOrderScheduledChip(order)}
           ${renderOrderPriorityChip(order)}
           ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
@@ -6233,6 +6258,7 @@ function renderAssignmentRow(order, viewerRole) {
         ${renderOrderStockDetails(order)}
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
+          ${renderOrderScheduledChip(order)}
           ${renderOrderPriorityChip(order)}
           ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
@@ -6793,6 +6819,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
                 ${renderOrderStockDetails(order)}
                 <div class="chip-row">
                   ${renderTypeChip(order.entryType)}
+                  ${renderOrderScheduledChip(order)}
                   ${renderOrderPriorityChip(order)}
                   ${renderOrderPickupChip(order)}
                   ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
@@ -7414,6 +7441,41 @@ function getOrdersForDriver(driverUserId) {
   return state.snapshot.orders.filter((order) => order.driverUserId === driverUserId);
 }
 
+function getCurrentLocalDateValue() {
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: TIME_ZONE,
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value || "";
+  const month = parts.find((part) => part.type === "month")?.value || "";
+  const day = parts.find((part) => part.type === "day")?.value || "";
+  return [year, month, day].filter(Boolean).join("-");
+}
+
+function getLiveScheduleDate() {
+  return String(state.publicState.today || "").trim();
+}
+
+function getDefaultScheduledDateValue() {
+  return getLiveScheduleDate() || getCurrentLocalDateValue();
+}
+
+function getOrderScheduledForValue(order) {
+  return String(order?.scheduledFor || "").trim();
+}
+
+function filterOrdersForScheduledDate(orders, scheduledFor) {
+  const targetDate = String(scheduledFor || "").trim();
+  const items = Array.isArray(orders) ? orders.filter(Boolean) : [];
+  if (!targetDate) {
+    return items;
+  }
+
+  return items.filter((order) => getOrderScheduledForValue(order) === targetDate);
+}
+
 function getActiveOrders() {
   return state.snapshot.orders.filter((order) => order.status === "active");
 }
@@ -7651,9 +7713,11 @@ function isStopCardOpen(stopCardKey) {
   return state.driverOpenStops[stopCardKey] !== false;
 }
 
-function getRoutePlan(driverUserId) {
+function getRoutePlan(driverUserId, options = {}) {
+  const scheduledFor = String(options?.scheduledFor || "").trim();
   const activeOrders = getOrdersForDriver(driverUserId)
     .filter((order) => order.status === "active")
+    .filter((order) => !scheduledFor || getOrderScheduledForValue(order) === scheduledFor)
     .sort(orderRouteSort);
   const routeOrigin = getRouteOrigin(driverUserId);
 
@@ -8507,9 +8571,10 @@ function buildOrdersCsvContent(orders) {
 }
 
 function exportOrdersCsv() {
-  const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
+  const dateStamp = getLiveScheduleDate() || getCurrentLocalDateValue();
+  const sortedOrders = [...filterOrdersForScheduledDate(state.snapshot.orders, dateStamp)].sort(orderDisplaySort);
   if (!sortedOrders.length) {
-    showFlash("There are no entries to export yet.", "error");
+    showFlash(`There are no entries scheduled for ${formatDateOnly(dateStamp) || "the live date"} yet.`, "error");
     return;
   }
 
@@ -8517,7 +8582,6 @@ function exportOrdersCsv() {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
-  const dateStamp = new Date().toISOString().slice(0, 10);
 
   anchor.href = url;
   anchor.download = `route-ledger-${dateStamp}.csv`;
@@ -8525,7 +8589,7 @@ function exportOrdersCsv() {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
-  showFlash("CSV export downloaded.", "success");
+  showFlash(`CSV export downloaded for ${formatDateOnly(dateStamp) || dateStamp}.`, "success");
 }
 
 async function emailOrdersCsv() {
@@ -8783,6 +8847,15 @@ function getMoveToFactoryText(order) {
 
 function getDriverDisplayName(order) {
   return String(order?.driverName || "").trim() || "Unassigned";
+}
+
+function renderOrderScheduledChip(order) {
+  const scheduledFor = formatDateOnly(getOrderScheduledForValue(order));
+  if (!scheduledFor) {
+    return "";
+  }
+
+  return `<span class="chip">Scheduled: ${escapeHtml(scheduledFor)}</span>`;
 }
 
 function renderDriverAssignmentValue(order) {

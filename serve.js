@@ -102,6 +102,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_stock_description",
       "p_stock_item_names",
       "p_delivery_address",
+      "p_scheduled_for",
       "p_priority",
       "p_allow_duplicate",
       "p_notice",
@@ -123,6 +124,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_branding",
       "p_stock_description",
       "p_delivery_address",
+      "p_scheduled_for",
       "p_priority",
       "p_allow_duplicate",
       "p_notice",
@@ -536,10 +538,12 @@ function createDatabase() {
 
       return result.rows[0]?.data ?? null;
     },
-    async listOrdersForMailExport() {
+    async listOrdersForMailExport(scheduledFor = "") {
       if (!pool) {
         throw createHttpError(503, status.reason || "Database connection is not configured.");
       }
+
+      const targetDate = String(scheduledFor || "").trim() || null;
 
       const result = await pool.query(`
         select
@@ -599,11 +603,12 @@ function createDatabase() {
         left join private.app_users h on h.id = o.completed_by_user_id
         left join private.app_users i on i.id = o.picked_up_by_user_id
         join private.app_users c on c.id = o.created_by_user_id
+        where ($1::date is null or o.scheduled_for = $1::date)
         order by
           case when o.status = 'active' then 0 else 1 end,
           o.created_at desc,
           o.order_number desc
-      `);
+      `, [targetDate]);
 
       return result.rows;
     },
@@ -1015,8 +1020,8 @@ function createMailer() {
         "Only admin or sales users can send email.",
       );
 
-      const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : [];
-      const dateStamp = new Date().toISOString().slice(0, 10);
+      const dateStamp = String(snapshot?.today || "").trim() || getCurrentLocalDateValue();
+      const orders = filterOrdersForScheduledDate(snapshot?.orders, dateStamp);
       const filename = `route-ledger-${dateStamp}.csv`;
       const subject = `Route Ledger CSV export ${dateStamp}`;
 
@@ -1119,10 +1124,10 @@ function createMailer() {
         };
       }
 
-      const dateStamp = String(rollover?.today || "").trim() || new Date().toISOString().slice(0, 10);
+      const dateStamp = String(rollover?.today || "").trim() || getCurrentLocalDateValue();
       const csvOrders = Array.isArray(options.orders)
-        ? options.orders.filter(Boolean)
-        : await database.listOrdersForMailExport();
+        ? filterOrdersForScheduledDate(options.orders, dateStamp)
+        : await database.listOrdersForMailExport(dateStamp);
       const csvFilename = `route-ledger-${dateStamp}.csv`;
       const csv = buildOrdersCsv(csvOrders);
       const emailTo = String(options.to || "").trim() || status.to;
@@ -1715,6 +1720,19 @@ function formatDateOnly(value) {
   }).format(date);
 }
 
+function getCurrentLocalDateValue() {
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: TIME_ZONE,
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value || "";
+  const month = parts.find((part) => part.type === "month")?.value || "";
+  const day = parts.find((part) => part.type === "day")?.value || "";
+  return [year, month, day].filter(Boolean).join("-");
+}
+
 function formatDateTime(value) {
   if (!value) {
     return "";
@@ -1742,6 +1760,20 @@ function capitalize(value) {
 
 function shouldMarkOrderAsRolledOver(order) {
   return Boolean(order?.driverUserId) && Number(order?.carryOverCount || 0) > 0;
+}
+
+function getOrderScheduledForValue(order) {
+  return String(order?.scheduledFor || "").trim();
+}
+
+function filterOrdersForScheduledDate(orders, scheduledFor) {
+  const targetDate = String(scheduledFor || "").trim();
+  const items = Array.isArray(orders) ? orders.filter(Boolean) : [];
+  if (!targetDate) {
+    return items;
+  }
+
+  return items.filter((order) => getOrderScheduledForValue(order) === targetDate);
 }
 
 function getOrderScheduleSummary(order) {
@@ -1877,12 +1909,10 @@ function buildOrderNoticeText(order) {
 }
 
 function buildCarryOverTestPayload(snapshot) {
-  const today = String(snapshot?.today || "").trim() || new Date().toISOString().slice(0, 10);
-  const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.filter(Boolean) : [];
-  const carriedOrders = orders
+  const today = String(snapshot?.today || "").trim() || getCurrentLocalDateValue();
+  const carriedOrders = filterOrdersForScheduledDate(snapshot?.orders, today)
     .filter((order) =>
       String(order?.status || "").trim().toLowerCase() === "active"
-      && String(order?.scheduledFor || "").trim() === today
       && shouldMarkOrderAsRolledOver(order),
     )
     .sort(compareCarryOverEmailOrders);

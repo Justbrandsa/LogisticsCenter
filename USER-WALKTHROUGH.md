@@ -155,19 +155,21 @@ To create a new entry:
 1. Choose a driver or leave the item `Unassigned`.
 2. Choose the pickup location.
 3. Choose `Collection` or `Delivery`.
-4. Add the delivery address if it is a delivery.
-5. Tick `Mark this as a priority stop` if needed.
-6. Enter the quote number.
-7. Add any sales order number, invoice number, or PO number if available.
-8. Enter the stock description.
-9. Add optional branding or notice text.
-10. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
-11. If needed, tick `Admin override for duplicate or return stop`.
-12. Select `Create entry`.
+4. Choose the `Scheduled date` for when the item should appear on the driver list and daily export.
+5. Add the delivery address if it is a delivery.
+6. Tick `Mark this as a priority stop` if needed.
+7. Enter the quote number.
+8. Add any sales order number, invoice number, or PO number if available.
+9. Enter the stock description.
+10. Add optional branding or notice text.
+11. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
+12. If needed, tick `Admin override for duplicate or return stop`.
+13. Select `Create entry`.
 
 Important notes:
 
 - saving an entry also creates matching stock items in the `Stock` page
+- the daily CSV and CSV email only include entries scheduled for the live date shown in the app
 - delivery entries require a delivery address
 - the admin override can be used for duplicate quote entries or for sending a driver back to a stop already completed that day
 
@@ -230,6 +232,7 @@ Use `Driver Lists` to review the live route pages for each driver.
 This view shows:
 
 - each driver's active entries
+- the scheduled date shown on each entry
 - the stop sequence grouped by pickup location
 - priority stop markers
 - duplicate order warnings
@@ -287,6 +290,8 @@ Sales cannot change stock records.
 ### Driver Lists
 
 Use `Driver Lists` to review the live queues per driver and confirm what is currently on each route.
+
+Each entry now shows its scheduled date so future work can be assigned ahead of time without losing track of which day it belongs to.
 
 ## Logistics Walkthrough
 

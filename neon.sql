@@ -2581,6 +2581,7 @@ drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, 
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid);
 drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text, text, boolean, text, boolean, uuid, text[]);
+drop function if exists public.create_order(uuid, uuid, uuid, text, text, text, text, text, text, text, text[], text, text, boolean, text, boolean, uuid);
 
 create or replace function public.create_order(
   p_token uuid,
@@ -2595,6 +2596,7 @@ create or replace function public.create_order(
   p_stock_description text default null,
   p_stock_item_names text[] default null,
   p_delivery_address text default null,
+  p_scheduled_for date default null,
   p_priority text default 'medium',
   p_allow_duplicate boolean default false,
   p_notice text default null,
@@ -2625,6 +2627,7 @@ declare
   v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
   v_stock_description text := nullif(btrim(p_stock_description), '');
   v_delivery_address text := coalesce(nullif(btrim(p_delivery_address), ''), '');
+  v_scheduled_for date := coalesce(p_scheduled_for, v_today);
   v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_stock_item_notes text := case
@@ -2664,6 +2667,10 @@ begin
 
   if v_priority not in ('high', 'medium', 'low') then
     raise exception 'Choose a valid priority.';
+  end if;
+
+  if v_scheduled_for < v_today then
+    raise exception 'Schedule date cannot be in the past.';
   end if;
 
   if p_driver_user_id is not null then
@@ -2733,12 +2740,12 @@ begin
        select 1
        from private.orders
        where driver_user_id = p_driver_user_id
-         and location_id = p_location_id
-         and status = 'completed'
-         and scheduled_for = v_today
-     )
+        and location_id = p_location_id
+        and status = 'completed'
+        and scheduled_for = v_scheduled_for
+    )
      and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
-    raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
+    raise exception 'Completed stop blocked. This driver has already completed that pickup location on the scheduled date. Admin authorization is required to send them back.';
   end if;
 
   insert into private.orders (
@@ -2777,8 +2784,8 @@ begin
     v_notice,
     v_move_to_factory,
     v_factory_destination_location_id,
-    v_today,
-    v_today,
+    v_scheduled_for,
+    v_scheduled_for,
     v_actor.id
   );
 
@@ -2879,6 +2886,7 @@ create or replace function public.update_order(
   p_branding text default null,
   p_stock_description text default null,
   p_delivery_address text default null,
+  p_scheduled_for date default null,
   p_priority text default 'medium',
   p_allow_duplicate boolean default false,
   p_notice text default null,
@@ -2905,6 +2913,7 @@ declare
   v_branding text := coalesce(nullif(btrim(p_branding), ''), '');
   v_stock_description text := nullif(btrim(p_stock_description), '');
   v_delivery_address text := coalesce(nullif(btrim(p_delivery_address), ''), '');
+  v_scheduled_for date;
   v_priority text := lower(coalesce(nullif(btrim(p_priority), ''), 'medium'));
   v_notice text := coalesce(nullif(btrim(p_notice), ''), '');
   v_move_to_factory boolean := coalesce(p_move_to_factory, false);
@@ -2925,8 +2934,14 @@ begin
     raise exception 'Order not found.';
   end if;
 
+  v_scheduled_for := coalesce(p_scheduled_for, v_order.scheduled_for, v_today);
+
   if v_order.status not in ('active', 'completed') then
     raise exception 'This entry cannot be edited.';
+  end if;
+
+  if v_order.status = 'active' and v_scheduled_for < v_today then
+    raise exception 'Schedule date cannot be in the past.';
   end if;
 
   if v_entry_type not in ('collection', 'delivery') then
@@ -3016,12 +3031,12 @@ begin
        from private.orders
        where id <> p_order_id
          and driver_user_id = p_driver_user_id
-         and location_id = p_location_id
-         and status = 'completed'
-         and scheduled_for = v_today
-     )
+        and location_id = p_location_id
+        and status = 'completed'
+        and scheduled_for = v_scheduled_for
+    )
      and not coalesce(p_allow_duplicate, false) then
-    raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
+    raise exception 'Completed stop blocked. This driver has already completed that pickup location on the scheduled date. Admin authorization is required to send them back.';
   end if;
 
   update private.orders
@@ -3048,19 +3063,13 @@ begin
       notes = v_notice,
       move_to_factory = v_move_to_factory,
       factory_destination_location_id = v_factory_destination_location_id,
-      scheduled_for = case
-        when v_order.status = 'active'
-          and (v_order.driver_user_id is null or p_driver_user_id is null) then v_today
-        else scheduled_for
-      end,
+      scheduled_for = v_scheduled_for,
       original_scheduled_for = case
-        when v_order.status = 'active'
-          and (v_order.driver_user_id is null or p_driver_user_id is null) then v_today
+        when v_scheduled_for is distinct from v_order.scheduled_for then v_scheduled_for
         else original_scheduled_for
       end,
       carry_over_count = case
-        when v_order.status = 'active'
-          and (v_order.driver_user_id is null or p_driver_user_id is null) then 0
+        when v_scheduled_for is distinct from v_order.scheduled_for then 0
         else carry_over_count
       end,
       updated_at = now()
@@ -3088,7 +3097,6 @@ declare
   v_actor private.app_users;
   v_order private.orders;
   v_driver private.app_users;
-  v_today date := private.today_local();
 begin
   v_actor := private.require_user(p_token);
 
@@ -3153,22 +3161,14 @@ begin
         and driver_user_id = p_driver_user_id
         and location_id = v_order.location_id
         and status = 'completed'
-        and scheduled_for = v_today
+        and scheduled_for = v_order.scheduled_for
     ) and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
-      raise exception 'Completed stop blocked. This driver has already completed that pickup location today. Admin authorization is required to send them back.';
+      raise exception 'Completed stop blocked. This driver has already completed that pickup location on the scheduled date. Admin authorization is required to send them back.';
     end if;
   end if;
 
   update private.orders
   set driver_user_id = p_driver_user_id,
-      scheduled_for = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
-        else scheduled_for
-      end,
-      original_scheduled_for = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then v_today
-        else original_scheduled_for
-      end,
       priority = case
         when v_order.driver_user_id is not null
           and p_driver_user_id is null
@@ -3176,10 +3176,6 @@ begin
           and priority = 'high'
         then 'medium'
         else priority
-      end,
-      carry_over_count = case
-        when v_order.driver_user_id is null or p_driver_user_id is null then 0
-        else carry_over_count
       end,
       updated_at = now()
   where id = p_order_id;
