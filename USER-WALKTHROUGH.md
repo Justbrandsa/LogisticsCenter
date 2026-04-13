@@ -1,10 +1,10 @@
-# Route Ledger User Walkthrough
+# Logictics Centre User Walkthrough
 
-This guide explains how people use Route Ledger day to day. It is written for office staff, logistics staff, and drivers rather than for developers.
+This guide explains how people use Logictics Centre day to day. It is written for office staff, logistics staff, and drivers rather than for developers.
 
-## What Route Ledger is for
+## What Logictics Centre is for
 
-Route Ledger helps the team:
+Logictics Centre helps the team:
 
 - create pickup and delivery work in one shared live system
 - assign work to drivers or leave it unassigned until dispatch is ready
@@ -13,7 +13,7 @@ Route Ledger helps the team:
 
 ## Sign In And Move Around
 
-1. Open Route Ledger in your browser.
+1. Open Logictics Centre in your browser.
 2. Sign in with your name and password.
 3. Use the tabs below the top bar to move between pages.
 4. Watch for confirmation messages after you save, assign, email, or complete something.
@@ -92,7 +92,7 @@ Admins can mark an entry as a priority stop. Priority stops are highlighted acro
 
 ### Stock Description
 
-When creating an entry, the `Stock description` should describe what the driver is moving. Put one stock item per line if you want Route Ledger to create separate stock records.
+When creating an entry, the `Stock description` should describe what the driver is moving. Put one stock item per line if you want Logictics Centre to create separate stock records.
 
 ## Admin Walkthrough
 
@@ -447,7 +447,7 @@ The network search can match:
 
 ### I cannot see the page I need
 
-The most likely reason is your role. Route Ledger only shows the pages allowed for your user type.
+The most likely reason is your role. Logictics Centre only shows the pages allowed for your user type.
 
 ### The Email buttons are disabled
 

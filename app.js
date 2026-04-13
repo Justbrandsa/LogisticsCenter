@@ -1,8 +1,10 @@
 const SESSION_KEY = "route-ledger-session-token-v2";
 const SNAPSHOT_REFRESH_LOG_KEY = "route-ledger-last-refresh-v1";
+const THEME_KEY = "route-ledger-theme-v1";
 const FLASH_TIMEOUT_MS = 3200;
 const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
+const APP_NAME = "Logictics Centre";
 const STOCK_QR_TYPE = "route-ledger-stock";
 const STOCK_QR_VERSION = 1;
 const STOCK_SCANNER_FORMATS = ["qr_code", "code_128"];
@@ -34,131 +36,171 @@ const PAGE_SIZES = {
   completedEntries: 10,
 };
 const GUIDE_PAGE_SUMMARIES = Object.freeze({
-  dashboard: "Start here for the live summary of the workspace.",
-  entries: "Create work, search the grouped global register, and handle CSV or email actions.",
-  assignments: "Move active work onto drivers or back to the queue.",
-  stock: "Review stock activity, QR tools, movement history, and artwork requests according to your permissions.",
-  network: "Maintain the pickup and factory locations used throughout the app.",
-  users: "Manage team accounts, roles, passwords, and driver phone numbers.",
-  drivers: "Review each driver's live stop sequence and route context.",
-  route: "Work through your assigned stops, navigate to locations, and update entry progress.",
-  completed: "Review work already finished and separated from the live route.",
-  guide: "Read the walkthrough for your current role.",
+  dashboard: "Start here for the live summary of the workspace so you can see what needs attention before moving into detailed pages.",
+  entries: "Use this page to create work, search the grouped global register, and handle CSV or email actions for the live list.",
+  assignments: "Use this page to move active work onto drivers, rebalance it between drivers, or return it to the queue without losing context.",
+  stock: "Use this page to review stock activity, QR tools, movement history, and artwork requests according to your permissions.",
+  network: "Use this page to maintain the supplier, pickup, and factory location records the rest of the app depends on.",
+  users: "Use this page to manage team accounts, roles, passwords, and driver phone numbers in one place.",
+  drivers: "Use this page to review each driver's live stop sequence, grouped work, and route context.",
+  route: "Use this page to work through your assigned stops, navigate to locations, and update entry progress while you are out on route.",
+  completed: "Use this page to review work that has already been finished so it stays separate from the live route.",
+  guide: "Use this page when you need a role-based walkthrough, onboarding help, or a reminder of what each page is for.",
 });
 const ROLE_GUIDES = Object.freeze({
   admin: {
     title: "How to use the admin workspace",
-    subtitle: "Admins can create work, dispatch it, maintain master data, and clean up the live system when needed.",
-    overview: "This guide changes with the signed-in role. As an admin, you have the widest set of controls, including account management, location maintenance, duplicate overrides, stock item editing, and delete actions.",
+    subtitle: "Admins oversee the whole live system, from creating work and dispatching routes to maintaining master data and correcting mistakes.",
+    overview: "Use the admin workspace when you need full control of the operation. Admins can create and assign work, maintain suppliers and pickup locations, manage users, correct stock activity, clear rollover markers, and use higher-impact actions such as duplicate override or delete when something in the live list needs careful intervention.",
+    roleFocus: [
+      { label: "When to use this role", text: "Choose the admin workspace for cross-team tasks, data corrections, dispatch decisions, and setup work that affects the whole system." },
+      { label: "What you can control", text: "Admins can manage users, locations, assignments, priorities, stock records, route visibility, CSV and email actions, and system cleanup tasks." },
+      { label: "What needs extra care", text: "Override and delete actions change shared live data for everyone, so they should only be used after checking the current entry, stop, and stock history." },
+    ],
+    startingChecks: [
+      "Start on Dashboard to review open work, unassigned jobs, active drivers, and completed volume before making dispatch decisions.",
+      "Check the live date and last refresh message in the header so you know the screen is working from the latest snapshot.",
+      "If you plan to email the CSV or send artwork requests, confirm mail delivery is available before relying on that step.",
+    ],
     pageNotes: {
-      dashboard: "Check open entries, unassigned work, driver coverage, and completed items at a glance.",
-      entries: "Create entries, group them by pickup location, and send or download the live CSV.",
-      assignments: "Load queued work onto drivers, rebalance active work, or return items to Unassigned.",
-      stock: "Manage stock items, correct movement records, use QR tools, and send artwork requests.",
-      network: "Maintain supplier and factory pickup locations, addresses, and optional coordinates.",
-      users: "Create, edit, disable, or delete admin, sales, driver, and logistics accounts.",
-      drivers: "Review each driver's live route sequence and the last recorded driver positions.",
+      dashboard: "Use Dashboard for your first read of the day. It tells you how much live work is open, what is still unassigned, how many drivers are active, and how much has already been completed.",
+      entries: "Use Global List to create new work, search the live register, review grouped stops, and send or export the shared CSV that office staff use as a working list.",
+      assignments: "Use Assignments when dispatch is ready to move jobs onto drivers, rebalance active work between drivers, or return a job to the unassigned queue.",
+      stock: "Use Stock to manage stock items, correct movement history, work with QR labels or scanning, and send artwork requests when a production handoff is needed.",
+      network: "Use Network to keep suppliers, pickup locations, addresses, and coordinates accurate so the route and assignment pages work from clean location data.",
+      users: "Use Users to create, edit, disable, or delete admin, sales, driver, and logistics accounts, including driver phone numbers and password resets.",
+      drivers: "Use Driver Lists to understand what each driver is carrying, which stops are priority, and where the most recently shared driver position was recorded.",
     },
     dailyFlow: [
-      "Start on Dashboard to review open work, unassigned entries, driver count, and completed items.",
-      "Use Global List to create new work and review the grouped live register.",
-      "Move queued work onto drivers from Assignments once dispatch is ready.",
-      "Check Driver Lists to confirm route order, priority stops, and recorded driver positions.",
-      "Use Stock for QR labels, movement corrections, and artwork requests.",
+      "Start on Dashboard so you can spot pressure points early, especially unassigned work, driver coverage, and any unusual completed volume.",
+      "Move to Global List to create new entries, review the live grouped register, and confirm that high-priority or duplicate-sensitive jobs have been captured correctly.",
+      "Open Assignments once dispatch is ready and move queued work onto the right drivers without overloading a single route.",
+      "Check Driver Lists after dispatch to confirm stop order, priority jobs, and the latest driver location information.",
+      "Use Stock and Network during the day whenever source data, movement history, QR tooling, or location records need correction.",
     ],
     keyTasks: [
-      { label: "Create entries", text: "Saving an entry also creates matching stock items from the stock description." },
-      { label: "Dispatch cleanly", text: "Leave items Unassigned until the route is ready, then allocate them from Assignments." },
-      { label: "Use override carefully", text: "Admin override is intended for deliberate duplicates or same-day return stops." },
-      { label: "Protect history", text: "Deleting a stock item also removes its movement and artwork history." },
+      { label: "Create entries", text: "When an entry is saved, matching stock items are also created from the stock description, so this step affects both the route list and the stock ledger." },
+      { label: "Dispatch cleanly", text: "Keep jobs Unassigned until the route plan is ready, then allocate them from Assignments so driver lists stay deliberate instead of being edited repeatedly." },
+      { label: "Use override carefully", text: "Admin override is there for deliberate duplicate quotes or same-day return situations, not as a shortcut around normal duplicate protection." },
+      { label: "Protect history", text: "Deleting a stock item also removes its movement and artwork history, so only delete when you are certain the record should not exist." },
     ],
     tips: [
-      "Search before creating duplicates, especially when a quote or stop may already be active.",
-      "Add coordinates to locations when possible so route maps can optimize stop order.",
-      "Clear rollover markers only after the carry-over report has been checked.",
+      "Search before creating a new entry, especially when a quote, customer, or pickup stop may already be active in the live list.",
+      "Add coordinates to locations whenever possible so route planning and map ordering can work from real geographic points.",
+      "Clear rollover markers only after the carry-over report has been checked, otherwise you may remove the signal before the team has acted on it.",
     ],
   },
   sales: {
     title: "How to use the sales workspace",
-    subtitle: "Sales can create work, assign active items, review live driver queues, and share the global CSV.",
-    overview: "The sales role is focused on creating and dispatching work. You can move quickly through live entries without accessing admin-only override, delete, or stock-edit controls.",
+    subtitle: "Sales is built for creating work quickly, dispatching it cleanly, and keeping the live customer-facing list accurate.",
+    overview: "Use the sales workspace for day-to-day entry creation and dispatch support. Sales can add work, assign or rebalance active entries, review live driver queues, and share the global CSV, while admin-only controls such as delete, override, and stock editing stay protected.",
+    roleFocus: [
+      { label: "When to use this role", text: "Choose sales for normal office operations where the goal is to create, review, assign, and share live work without changing protected system data." },
+      { label: "What you can control", text: "Sales users can create entries, review the live list, assign work to drivers, view stock history, and send or test CSV email actions." },
+      { label: "What stays restricted", text: "Sales cannot bypass admin-only duplicate protection, delete entries, edit stock records, or manage users and network data." },
+    ],
+    startingChecks: [
+      "Check Dashboard first to understand open work, unassigned volume, and how much activity has already been loaded onto drivers.",
+      "Search Global List before creating a new job so you do not accidentally duplicate a quote or stop already in progress.",
+      "If you need to share the list externally, confirm the email controls or export action you plan to use before the work gets busy.",
+    ],
     pageNotes: {
-      dashboard: "Monitor driver coverage, your entry volume, open work, and unassigned items.",
-      entries: "Create entries, review the grouped live list, and handle CSV or email actions.",
-      assignments: "Work through the unassigned queue and rebalance active work when route plans change.",
-      stock: "Use stock as a read-only reference for recent arrivals, on-hand quantities, and history.",
-      drivers: "Review the live queues per driver and confirm the current stop order.",
+      dashboard: "Use Dashboard to get a quick office view of open work, your current entry load, the number of unassigned jobs, and how much is already moving through drivers.",
+      entries: "Use Global List to create new entries, search existing work, check grouped stops, and send or export the live CSV that the wider team uses.",
+      assignments: "Use Assignments to work through the unassigned queue and rebalance active jobs when the route plan changes during the day.",
+      stock: "Use Stock as a read-only reference when you need visibility into recent arrivals, current on-hand quantities, or movement history linked to active work.",
+      drivers: "Use Driver Lists to confirm what each driver currently has, how the route is grouped, and whether priority work is showing where you expect it.",
     },
     dailyFlow: [
-      "Create new work from Global List and leave the driver Unassigned if dispatch will decide later.",
-      "Use Assignments to work through the unassigned queue and rebalance active entries.",
-      "Check Driver Lists to confirm what each driver is carrying today.",
-      "Download or email the CSV once the live list is ready to share.",
+      "Create new work from Global List as soon as it is confirmed, and leave the driver Unassigned if dispatch will decide later.",
+      "Use Assignments to move through the unassigned queue in batches and keep route changes tidy instead of editing one stop at a time in different places.",
+      "Open Driver Lists to confirm what each driver is carrying and whether priority jobs are showing in the right sequence.",
+      "Send or export the CSV when the live list is ready to share with the rest of the team or outside stakeholders.",
     ],
     keyTasks: [
-      { label: "Create work", text: "Enter the quote first, then add stock description, pickup location, and delivery details if needed." },
-      { label: "Assign work", text: "Use the Assignments filter to focus on Unassigned items and load them onto drivers quickly." },
-      { label: "Share the list", text: "Use Download CSV, Test Email, or Email CSV from Global List." },
-      { label: "Check stock", text: "Use Stock for visibility into recent arrivals and what is currently on hand." },
+      { label: "Create work", text: "Enter the quote first, then complete the stock description, pickup location, and delivery details so the live list and stock records stay clear." },
+      { label: "Assign work", text: "Use the assignment filter to focus on Unassigned items so you can dispatch quickly without losing track of work already placed on drivers." },
+      { label: "Share the list", text: "Use Download CSV, Test Email, or Email CSV from Global List depending on whether you need a quick export, a delivery test, or the live file sent out." },
+      { label: "Check stock", text: "Use Stock when you need extra context about recent arrivals or current on-hand quantities linked to a customer or reference." },
     ],
     tips: [
-      "Sales cannot use admin override, delete entries, or edit stock records.",
-      "Duplicate checks and completed-stop protection still apply when a driver is selected.",
-      "Search Global List before creating a new entry for the same quote or location.",
+      "Sales cannot use admin override, delete entries, edit stock records, or change protected setup data such as users and locations.",
+      "Duplicate checks and completed-stop protection still apply even when you assign a driver at entry creation time.",
+      "If a customer calls about an existing job, search Global List first instead of creating a fresh entry for the same quote or location.",
     ],
   },
   logistics: {
     title: "How to use the logistics workspace",
-    subtitle: "Logistics is centered on stock visibility, movement logging, QR workflows, and artwork requests.",
-    overview: "The logistics role keeps the stock ledger current without exposing user management or dispatch controls. Everything you need lives on the Stock page.",
+    subtitle: "Logistics keeps the stock side of the operation accurate, traceable, and ready for the next handoff.",
+    overview: "Use the logistics workspace when the main job is stock control rather than route dispatch. Logistics focuses on keeping item records correct, logging stock in and out, using QR tools for speed, and sending artwork requests without exposing wider admin or user-management controls.",
+    roleFocus: [
+      { label: "When to use this role", text: "Choose logistics when your work is centered on stock intake, stock release, QR handling, and artwork preparation rather than customer entry creation." },
+      { label: "What you can control", text: "Logistics can add stock items, log movements, search history, use QR labels and scanning, and send artwork requests from the stock workspace." },
+      { label: "What stays restricted", text: "Logistics cannot manage users, locations, or dispatch lists, and only admins can edit or delete an existing stock item once it has been created." },
+    ],
+    startingChecks: [
+      "Start with the stock dashboard view to see movement volume, total on-hand position, and whether there are outstanding artwork requests to follow up.",
+      "Search existing stock before creating a new item so references and descriptions stay grouped instead of drifting into duplicates.",
+      "If you are using QR scanning, make sure the camera or upload method you plan to use is working before you begin logging movements.",
+    ],
     pageNotes: {
-      dashboard: "Check stock totals, movement volume, and artwork request counts at a glance.",
-      stock: "Add stock items, log stock in and out, use QR labels, and send artwork requests.",
+      dashboard: "Use Dashboard for a quick view of stock totals, recent movement volume, and artwork request activity so you know where attention is needed first.",
+      stock: "Use Stock for nearly everything in this role: creating items, logging stock in and out, searching history, opening QR labels, scanning QR codes, and sending artwork requests.",
     },
     dailyFlow: [
-      "Review Recent activity to see what arrived or shipped in the last 24 hours.",
-      "Add new stock items when fresh work is received and link them to the right references.",
-      "Log stock in and stock out movements as they happen.",
-      "Use QR labels or QR scanning to speed up item selection.",
-      "Send artwork requests when the next production step needs to begin.",
+      "Review recent stock activity first so you can see what arrived, what shipped, and whether anything looks incomplete or unusual.",
+      "Add new stock items only when they do not already exist, and make sure they are linked to the right references before movements start building up.",
+      "Log stock in and stock out as the movement happens so the on-hand position stays trustworthy for the rest of the team.",
+      "Use QR labels or scanning whenever possible to speed up item selection and reduce manual picking mistakes.",
+      "Send artwork requests once the stock and quantity are confirmed so the next production step can start with the right details.",
     ],
     keyTasks: [
-      { label: "Add stock", text: "Each new stock item needs a description, at least one reference, and a positive opening quantity." },
-      { label: "Log movements", text: "Record supplier details for stock in and the driver for stock out so the ledger stays traceable." },
-      { label: "Use QR tools", text: "Open QR from the stock register or use Scan QR inside the movement form." },
-      { label: "Request artwork", text: "Send quantity and notes directly from the stock workspace when artwork is needed." },
+      { label: "Add stock", text: "Each new stock item should have a clear description, at least one useful reference, and a correct opening quantity so later movement history makes sense." },
+      { label: "Log movements", text: "Capture supplier details for stock in and the driver or destination context for stock out so the ledger remains traceable when questions come back later." },
+      { label: "Use QR tools", text: "Open QR from the stock register or use Scan QR inside the movement form when you want faster selection and fewer manual lookup errors." },
+      { label: "Request artwork", text: "Send quantity and notes from the stock workspace as soon as the job is ready so production receives a clear, linked request." },
     ],
     tips: [
-      "Logistics can add stock items and manage movements, but only admins can edit or delete an existing stock item.",
-      "If live camera scanning fails, upload a QR image or type the printed QR value manually.",
-      "If email buttons are disabled, mail delivery is not configured yet.",
+      "Logistics can add stock items and manage movements, but only admins can edit or delete an existing stock item after it has been created.",
+      "If live camera scanning fails, switch to uploading a QR image or typing the printed QR value manually instead of delaying the movement log.",
+      "If artwork or email buttons are disabled, mail delivery is not configured yet and the request cannot be sent from inside the app.",
     ],
   },
   driver: {
     title: "How to use the driver workspace",
-    subtitle: "Drivers only see their own live route and completed work, keeping the day focused and simple.",
-    overview: "Your guide is built around the Route page. Work through stops in order, keep the office updated with follow-up notes, and move finished work onto Completed.",
+    subtitle: "The driver workspace is designed to keep the day simple: see your route, work each stop, and keep the office updated as conditions change.",
+    overview: "Use the driver workspace while you are out on the road. It shows only your active route and your completed work, so you can focus on the next stop, update the office with notes or flags, and transfer jobs when the route changes in real time.",
+    roleFocus: [
+      { label: "When to use this role", text: "Choose the driver workspace when you need a focused route view without office setup pages, stock controls, or admin actions getting in the way." },
+      { label: "What you can control", text: "Drivers can navigate to stops, mark entries picked up, complete work, flag problems, add notes, and transfer active jobs to another driver when needed." },
+      { label: "What stays simple", text: "Drivers do not create users, change setup data, or edit stock history. The goal is to keep the route screen clear and action-oriented while you are moving." },
+    ],
+    startingChecks: [
+      "Open Route first and allow location access if you want the map to start from your real position instead of the dispatch hub fallback.",
+      "Review the grouped stops before you leave so you understand where priority work sits in the route for the day.",
+      "Check that the phone number and account details shown for you look correct, especially if the office may need to reach you during a transfer or issue.",
+    ],
     pageNotes: {
-      route: "Open your stops in order, navigate to each location, and update entry progress as the job moves.",
-      completed: "Review the jobs you already finished without cluttering the live route.",
+      route: "Use Route as your main working page. It shows your stops in order, lets you open directions, and gives you the buttons you need to update each job as it moves through pickup and delivery.",
+      completed: "Use Completed to review jobs you already finished without cluttering the live route, especially if the office asks you to confirm what was done earlier in the day.",
     },
     dailyFlow: [
-      "Open Route and allow location access if you want the map to start from your current position.",
-      "Work through each stop in order and use Navigate when you need directions.",
-      "Mark an item Picked up once it is on the vehicle.",
-      "Complete the item when it reaches the client, office, or factory destination.",
-      "Use Flag issue or Transfer whenever the route plan changes or a stop cannot be completed.",
+      "Open Route at the start of the day and review the stop order before you begin moving so you understand the current plan.",
+      "Use Navigate when you need directions, then work through the stops in order unless the office has asked you to change the route.",
+      "Mark an item Picked up as soon as it is on the vehicle so the office can see that the job has moved from waiting to active load.",
+      "Complete the item only when it has reached the right final handoff point, such as the client, office, or factory.",
+      "Use Flag issue or Transfer as soon as something changes so the office sees the problem while there is still time to respond.",
     ],
     keyTasks: [
-      { label: "Navigate", text: "Use the Navigate button to open the stop directly in Google Maps." },
-      { label: "Progress work", text: "Mark entries Picked up before completing them so handover history stays clear." },
-      { label: "Flag problems", text: "Use Not collected or Not yet ready and add a driver note the office can act on." },
-      { label: "Transfer items", text: "Move an active entry to another active driver when the route needs to change." },
+      { label: "Navigate", text: "Use the Navigate button to open the stop directly in Google Maps instead of manually retyping the address while you are on the move." },
+      { label: "Progress work", text: "Mark entries Picked up before completing them so the handover history shows that the job was loaded and then finished in the correct order." },
+      { label: "Flag problems", text: "Use Not collected or Not yet ready with a clear driver note so the office can follow up with the customer or supplier immediately." },
+      { label: "Transfer items", text: "Transfer an active job to another active driver if the route changes and the work can be completed faster by someone else." },
     ],
     tips: [
-      "Completed items leave the Route page and appear on Completed.",
-      "If location access is blocked, route planning starts from the Johannesburg Dispatch Hub instead.",
-      "Priority stops are highlighted first when the route can be mapped with coordinates.",
+      "Completed items leave the Route page automatically and appear on Completed, so do not look for them in the active list afterward.",
+      "If location access is blocked, route planning starts from the Johannesburg Dispatch Hub instead of your current position.",
+      "Priority stops are highlighted first when the route can be mapped using stored coordinates, so watch for those cards before you start driving.",
     ],
   },
 });
@@ -173,10 +215,12 @@ const appEl = document.getElementById("app");
 const authMetaEl = document.getElementById("auth-meta");
 const userActionsEl = document.getElementById("user-actions");
 const pageNavEl = document.getElementById("page-nav");
+const pageShellEl = document.querySelector(".page-shell");
 
 const state = {
   booting: true,
   busy: false,
+  theme: loadThemePreference(),
   missingConfig: false,
   missingConfigReason: "",
   mailConfigured: false,
@@ -262,6 +306,8 @@ let adminDriverMapContainer = null;
 let adminDriverMapLayers = null;
 let snapshotAutoRefreshTimer = 0;
 
+applyTheme(state.theme, { persist: false });
+
 document.addEventListener("submit", handleSubmit);
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleChange);
@@ -326,10 +372,25 @@ function loadSessionToken() {
   return window.localStorage.getItem(SESSION_KEY) || "";
 }
 
+function loadThemePreference() {
+  const rawValue = window.localStorage.getItem(THEME_KEY);
+  return rawValue === "light" ? "light" : "dark";
+}
+
 function loadLastSnapshotRefreshAt() {
   const rawValue = window.localStorage.getItem(SNAPSHOT_REFRESH_LOG_KEY);
   const parsedValue = Number(rawValue);
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const normalizedTheme = theme === "light" ? "light" : "dark";
+  state.theme = normalizedTheme;
+  document.documentElement.dataset.theme = normalizedTheme;
+  if (persist) {
+    window.localStorage.setItem(THEME_KEY, normalizedTheme);
+  }
+  return normalizedTheme;
 }
 
 function saveLastSnapshotRefreshAt(timestamp) {
@@ -729,6 +790,12 @@ async function handleClick(event) {
 
   if (action === "logout") {
     await logout();
+    return;
+  }
+
+  if (action === "toggle-theme") {
+    applyTheme(state.theme === "light" ? "dark" : "light");
+    render();
     return;
   }
 
@@ -1946,6 +2013,9 @@ function render() {
   destroyAdminDriverLocationMap();
   renderHeader();
   renderPageNavigation();
+  if (pageShellEl) {
+    pageShellEl.classList.toggle("workspace-shell", Boolean(state.snapshot.user));
+  }
 
   if (state.missingConfig) {
     appEl.innerHTML = renderSetupScreen();
@@ -2824,7 +2894,7 @@ function loadImageFromFile(file) {
 async function applyStockScanResult(rawValue) {
   const parsed = parseStockQrPayload(rawValue);
   if (!parsed?.stockItemId) {
-    throw new Error("That QR code is not a Route Ledger stock label.");
+    throw new Error(`That QR code is not a ${APP_NAME} stock label.`);
   }
 
   const item = getStockItemById(parsed.stockItemId);
@@ -3339,10 +3409,16 @@ function renderHeader() {
 
   if (!currentUser) {
     authMetaEl.innerHTML = `
-      <strong>Neon-backed workflow</strong><br>
-      <span class="muted">Live date: ${escapeHtml(liveDate)}</span>
+      <div class="topbar-status-strip">
+        <span class="topbar-pill topbar-pill-live">Live date ${escapeHtml(liveDate)}</span>
+        <span class="topbar-pill">Neon-backed workflow</span>
+      </div>
     `;
-    userActionsEl.innerHTML = "";
+    userActionsEl.innerHTML = `
+      <div class="topbar-actions">
+        ${renderThemeToggleButton()}
+      </div>
+    `;
     return;
   }
 
@@ -3350,16 +3426,63 @@ function renderHeader() {
     ? `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}`
     : `${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}`;
   const refreshLine = getSnapshotRefreshSummary();
+  const workspaceLabel = currentUser.role === "driver"
+    ? "Driver route workspace"
+    : `${capitalize(currentUser.role)} workspace`;
+  const initials = getUserInitials(currentUser.name);
 
   authMetaEl.innerHTML = `
-    <strong>${escapeHtml(currentUser.name)}</strong><br>
-    <span class="muted">${capitalize(currentUser.role)} account</span><br>
-    <span class="muted">${escapeHtml(summaryLine)}</span><br>
-    <span class="muted">${escapeHtml(refreshLine)}</span>
+    <div class="topbar-status-strip">
+      <span class="topbar-pill topbar-pill-live">Live date ${escapeHtml(liveDate)}</span>
+      <span class="topbar-pill">${escapeHtml(summaryLine)}</span>
+      <span class="topbar-pill">${escapeHtml(refreshLine)}</span>
+    </div>
+    <div class="topbar-user-card">
+      <span class="topbar-user-avatar">${escapeHtml(initials)}</span>
+      <span class="topbar-user-copy">
+        <strong>${escapeHtml(currentUser.name)}</strong>
+        <span>${escapeHtml(workspaceLabel)}</span>
+      </span>
+    </div>
   `;
   userActionsEl.innerHTML = `
-    <button class="button button-ghost" data-action="logout"${state.busy ? " disabled" : ""}>Logout</button>
+    <div class="topbar-actions">
+      ${renderThemeToggleButton()}
+      <button class="button button-secondary" data-action="logout"${state.busy ? " disabled" : ""}>Logout</button>
+    </div>
   `;
+}
+
+function renderThemeToggleButton() {
+  const isLightTheme = state.theme === "light";
+  return `
+    <button
+      class="button theme-toggle${isLightTheme ? " is-light" : ""}"
+      type="button"
+      data-action="toggle-theme"
+      aria-pressed="${isLightTheme ? "true" : "false"}"
+      title="Switch to ${isLightTheme ? "dark" : "light"} mode"
+    >
+      <span class="theme-toggle-track" aria-hidden="true">
+        <span class="theme-toggle-thumb"></span>
+      </span>
+      <span class="theme-toggle-copy">${isLightTheme ? "Light" : "Dark"}</span>
+    </button>
+  `;
+}
+
+function getUserInitials(name) {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!parts.length) {
+    return "RL";
+  }
+
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
 }
 
 function getSnapshotRefreshSummary() {
@@ -3379,27 +3502,55 @@ function renderPageNavigation() {
   const currentUser = state.snapshot.user;
   if (!currentUser) {
     pageNavEl.innerHTML = "";
+    pageNavEl.removeAttribute("data-role");
     pageNavEl.classList.remove("page-nav-active");
     return;
   }
 
   const items = getNavigationItems(currentUser.role);
+  const liveDate = state.publicState.today
+    ? formatDateOnly(state.publicState.today)
+    : "Waiting for sync";
   syncCurrentPage();
+  pageNavEl.dataset.role = currentUser.role;
   pageNavEl.classList.add("page-nav-active");
-  pageNavEl.innerHTML = items
-    .map(
-      (item) => `
-        <button
-          class="page-nav-link${state.currentPage === item.id ? " is-active" : ""}"
-          data-action="navigate-page"
-          data-page-id="${item.id}"
-          ${state.busy ? "disabled" : ""}
-        >
-          ${escapeHtml(item.label)}
-        </button>
-      `,
-    )
-    .join("");
+  pageNavEl.innerHTML = `
+    <div class="page-nav-panel">
+      <div class="page-nav-header">
+        <span class="page-nav-logo">RL</span>
+        <span class="page-nav-header-copy">
+          <strong>${escapeHtml(APP_NAME)}</strong>
+          <span>${escapeHtml(capitalize(currentUser.role))} workspace</span>
+        </span>
+      </div>
+      <div class="page-nav-section">
+        <p class="page-nav-group">Navigation</p>
+        <div class="page-nav-items">
+          ${
+            items
+              .map(
+                (item) => `
+                  <button
+                    class="page-nav-link${state.currentPage === item.id ? " is-active" : ""}"
+                    data-action="navigate-page"
+                    data-page-id="${item.id}"
+                    ${state.busy ? "disabled" : ""}
+                  >
+                    <span class="page-nav-link-dot" aria-hidden="true"></span>
+                    <span class="page-nav-link-text">${escapeHtml(item.label)}</span>
+                  </button>
+                `,
+              )
+              .join("")
+          }
+        </div>
+      </div>
+      <div class="page-nav-footer">
+        <span class="page-nav-footer-label">Live date</span>
+        <strong>${escapeHtml(liveDate)}</strong>
+      </div>
+    </div>
+  `;
 }
 
 function getNavigationItems(role) {
@@ -3547,7 +3698,7 @@ function renderLoadingScreen() {
     <section class="login-wrap">
       <div class="login-card">
         <article class="login-intro">
-          <p class="eyebrow">Route Ledger</p>
+          <p class="eyebrow">${escapeHtml(APP_NAME)}</p>
           <h2>Loading the live database workspace</h2>
           <p class="muted">
             Pulling live entries, driver lists, and account data from Neon.
@@ -3659,33 +3810,7 @@ function renderLoginScreen() {
 
 function renderAdminScreen() {
   return `
-    <section class="screen-grid">
-      <aside class="sidebar">
-        <div class="sidebar-card">
-          <p class="eyebrow">Admin scope</p>
-          <h3>Full control</h3>
-          <p class="muted">
-            Manage users, pickup locations, stock records, driver entries, and email delivery from one live database.
-          </p>
-          <div class="chip-row">
-            <span class="chip chip-role-admin">Admin</span>
-            <span class="chip">${state.snapshot.locations.length} locations</span>
-            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
-          </div>
-        </div>
-        <div class="sidebar-card">
-          <h3>Email delivery</h3>
-          <p class="muted">
-            ${
-              state.mailConfigured
-                ? `CSV email is ready for ${escapeHtml(state.mailTo)} and artwork requests go to ${escapeHtml(state.artworkTo)}.`
-                : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")
-            }
-          </p>
-          <p class="muted">Use the Global List page for CSV delivery and the Stock page for artwork requests.</p>
-        </div>
-        ${renderGuideSidebarCard("admin")}
-      </aside>
+    <section class="screen-grid screen-grid-main">
       <div class="content">
         ${renderAdminPageContent()}
       </div>
@@ -3695,30 +3820,7 @@ function renderAdminScreen() {
 
 function renderSalesScreen() {
   return `
-    <section class="screen-grid">
-      <aside class="sidebar">
-        <div class="sidebar-card">
-          <p class="eyebrow">Sales scope</p>
-          <h3>Live entry control</h3>
-          <p class="muted">
-            You can view driver lists, review incoming stock, create new entries, and email or download the global CSV,
-            but sales users still cannot override duplicate checks or send a driver back to a completed stop.
-          </p>
-          <div class="chip-row">
-            <span class="chip chip-role-sales">Sales</span>
-            <span class="chip">${countOrdersCreatedByCurrentUser()} created by you</span>
-            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
-          </div>
-        </div>
-        <div class="sidebar-card">
-          <h3>Email delivery</h3>
-          <p class="muted">
-            ${state.mailConfigured ? `CSV email is ready for ${escapeHtml(state.mailTo)}.` : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}
-          </p>
-          <p class="muted">Sales users can test email delivery, but they still cannot bypass duplicate checks or send a driver back to a stop they already completed today.</p>
-        </div>
-        ${renderGuideSidebarCard("sales")}
-      </aside>
+    <section class="screen-grid screen-grid-main">
       <div class="content">
         ${renderSalesPageContent()}
       </div>
@@ -3728,33 +3830,7 @@ function renderSalesScreen() {
 
 function renderLogisticsScreen() {
   return `
-    <section class="screen-grid">
-      <aside class="sidebar">
-        <div class="sidebar-card">
-          <p class="eyebrow">Logistics scope</p>
-          <h3>Stock control</h3>
-          <p class="muted">
-            Track incoming and outgoing stock, keep a live on-hand view, and send artwork requests from the same workspace.
-          </p>
-          <div class="chip-row">
-            <span class="chip chip-role-logistics">Logistics</span>
-            <span class="chip">${state.snapshot.stockItems.length} stock items</span>
-            <span class="chip">${getStockOnHandTotal()} on hand</span>
-          </div>
-        </div>
-        <div class="sidebar-card">
-          <h3>Artwork requests</h3>
-          <p class="muted">
-            ${
-              state.mailConfigured
-                ? `Requests will email ${escapeHtml(state.artworkTo)} through the configured mail account.`
-                : escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")
-            }
-          </p>
-          <p class="muted">Use the Stock page to log movements, review history, and send artwork requests once stock is queued.</p>
-        </div>
-        ${renderGuideSidebarCard("logistics")}
-      </aside>
+    <section class="screen-grid screen-grid-main">
       <div class="content">
         ${renderLogisticsPageContent()}
       </div>
@@ -3763,51 +3839,12 @@ function renderLogisticsScreen() {
 }
 
 function renderDriverScreen() {
-  const plan = getRoutePlan(state.snapshot.user.id);
-
   return `
-    <section class="screen-grid">
-      <aside class="sidebar">
-        <div class="sidebar-card">
-          <p class="eyebrow">Driver access</p>
-          <h3>${escapeHtml(state.snapshot.user.name)}</h3>
-          <p class="muted">${escapeHtml(state.snapshot.user.phone || "No phone assigned")}</p>
-          <div class="chip-row">
-            <span class="chip chip-role-driver">Driver</span>
-            <span class="chip">${plan.totalOrders} entries</span>
-            <span class="chip">${plan.stops.length} stops</span>
-          </div>
-        </div>
-        <div class="sidebar-card">
-          <h3>Route mode</h3>
-          <p class="muted">
-            Stop order is calculated from your active assigned pickup locations. Completed entries stay on the Completed
-            page.
-          </p>
-        </div>
-        ${renderGuideSidebarCard("driver")}
-      </aside>
+    <section class="screen-grid screen-grid-main">
       <div class="content">
         ${renderDriverPageContent()}
       </div>
     </section>
-  `;
-}
-
-function renderGuideSidebarCard(role) {
-  const guide = ROLE_GUIDES[role];
-  if (!guide) {
-    return "";
-  }
-
-  return `
-    <div class="sidebar-card guide-sidebar-card">
-      <h3>Guide</h3>
-      <p class="muted">${escapeHtml(guide.subtitle)}</p>
-      <button class="button button-ghost" data-action="navigate-page" data-page-id="guide"${state.busy ? " disabled" : ""}>
-        Open Guide
-      </button>
-    </div>
   `;
 }
 
@@ -3830,15 +3867,34 @@ function renderRoleGuidePage(role) {
     </section>
     ${renderFlash()}
     <section class="panel-grid guide-grid">
+      ${
+        guide.roleFocus?.length
+          ? renderGuidePanel({
+              eyebrow: "Role scope",
+              title: "What this role is responsible for",
+              items: guide.roleFocus,
+            })
+          : ""
+      }
       ${renderGuidePanel({
         eyebrow: "Your pages",
-        title: "What each page is for",
+        title: "What each page helps you do",
         subtitle: guide.subtitle,
         items: getNavigationItems(role).map((item) => ({
           label: item.label,
           text: guide.pageNotes?.[item.id] || GUIDE_PAGE_SUMMARIES[item.id] || "Use this page for the actions available to your role.",
         })),
       })}
+      ${
+        guide.startingChecks?.length
+          ? renderGuidePanel({
+              eyebrow: "Start here",
+              title: "What to check first",
+              items: guide.startingChecks,
+              ordered: true,
+            })
+          : ""
+      }
       ${renderGuidePanel({
         eyebrow: "Daily flow",
         title: "Recommended routine",
@@ -5705,7 +5761,7 @@ function renderAdminDriverLocationSection() {
         <div>
           <p class="eyebrow">Driver locations</p>
           <h3 class="panel-title">Last recorded driver positions</h3>
-          <p class="panel-subtitle">Markers update from the most recent location the driver allowed Route Ledger to record.</p>
+          <p class="panel-subtitle">Markers update from the most recent location the driver allowed ${escapeHtml(APP_NAME)} to record.</p>
         </div>
         <div class="chip-row">
           <span class="chip">${mappedDrivers} mapped</span>

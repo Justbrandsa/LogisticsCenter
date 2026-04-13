@@ -1,6 +1,6 @@
-# Route Ledger
+# Logictics Centre
 
-Route Ledger is a Neon-backed browser app for managing driver-separated pickup and delivery entries.
+Logictics Centre is a Neon-backed browser app for managing driver-separated pickup and delivery entries.
 
 ## User guide
 

@@ -3,7 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Route Ledger</title>
+  <title>Logictics Centre</title>
+  <script>
+    (() => {
+      try {
+        const savedTheme = window.localStorage.getItem("route-ledger-theme-v1");
+        document.documentElement.dataset.theme = savedTheme === "light" ? "light" : "dark";
+      } catch (error) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="styles.css">
   <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -14,9 +27,16 @@
   <div class="background-orb orb-b"></div>
   <div class="page-shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">Driver operations control</p>
-        <h1>Route Ledger</h1>
+      <div class="topbar-main">
+        <div class="window-dots" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <div class="topbar-copy">
+          <p class="eyebrow">Driver operations control</p>
+          <h1>Logictics Centre</h1>
+        </div>
       </div>
       <div class="topbar-side">
         <div id="auth-meta" class="auth-meta"></div>
@@ -24,7 +44,7 @@
       </div>
     </header>
     <nav id="page-nav" class="page-nav"></nav>
-    <main id="app"></main>
+    <main id="app" class="app-content"></main>
   </div>
   <script>
     (() => {

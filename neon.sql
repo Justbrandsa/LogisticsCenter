@@ -2822,6 +2822,14 @@ begin
         when v_order.driver_user_id is null or p_driver_user_id is null then v_today
         else original_scheduled_for
       end,
+      priority = case
+        when v_order.driver_user_id is not null
+          and p_driver_user_id is null
+          and v_order.carry_over_count > 0
+          and priority = 'high'
+        then 'medium'
+        else priority
+      end,
       carry_over_count = case
         when v_order.driver_user_id is null or p_driver_user_id is null then 0
         else carry_over_count
