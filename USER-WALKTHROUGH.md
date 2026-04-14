@@ -256,6 +256,7 @@ Sales users can create entries using the same main form as admins, with two impo
 Sales users can also:
 
 - search the grouped global list
+- edit active entries
 - expand pickup locations to review entries
 - download the CSV
 - send a test email

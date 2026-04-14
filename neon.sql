@@ -2921,7 +2921,7 @@ declare
 begin
   v_actor := private.require_user(p_token);
 
-  if v_actor.role <> 'admin' then
+  if v_actor.role not in ('admin', 'sales') then
     raise exception 'Permission denied';
   end if;
 
@@ -2932,6 +2932,10 @@ begin
 
   if v_order.id is null then
     raise exception 'Order not found.';
+  end if;
+
+  if v_actor.role <> 'admin' and v_order.status = 'completed' then
+    raise exception 'Only admins can edit completed entries.';
   end if;
 
   v_scheduled_for := coalesce(p_scheduled_for, v_order.scheduled_for, v_today);
@@ -3020,7 +3024,7 @@ begin
          and inhouse_order_number = v_quote_number
          and status = 'active'
      )
-     and not coalesce(p_allow_duplicate, false) then
+     and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
     raise exception 'Duplicate blocked. This driver already has an active entry for that quote number.';
   end if;
 
@@ -3035,7 +3039,7 @@ begin
         and status = 'completed'
         and scheduled_for = v_scheduled_for
     )
-     and not coalesce(p_allow_duplicate, false) then
+     and not (v_actor.role = 'admin' and coalesce(p_allow_duplicate, false)) then
     raise exception 'Completed stop blocked. This driver has already completed that pickup location on the scheduled date. Admin authorization is required to send them back.';
   end if;
 

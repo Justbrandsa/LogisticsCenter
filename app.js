@@ -93,10 +93,10 @@ const ROLE_GUIDES = Object.freeze({
   sales: {
     title: "How to use the sales workspace",
     subtitle: "Sales is built for creating work quickly, dispatching it cleanly, and keeping the live customer-facing list accurate.",
-    overview: "Use the sales workspace for day-to-day entry creation and dispatch support. Sales can add work, assign or rebalance active entries, review live driver queues, and share the global CSV, while admin-only controls such as delete, override, and stock editing stay protected.",
+    overview: "Use the sales workspace for day-to-day entry creation and dispatch support. Sales can add work, edit active entries, assign or rebalance active entries, review live driver queues, and share the global CSV, while admin-only controls such as delete, override, and stock editing stay protected.",
     roleFocus: [
       { label: "When to use this role", text: "Choose sales for normal office operations where the goal is to create, review, assign, and share live work without changing protected system data." },
-      { label: "What you can control", text: "Sales users can create entries, review the live list, assign work to drivers, view stock history, and send or test CSV email actions." },
+      { label: "What you can control", text: "Sales users can create entries, edit active entries, review the live list, assign work to drivers, view stock history, and send or test CSV email actions." },
       { label: "What stays restricted", text: "Sales cannot bypass admin-only duplicate protection, delete entries, edit stock records, or manage users and network data." },
     ],
     startingChecks: [
@@ -523,7 +523,10 @@ async function refreshSnapshot(options = {}) {
     ) {
       state.assignmentDriverFilter = "";
     }
-    if (state.editingOrderId && state.snapshot.user?.role !== "admin") {
+    if (
+      state.editingOrderId
+      && !["admin", "sales"].includes(String(state.snapshot.user?.role || ""))
+    ) {
       state.editingOrderId = "";
       state.orderEditReturnPage = "";
     }
@@ -795,7 +798,7 @@ async function handleSubmit(event) {
     await createOrder(formData, currentUser);
   }
 
-  if (formId === "edit-order" && currentUser.role === "admin") {
+  if (formId === "edit-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     await updateOrder(formData, currentUser);
   }
 
@@ -866,12 +869,12 @@ async function handleClick(event) {
     return;
   }
 
-  if (action === "edit-order" && currentUser.role === "admin") {
+  if (action === "edit-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     openOrderEditor(String(button.dataset.orderId || "").trim());
     return;
   }
 
-  if (action === "cancel-edit-order" && currentUser.role === "admin") {
+  if (action === "cancel-edit-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     cancelOrderEdit();
     return;
   }
@@ -1820,8 +1823,21 @@ async function updateOrder(formData, currentUser) {
 
 function openOrderEditor(orderId) {
   const order = getOrder(orderId);
+  const currentUser = state.snapshot.user;
   if (!order) {
     showFlash("That entry could not be found for editing.", "error");
+    render();
+    return;
+  }
+
+  if (!currentUser || !["admin", "sales"].includes(currentUser.role)) {
+    showFlash("You do not have permission to edit this entry.", "error");
+    render();
+    return;
+  }
+
+  if (currentUser.role === "sales" && order.status !== "active") {
+    showFlash("Sales can only edit active entries.", "error");
     render();
     return;
   }
@@ -3861,7 +3877,10 @@ function syncEntryFormVisibility(pageId = state.currentPage) {
     state.orderEditReturnPage = "";
   }
 
-  if (state.editingOrderId && currentUser?.role !== "admin") {
+  if (
+    state.editingOrderId
+    && !["admin", "sales"].includes(String(currentUser?.role || ""))
+  ) {
     state.editingOrderId = "";
     state.orderEditReturnPage = "";
   }
@@ -5952,7 +5971,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
 
 function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
-  const canEdit = viewerRole === "admin";
+  const canEdit = viewerRole === "admin" || (viewerRole === "sales" && order.status === "active");
   const isPriority = isPriorityOrder(order);
   const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
@@ -6767,7 +6786,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
           const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
           const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
           const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
-          const canEdit = viewerRole === "admin" && order.status === "active";
+          const canEdit = (viewerRole === "admin" || viewerRole === "sales") && order.status === "active";
 
           return `
               <div class="order-card${isPriority ? " order-card-priority" : ""}">
