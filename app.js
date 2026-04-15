@@ -246,6 +246,7 @@ const state = {
   stockScannerPendingCode: "",
   stockSearchQuery: "",
   globalListSearchQuery: "",
+  globalListScheduledDate: "",
   networkSearchQuery: "",
   entryFormOpen: false,
   stockMovementsSectionOpen: false,
@@ -522,6 +523,12 @@ async function refreshSnapshot(options = {}) {
       && !state.snapshot.users.some((user) => user.id === state.assignmentDriverFilter && user.role === "driver")
     ) {
       state.assignmentDriverFilter = "";
+    }
+    if (
+      state.globalListScheduledDate
+      && !state.snapshot.orders.some((order) => getOrderScheduledForValue(order) === state.globalListScheduledDate)
+    ) {
+      state.globalListScheduledDate = "";
     }
     if (
       state.editingOrderId
@@ -1109,6 +1116,20 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "clear-global-list-date-filter" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    state.globalListScheduledDate = "";
+    state.pagination.globalEntries = 1;
+    render();
+    return;
+  }
+
+  if (action === "set-global-list-date-filter" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    state.globalListScheduledDate = String(button.dataset.scheduledFor || "").trim();
+    state.pagination.globalEntries = 1;
+    render();
+    return;
+  }
+
   if (action === "clear-network-search" && currentUser.role === "admin") {
     state.networkSearchQuery = "";
     render();
@@ -1195,8 +1216,8 @@ async function handleClick(event) {
     return;
   }
 
-  if (action === "save-order-assignment" && (currentUser.role === "admin" || currentUser.role === "sales")) {
-    await saveOrderAssignment(button, currentUser);
+  if (action === "save-location-assignment" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    await saveLocationAssignment(button, currentUser);
     return;
   }
 
@@ -1313,6 +1334,13 @@ function handleChange(event) {
   if (target.matches("[data-assignment-filter]") && target instanceof HTMLSelectElement) {
     state.assignmentDriverFilter = target.value;
     state.pagination.assignments = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("[data-global-list-date-filter]") && target instanceof HTMLSelectElement) {
+    state.globalListScheduledDate = target.value;
+    state.pagination.globalEntries = 1;
     render();
     return;
   }
@@ -1874,36 +1902,96 @@ function cancelOrderEdit() {
   void refreshSnapshot({ silent: true });
 }
 
-async function saveOrderAssignment(button, currentUser) {
-  const orderId = String(button.dataset.orderId || "").trim();
-  if (!orderId) {
+async function saveLocationAssignment(button, currentUser) {
+  const groupKey = String(button.dataset.groupKey || "").trim();
+  if (!groupKey) {
     return;
   }
 
-  const driverField = document.querySelector(`[data-assignment-driver][data-order-id="${orderId}"]`);
+  const group = getFilteredAssignmentLocationGroups().find((entry) => entry.key === groupKey);
+  if (!group || !group.orders.length) {
+    return;
+  }
+
+  const container = button.closest(".stop-card");
+  const driverField = container?.querySelector("[data-assignment-location-driver]");
   if (!(driverField instanceof HTMLSelectElement)) {
     return;
   }
 
-  const allowDuplicateField = document.querySelector(`[data-assignment-allow-duplicate][data-order-id="${orderId}"]`);
-  const driverUserId = String(driverField.value || "").trim();
-  const selectedLabel = driverField.selectedOptions[0]?.textContent?.trim() || "Unassigned";
+  const allowDuplicateField = container?.querySelector("[data-assignment-location-allow-duplicate]");
+  const rawDriverValue = String(driverField.value || "").trim();
+  if (group.hasMixedDriverSelection && !rawDriverValue) {
+    showFlash("Choose a driver or Unassigned for that pickup location first.", "error");
+    render();
+    return;
+  }
 
-  await runMutation(
-    "assign_order",
-    {
-      p_token: sessionToken,
-      p_order_id: orderId,
-      p_driver_user_id: driverUserId || null,
-      p_allow_duplicate:
-        currentUser.role === "admin" && allowDuplicateField instanceof HTMLInputElement
-          ? allowDuplicateField.checked
-          : false,
-    },
-    driverUserId
-      ? `Entry assigned to ${selectedLabel}.`
-      : "Entry moved to the unassigned queue.",
-  );
+  const driverUserId = rawDriverValue === "__unassigned__" ? "" : rawDriverValue;
+  const selectedLabel = rawDriverValue === "__unassigned__"
+    ? "Unassigned"
+    : (driverField.selectedOptions[0]?.textContent?.trim() || "Unassigned");
+  const ordersToUpdate = group.orders.filter((order) => String(order.driverUserId || "").trim() !== driverUserId);
+
+  if (!ordersToUpdate.length) {
+    showFlash(
+      driverUserId
+        ? `All visible entries at ${group.locationName || "that pickup location"} are already assigned to ${selectedLabel}.`
+        : `All visible entries at ${group.locationName || "that pickup location"} are already unassigned.`,
+      "success",
+    );
+    render();
+    return;
+  }
+
+  state.busy = true;
+  render();
+
+  let updatedCount = 0;
+  const warnings = [];
+
+  try {
+    for (const order of ordersToUpdate) {
+      const data = await callRpc("assign_order", {
+        p_token: sessionToken,
+        p_order_id: order.id,
+        p_driver_user_id: driverUserId || null,
+        p_allow_duplicate:
+          currentUser.role === "admin" && allowDuplicateField instanceof HTMLInputElement
+            ? allowDuplicateField.checked
+            : false,
+      });
+      updatedCount += 1;
+      const warning = String(data?.warning || "").trim();
+      if (warning) {
+        warnings.push(warning);
+      }
+    }
+
+    showFlash(
+      [
+        driverUserId
+          ? `${updatedCount} entr${updatedCount === 1 ? "y" : "ies"} at ${group.locationName || "that pickup location"} assigned to ${selectedLabel}.`
+          : `${updatedCount} entr${updatedCount === 1 ? "y" : "ies"} at ${group.locationName || "that pickup location"} moved to the unassigned queue.`,
+        ...warnings,
+      ].filter(Boolean).join(" "),
+      "success",
+    );
+    await refreshSnapshot();
+  } catch (error) {
+    if (updatedCount) {
+      showFlash(
+        `${updatedCount} entr${updatedCount === 1 ? "y was" : "ies were"} updated at ${group.locationName || "that pickup location"} before the assignment stopped. ${normalizeError(error)}`,
+        "error",
+      );
+      await refreshSnapshot();
+      return;
+    }
+
+    state.busy = false;
+    showFlash(normalizeError(error), "error");
+    render();
+  }
 }
 
 async function saveOrderTransfer(button, currentUser) {
@@ -2737,17 +2825,137 @@ function getFilteredGlobalLocationGroups(groups = getGlobalLocationGroups(), que
 
 function getGlobalListSearchSummary(filteredGroups, totalGroups, totalEntries) {
   const query = String(state.globalListSearchQuery || "").trim();
+  const scheduledDate = String(state.globalListScheduledDate || "").trim();
   const filteredEntries = filteredGroups.reduce((sum, group) => sum + group.orders.length, 0);
+  const dateLabel = formatDateOnly(scheduledDate) || scheduledDate;
+  const dateSuffix = dateLabel ? ` on ${dateLabel}` : "";
+
+  if (!query && !filteredEntries) {
+    return dateLabel
+      ? `No visible entries are scheduled for ${dateLabel}.`
+      : "No entries available yet.";
+  }
 
   if (!query) {
-    return `${totalEntries} visible entr${totalEntries === 1 ? "y" : "ies"} across ${totalGroups} pickup location${totalGroups === 1 ? "" : "s"}.`;
+    return `${totalEntries} visible entr${totalEntries === 1 ? "y" : "ies"} across ${totalGroups} pickup location${totalGroups === 1 ? "" : "s"}${dateSuffix}.`;
   }
 
   if (!filteredEntries) {
-    return `No entries or locations match "${query}".`;
+    return `No entries or locations match "${query}"${dateSuffix}.`;
   }
 
-  return `Showing ${filteredEntries} of ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"} across ${filteredGroups.length} of ${totalGroups} location${totalGroups === 1 ? "" : "s"} for "${query}".`;
+  return `Showing ${filteredEntries} of ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"} across ${filteredGroups.length} of ${totalGroups} location${totalGroups === 1 ? "" : "s"}${dateSuffix} for "${query}".`;
+}
+
+function getGlobalListEmptyStateMessage(totalEntries) {
+  const query = String(state.globalListSearchQuery || "").trim();
+  const scheduledDate = String(state.globalListScheduledDate || "").trim();
+  const dateLabel = formatDateOnly(scheduledDate) || scheduledDate;
+
+  if (query) {
+    return `No entries or locations match "${query}"${dateLabel ? ` on ${dateLabel}` : ""}.`;
+  }
+
+  if (dateLabel && !totalEntries) {
+    return `No entries are booked for ${dateLabel} yet.`;
+  }
+
+  return "No entries available yet.";
+}
+
+function getGlobalListScheduledDateOptions(orders = state.snapshot.orders) {
+  const counts = new Map();
+  const liveDate = getLiveScheduleDate();
+
+  orders.forEach((order) => {
+    const scheduledFor = getOrderScheduledForValue(order);
+    if (!scheduledFor) {
+      return;
+    }
+
+    const current = counts.get(scheduledFor) || {
+      value: scheduledFor,
+      count: 0,
+      activeCount: 0,
+      completedCount: 0,
+      isLiveDate: scheduledFor === liveDate,
+    };
+
+    current.count += 1;
+    if (order.status === "active") {
+      current.activeCount += 1;
+    }
+    if (order.status === "completed") {
+      current.completedCount += 1;
+    }
+
+    counts.set(scheduledFor, current);
+  });
+
+  return Array.from(counts.values()).sort((left, right) => String(left.value || "").localeCompare(String(right.value || "")));
+}
+
+function renderGlobalListDateFilterOptions(dateOptions, totalEntries) {
+  return `
+    <option value="">All scheduled dates${totalEntries ? ` (${totalEntries})` : ""}</option>
+    ${dateOptions.map((option) => `
+      <option value="${escapeHtml(option.value)}"${state.globalListScheduledDate === option.value ? " selected" : ""}>
+        ${escapeHtml(`${formatDateOnly(option.value) || option.value} (${option.count})${option.isLiveDate ? " | Live date" : ""}`)}
+      </option>
+    `).join("")}
+  `;
+}
+
+function renderGlobalListDateFilterPanel(dateOptions, totalEntries) {
+  const selectedDate = String(state.globalListScheduledDate || "").trim();
+
+  return `
+    <section class="global-list-date-panel">
+      <div class="global-list-date-panel-header">
+        <div>
+          <p class="eyebrow">Booked dates</p>
+          <p class="network-search-hint">
+            Choose a scheduled day to focus the global list. The live date is marked so you can see today's workload quickly.
+          </p>
+        </div>
+        <div class="chip-row">
+          <span class="chip">${dateOptions.length} booked day${dateOptions.length === 1 ? "" : "s"}</span>
+          ${selectedDate
+      ? `<span class="chip chip-success">Filtered to ${escapeHtml(formatDateOnly(selectedDate) || selectedDate)}</span>`
+      : `<span class="chip">Showing all dates</span>`
+    }
+        </div>
+      </div>
+      <div class="global-list-booked-date-list" role="list" aria-label="Booked dates">
+        <button
+          type="button"
+          class="button button-ghost global-list-booked-date-button${!selectedDate ? " is-selected" : ""}"
+          data-action="set-global-list-date-filter"
+          data-scheduled-for=""
+          aria-pressed="${!selectedDate ? "true" : "false"}"
+          ${state.busy ? " disabled" : ""}
+        >
+          <span class="global-list-booked-date-label">All scheduled dates</span>
+          <span class="global-list-booked-date-meta">${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}</span>
+        </button>
+        ${dateOptions.map((option) => `
+          <button
+            type="button"
+            class="button button-ghost global-list-booked-date-button${selectedDate === option.value ? " is-selected" : ""}"
+            data-action="set-global-list-date-filter"
+            data-scheduled-for="${escapeHtml(option.value)}"
+            aria-pressed="${selectedDate === option.value ? "true" : "false"}"
+            ${state.busy ? " disabled" : ""}
+          >
+            <span class="global-list-booked-date-label">${escapeHtml(formatDateOnly(option.value) || option.value)}</span>
+            <span class="global-list-booked-date-meta">
+              ${option.count} entr${option.count === 1 ? "y" : "ies"}${option.isLiveDate ? " | Live date" : ""}
+            </span>
+          </button>
+        `).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function matchesNetworkSearch(location, query = state.networkSearchQuery) {
@@ -5665,7 +5873,8 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
 
 function renderAssignmentManager(viewerRole) {
   const filteredOrders = getFilteredAssignmentOrders();
-  const page = getPaginationData(filteredOrders, "assignments", PAGE_SIZES.assignments);
+  const locationGroups = getFilteredAssignmentLocationGroups(filteredOrders);
+  const page = getPaginationData(locationGroups, "assignments", PAGE_SIZES.assignments);
 
   return `
     <section class="table-card">
@@ -5673,8 +5882,8 @@ function renderAssignmentManager(viewerRole) {
         <div class="stock-section-copy">
           <p class="eyebrow">Assignments</p>
           <h3 class="panel-title">Active entry allocation</h3>
-          <p class="panel-subtitle">Unassigned entries appear first. Move work onto a driver list when the route is ready, or return it to the queue.</p>
-          <p class="stock-results-note">${escapeHtml(getAssignmentFilterSummary(filteredOrders.length))}</p>
+          <p class="panel-subtitle">Entries are grouped by pickup location so you can dispatch the visible work for a stop in one action instead of one order at a time.</p>
+          <p class="stock-results-note">${escapeHtml(getAssignmentFilterSummary(locationGroups.length, filteredOrders.length))}</p>
         </div>
         <label class="assignment-filter">
           Filter by driver
@@ -5683,29 +5892,11 @@ function renderAssignmentManager(viewerRole) {
           </select>
         </label>
       </div>
-      <div class="table-scroll">
-        <table class="responsive-stack">
-          <thead>
-            <tr>
-              <th>Entry</th>
-              <th>Current driver</th>
-              <th>Pickup location</th>
-              <th>Created by</th>
-              <th>Assign to</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${page.items.length
-      ? page.items.map((order) => renderAssignmentRow(order, viewerRole)).join("")
-      : `
-                  <tr>
-                    <td colspan="6">No active entries match this driver filter.</td>
-                  </tr>
-                `
+      <div class="global-location-groups">
+        ${page.items.length
+      ? page.items.map((group) => renderAssignmentLocationGroup(group, viewerRole)).join("")
+      : `<div class="empty-state">No active entries match this driver filter.</div>`
     }
-          </tbody>
-        </table>
       </div>
       ${renderPaginationControls("assignments", page)}
     </section>
@@ -5714,7 +5905,9 @@ function renderAssignmentManager(viewerRole) {
 
 function renderGlobalOrdersSection(viewerRole) {
   const sortedOrders = [...state.snapshot.orders].sort(orderDisplaySort);
-  const locationGroups = getGlobalLocationGroups(sortedOrders);
+  const dateOptions = getGlobalListScheduledDateOptions(sortedOrders);
+  const dateFilteredOrders = filterOrdersForScheduledDate(sortedOrders, state.globalListScheduledDate);
+  const locationGroups = getGlobalLocationGroups(dateFilteredOrders);
   const filteredLocationGroups = getFilteredGlobalLocationGroups(locationGroups);
   const page = getPaginationData(filteredLocationGroups, "globalEntries", PAGE_SIZES.globalEntries);
   const canExport = viewerRole === "admin" || viewerRole === "sales";
@@ -5734,8 +5927,20 @@ function renderGlobalOrdersSection(viewerRole) {
       : "This view groups every visible entry by pickup location. Expand a location to review the orders there."
     }
           </p>
-          <p class="stock-results-note">${escapeHtml(getGlobalListSearchSummary(filteredLocationGroups, locationGroups.length, sortedOrders.length))}</p>
+          <p class="stock-results-note">${escapeHtml(getGlobalListSearchSummary(filteredLocationGroups, locationGroups.length, dateFilteredOrders.length))}</p>
         </div>
+        <label class="assignment-filter global-list-date-filter">
+          Scheduled date
+          <div class="stock-search-controls global-list-date-filter-controls">
+            <select data-global-list-date-filter>
+              ${renderGlobalListDateFilterOptions(dateOptions, sortedOrders.length)}
+            </select>
+            ${state.globalListScheduledDate
+      ? `<button type="button" class="button button-ghost" data-action="clear-global-list-date-filter"${state.busy ? " disabled" : ""}>Clear</button>`
+      : ""
+    }
+          </div>
+        </label>
         <label class="stock-search">
           Search entries
           <div class="stock-search-controls">
@@ -5808,10 +6013,11 @@ function renderGlobalOrdersSection(viewerRole) {
       ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
       : ""
     }
+      ${dateOptions.length ? renderGlobalListDateFilterPanel(dateOptions, sortedOrders.length) : ""}
       <div class="global-location-groups">
         ${page.items.length
       ? page.items.map((group) => renderGlobalLocationGroup(group, viewerRole)).join("")
-      : `<div class="empty-state">${escapeHtml(sortedOrders.length ? "No entries or locations match this search." : "No entries available yet.")}</div>`
+      : `<div class="empty-state">${escapeHtml(getGlobalListEmptyStateMessage(dateFilteredOrders.length))}</div>`
     }
       </div>
       ${renderPaginationControls("globalEntries", page)}
@@ -6233,54 +6439,91 @@ function renderGlobalOrderRow(order, viewerRole) {
   `;
 }
 
-function renderAssignmentRow(order, viewerRole) {
+function renderAssignmentLocationGroup(group, viewerRole) {
+  const locationRecord = getLocation(group.locationId) || {
+    name: group.locationName,
+    address: group.locationAddress,
+  };
+  const navigationUrl = getGoogleMapsNavigateUrl(locationRecord);
+  const stopCardKey = buildAssignmentLocationGroupKey(group.key);
+  const isOpen = isStopCardOpen(stopCardKey);
+
   return `
-    <tr>
-      <td data-label="Entry">
-        <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong><br>
-        ${renderOrderListReferenceSummary(order)}
-        ${renderOrderStockDetails(order)}
-        <div class="chip-row">
-          ${renderTypeChip(order.entryType)}
-          ${renderOrderScheduledChip(order)}
-          ${renderOrderPriorityChip(order)}
-          ${renderOrderPickupChip(order)}
-          ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
-          ${renderOrderFlagChip(order)}
+    <article class="stop-card${group.priorityCount ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
+      <div class="stop-header">
+        <div>
+          <p class="eyebrow">Pickup location</p>
+          <h4 class="stop-title">${escapeHtml(group.locationName || "Unknown")}</h4>
+          ${isOpen ? `<p class="stop-address">${escapeHtml(group.locationAddress || "Address not set")}</p>` : ""}
+          <p class="assignment-location-current-drivers">${escapeHtml(getAssignmentLocationDriverLine(group))}</p>
         </div>
-        ${renderOrderNotice(order)}
-      </td>
-      <td data-label="Current driver">${renderDriverAssignmentValue(order)}</td>
-      <td data-label="Pickup location">
-        <strong>${escapeHtml(order.locationName || "Unknown")}</strong><br>
-        <span class="muted">${escapeHtml(order.locationAddress || "")}</span>
-      </td>
-      <td data-label="Created by">
-        ${escapeHtml(order.createdByName || "Unknown")}<br>
-        <span class="muted">${escapeHtml(formatDateTime(order.createdAt))}</span>
-      </td>
-      <td data-label="Assign to">
+        <div class="chip-row">
+          <span class="chip">${group.orders.length} entr${group.orders.length === 1 ? "y" : "ies"}</span>
+          ${group.unassignedCount ? `<span class="chip chip-warning">${group.unassignedCount} unassigned</span>` : ""}
+          ${group.assignedCount ? `<span class="chip chip-success">${group.assignedCount} assigned</span>` : ""}
+          ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+        </div>
+      </div>
+      <div class="assignment-location-toolbar">
         <div class="assignment-control">
-          <select data-assignment-driver data-order-id="${order.id}">
-            ${renderDriverOptions(order.driverUserId || "", true)}
+          <select data-assignment-location-driver data-group-key="${escapeHtml(group.key)}">
+            ${renderAssignmentLocationDriverOptions(group.selectedDriverId, group.hasMixedDriverSelection)}
           </select>
           ${viewerRole === "admin"
       ? `
                 <label class="inline-check assignment-inline">
-                  <input type="checkbox" data-assignment-allow-duplicate data-order-id="${order.id}">
+                  <input type="checkbox" data-assignment-location-allow-duplicate data-group-key="${escapeHtml(group.key)}">
                   Admin override
                 </label>
               `
       : ""
     }
+          <p class="field-note">
+            ${escapeHtml(`This applies to ${group.orders.length} visible active entr${group.orders.length === 1 ? "y" : "ies"} at this pickup location.`)}
+          </p>
         </div>
-      </td>
-      <td data-label="Action">
-        <button class="button button-primary" data-action="save-order-assignment" data-order-id="${order.id}"${state.busy ? " disabled" : ""}>
-          ${order.driverUserId ? "Save" : "Assign"}
-        </button>
-      </td>
-    </tr>
+        <div class="action-row stop-actions">
+          ${navigationUrl
+      ? `
+                <a
+                  class="button button-secondary"
+                  href="${escapeHtml(navigationUrl)}"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  Navigate
+                </a>
+              `
+      : ""
+    }
+          <button
+            class="button button-primary"
+            data-action="save-location-assignment"
+            data-group-key="${escapeHtml(group.key)}"
+            ${state.busy ? " disabled" : ""}
+          >
+            Save location
+          </button>
+          <button
+            type="button"
+            class="button button-ghost"
+            data-action="toggle-stop-card"
+            data-stop-card-key="${escapeHtml(stopCardKey)}"
+            ${state.busy ? " disabled" : ""}
+          >
+            ${isOpen ? "Hide entries" : "Show entries"}
+          </button>
+        </div>
+      </div>
+      ${isOpen
+      ? `
+            <div class="location-group-orders">
+              ${group.orders.map((order) => renderGlobalOrderCard(order, viewerRole)).join("")}
+            </div>
+          `
+      : ""
+    }
+    </article>
   `;
 }
 
@@ -7218,6 +7461,40 @@ function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
     .join("");
 }
 
+function renderAssignmentLocationDriverOptions(selectedDriverId = "", hasMixedSelection = false) {
+  const drivers = getActiveDriverUsers();
+  const selectedDriver = selectedDriverId ? getUser(selectedDriverId) : null;
+  const options = [];
+
+  if (hasMixedSelection) {
+    options.push('<option value="" selected disabled>Choose a driver</option>');
+  }
+
+  options.push(`<option value="__unassigned__"${!hasMixedSelection && !selectedDriverId ? " selected" : ""}>Unassigned</option>`);
+
+  if (
+    selectedDriver
+    && selectedDriver.role === "driver"
+    && !drivers.some((driver) => driver.id === selectedDriver.id)
+  ) {
+    options.push(
+      `<option value="${selectedDriver.id}" selected>${escapeHtml(selectedDriver.name)} (inactive)</option>`,
+    );
+  }
+
+  if (!drivers.length) {
+    return options.join("");
+  }
+
+  return options
+    .concat(
+      drivers.map(
+        (driver) => `<option value="${driver.id}"${driver.id === selectedDriverId ? " selected" : ""}>${escapeHtml(driver.name)}</option>`,
+      ),
+    )
+    .join("");
+}
+
 function getAssignmentDriverFilterOptions() {
   const counts = new Map();
   let unassignedCount = 0;
@@ -7467,23 +7744,119 @@ function getFilteredAssignmentOrders() {
   return activeOrders.filter((order) => order.driverUserId === filterValue).sort(orderAssignmentSort);
 }
 
-function getAssignmentFilterSummary(filteredCount) {
+function getFilteredAssignmentLocationGroups(orders = getFilteredAssignmentOrders()) {
+  const grouped = new Map();
+
+  orders.forEach((order) => {
+    const locationId = String(order.locationId || "").trim();
+    const fallbackKey = [order.locationName, order.locationAddress]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+      .join("|");
+    const groupKey = locationId || fallbackKey || `order:${order.id}`;
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, {
+        key: groupKey,
+        locationId,
+        locationName: order.locationName || "Unknown",
+        locationAddress: order.locationAddress || "",
+        orders: [],
+        unassignedCount: 0,
+        assignedCount: 0,
+        priorityCount: 0,
+        driverCounts: new Map(),
+      });
+    }
+
+    const group = grouped.get(groupKey);
+    group.orders.push(order);
+
+    if (order.driverUserId) {
+      group.assignedCount += 1;
+      group.driverCounts.set(order.driverUserId, (group.driverCounts.get(order.driverUserId) || 0) + 1);
+    } else {
+      group.unassignedCount += 1;
+    }
+
+    if (isPriorityOrder(order)) {
+      group.priorityCount += 1;
+    }
+  });
+
+  return Array.from(grouped.values())
+    .map((group) => {
+      const driverSummaries = Array.from(group.driverCounts.entries())
+        .map(([driverId, count]) => ({
+          id: driverId,
+          name: getUser(driverId)?.name || "Unknown driver",
+          count,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, "en-ZA"));
+      const hasMixedDriverSelection = driverSummaries.length > 1 || (driverSummaries.length > 0 && group.unassignedCount > 0);
+      const selectedDriverId = hasMixedDriverSelection
+        ? ""
+        : (driverSummaries[0]?.id || "");
+
+      return {
+        ...group,
+        orders: [...group.orders].sort(orderAssignmentSort),
+        driverSummaries,
+        hasMixedDriverSelection,
+        selectedDriverId,
+      };
+    })
+    .sort((left, right) => {
+      const leftUnassignedRank = left.unassignedCount > 0 ? 0 : 1;
+      const rightUnassignedRank = right.unassignedCount > 0 ? 0 : 1;
+      if (leftUnassignedRank !== rightUnassignedRank) {
+        return leftUnassignedRank - rightUnassignedRank;
+      }
+
+      const nameCompare = String(left.locationName || "").localeCompare(String(right.locationName || ""), "en-ZA", {
+        sensitivity: "base",
+      });
+      if (nameCompare) {
+        return nameCompare;
+      }
+
+      return String(left.locationAddress || "").localeCompare(String(right.locationAddress || ""), "en-ZA", {
+        sensitivity: "base",
+      });
+    });
+}
+
+function getAssignmentLocationDriverLine(group) {
+  const parts = group.driverSummaries.map((driver) => `${driver.name} (${driver.count})`);
+  if (group.unassignedCount) {
+    parts.push(`Unassigned (${group.unassignedCount})`);
+  }
+
+  if (!parts.length) {
+    return "Current driver: Unassigned.";
+  }
+
+  return `Current split: ${parts.join(", ")}.`;
+}
+
+function getAssignmentFilterSummary(filteredGroupCount, filteredCount) {
   const filterValue = String(state.assignmentDriverFilter || "").trim();
+  const groupLabel = `${filteredGroupCount} pickup location${filteredGroupCount === 1 ? "" : "s"}`;
 
   if (!filterValue) {
-    return `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"}. Unassigned work still appears first.`;
+    return `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"} across ${groupLabel}. Unassigned work still appears first.`;
   }
 
   if (filterValue === "unassigned") {
     return filteredCount
-      ? `Showing ${filteredCount} unassigned active entr${filteredCount === 1 ? "y" : "ies"}.`
+      ? `Showing ${filteredCount} unassigned active entr${filteredCount === 1 ? "y" : "ies"} across ${groupLabel}.`
       : "No unassigned active entries right now.";
   }
 
   const driver = getUser(filterValue);
   const driverName = driver?.name || "that driver";
   return filteredCount
-    ? `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"} for ${driverName}.`
+    ? `Showing ${filteredCount} active entr${filteredCount === 1 ? "y" : "ies"} for ${driverName} across ${groupLabel}.`
     : `No active entries are currently assigned to ${driverName}.`;
 }
 
@@ -7667,6 +8040,10 @@ function buildStopCardKey(driverUserId, stopId) {
 
 function buildGlobalLocationGroupKey(groupKey) {
   return `global-location:${String(groupKey || "").trim()}`;
+}
+
+function buildAssignmentLocationGroupKey(groupKey) {
+  return `assignment-location:${String(groupKey || "").trim()}`;
 }
 
 function isStopCardOpen(stopCardKey) {

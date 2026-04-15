@@ -28,7 +28,7 @@ try {
   qrLoadError = error;
 }
 
-const HOST = "0.0.0.0";
+const HOST = String(process.env.HOST || "0.0.0.0").trim() || "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 const TIME_ZONE = "Africa/Johannesburg";
