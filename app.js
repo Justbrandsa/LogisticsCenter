@@ -7218,7 +7218,8 @@ function getOrderPriorityRank(order) {
 }
 
 function isPriorityOrder(order) {
-  return getOrderPriority(order) === PRIORITY_STOP_VALUE;
+  return String(order?.status || "").trim().toLowerCase() === "active"
+    && getOrderPriority(order) === PRIORITY_STOP_VALUE;
 }
 
 function hasCarryOver(order) {
