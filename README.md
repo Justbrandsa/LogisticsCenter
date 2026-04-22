@@ -38,6 +38,15 @@ Logictics Centre is a local-database browser app for managing driver-separated p
 7. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
 8. Vercel-style serverless hosts do not offer durable project-local disk storage. If the app falls back to a temporary runtime folder, writes will work but the data can reset on restart, scale-out, or redeploy.
 
+## Live data rescue
+
+- Admins can export the full database through `POST /api/admin/data/export` with `{ "token": "<session-token>" }`.
+- Admins can import a full exported dataset through `POST /api/admin/data/import` with `{ "token": "<session-token>", "data": { ... } }`.
+- To pull data from a running live site into the current local SQLite file, run:
+  `node migrate-live-data.js --source-url https://your-live-site.example --name "Admin Name" --password "admin-password"`
+- Use `--token` instead of `--name` and `--password` if you already have an admin session token.
+- The rescue command always writes a JSON backup under `data/` before it imports locally.
+
 ## Microsoft Graph mail
 
 - The default provider is `microsoft-graph`.

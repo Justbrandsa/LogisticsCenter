@@ -1,8 +1,10 @@
 {
   "scripts": {
-    "start": "node serve.js"
+    "start": "node serve.js",
+    "migrate:live": "node migrate-live-data.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "nodemailer": "^8.0.2",
     "qrcode": "^1.5.4"
   }

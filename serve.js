@@ -273,6 +273,20 @@ async function routeRequest(request, response) {
       return;
     }
 
+    if (request.method === "POST" && cleanPath === "/api/admin/data/export") {
+      const payload = await readJsonBody(request);
+      const result = await exportDatabaseData(payload?.token);
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/admin/data/import") {
+      const payload = await readJsonBody(request);
+      const result = await importDatabaseData(payload?.token, payload?.data, payload?.source);
+      sendJson(response, 200, result);
+      return;
+    }
+
     if ((request.method === "GET" || request.method === "POST") && cleanPath === DELETE_LOG_CRON_PATH) {
       if (!isAuthorizedJobRequest(request)) {
         sendJson(response, 401, { error: "Unauthorized." });
@@ -390,6 +404,47 @@ async function routeRequest(request, response) {
   }
 }
 
+async function requireAdminSession(token, deniedMessage = "Only admin users can do that.") {
+  const cleanToken = String(token || "").trim();
+  if (!cleanToken) {
+    throw createHttpError(400, "Session token is required.");
+  }
+
+  const currentUser = await database.getUserByToken(cleanToken);
+  if (!currentUser) {
+    throw createHttpError(403, "You must be signed in.");
+  }
+
+  if (currentUser.role !== "admin") {
+    throw createHttpError(403, deniedMessage);
+  }
+
+  return currentUser;
+}
+
+async function exportDatabaseData(token) {
+  const currentUser = await requireAdminSession(token, "Only admin users can export data.");
+  return {
+    exportedAt: new Date().toISOString(),
+    exportedBy: currentUser.name,
+    storage: database.getStatus().storagePath || "",
+    counts: database.getTableCounts(),
+    data: database.exportAllData(),
+  };
+}
+
+async function importDatabaseData(token, data, source = "") {
+  const currentUser = await requireAdminSession(token, "Only admin users can import data.");
+  const result = database.replaceAllData(data, {
+    source: String(source || "").trim() || `admin import by ${currentUser.name}`,
+  });
+  return {
+    ...result,
+    importedAt: new Date().toISOString(),
+    importedBy: currentUser.name,
+  };
+}
+
 async function buildDriverTransferEmailContext(functionName, parameters) {
   if (functionName !== "assign_order") {
     return null;
@@ -497,7 +552,7 @@ function createGeocoder() {
   let lastRequestAt = 0;
   let requestQueue = Promise.resolve();
 
-  const scheduleLookup = async (task) => {
+  const runRateLimitedRequest = async (task) => {
     const scheduledTask = requestQueue.catch(() => undefined).then(async () => {
       const waitMs = Math.max(0, GEOCODE_MIN_INTERVAL_MS - (Date.now() - lastRequestAt));
       if (waitMs > 0) {
@@ -523,96 +578,55 @@ function createGeocoder() {
         const cached = getGeocodeCacheEntry(cache, normalizedAddress);
         if (cached) {
           if (cached.notFound) {
-            throw createHttpError(404, "No coordinates were found for that address.");
+            cache.delete(normalizedAddress.toLowerCase());
+            persistGeocodeCache(cache, cacheFilePath);
+          } else {
+            return {
+              lat: cached.lat,
+              lng: cached.lng,
+              displayName: cached.displayName,
+              cached: true,
+            };
           }
-
-          return {
-            lat: cached.lat,
-            lng: cached.lng,
-            displayName: cached.displayName,
-            cached: true,
-          };
         }
       }
 
       try {
-        return await scheduleLookup(async () => {
-          if (!options.force) {
-            const cached = getGeocodeCacheEntry(cache, normalizedAddress);
-            if (cached) {
-              if (cached.notFound) {
-                throw createHttpError(404, "No coordinates were found for that address.");
-              }
+        const queryVariants = buildGeocodeQueryVariants(normalizedAddress);
+        let match = null;
 
-              return {
-                lat: cached.lat,
-                lng: cached.lng,
-                displayName: cached.displayName,
-                cached: true,
-              };
-            }
+        for (const query of queryVariants) {
+          match = await runRateLimitedRequest(() => fetchGeocodeMatch(query));
+          if (match) {
+            break;
           }
+        }
 
-          const url = new URL(GEOCODE_SEARCH_URL);
-          url.searchParams.set("q", normalizedAddress);
-          url.searchParams.set("format", "jsonv2");
-          url.searchParams.set("limit", "1");
-          url.searchParams.set("addressdetails", "0");
+        if (!match) {
+          throw createHttpError(404, "No coordinates were found for that address.");
+        }
 
-          let response;
-          try {
-            response = await fetch(url, {
-              headers: {
-                Accept: "application/json",
-                "Accept-Language": "en-ZA,en;q=0.9",
-                "User-Agent": GEOCODE_USER_AGENT,
-              },
-            });
-          } catch (error) {
-            throw createHttpError(503, `Address lookup needs internet access. ${normalizeErrorMessage(error)}`);
-          }
+        const lat = Number(match.lat);
+        const lng = Number(match.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          throw createHttpError(502, "Address lookup returned invalid coordinates.");
+        }
 
-          const payload = await safeReadJson(response);
-          if (response.status === 429) {
-            throw createHttpError(429, "Address lookup is being rate-limited right now. Please wait a moment and try again.");
-          }
+        const result = {
+          lat,
+          lng,
+          displayName: String(match.display_name || "").trim(),
+          updatedAt: new Date().toISOString(),
+        };
+        setGeocodeCacheEntry(cache, normalizedAddress, result);
+        persistGeocodeCache(cache, cacheFilePath);
 
-          if (!response.ok) {
-            throw createHttpError(502, payload?.error || "Address lookup failed.");
-          }
-
-          const match = Array.isArray(payload) ? payload[0] : null;
-          if (!match) {
-            setGeocodeCacheEntry(cache, normalizedAddress, {
-              notFound: true,
-              updatedAt: new Date().toISOString(),
-            });
-            persistGeocodeCache(cache, cacheFilePath);
-            throw createHttpError(404, "No coordinates were found for that address.");
-          }
-
-          const lat = Number(match.lat);
-          const lng = Number(match.lon);
-          if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-            throw createHttpError(502, "Address lookup returned invalid coordinates.");
-          }
-
-          const result = {
-            lat,
-            lng,
-            displayName: String(match.display_name || "").trim(),
-            updatedAt: new Date().toISOString(),
-          };
-          setGeocodeCacheEntry(cache, normalizedAddress, result);
-          persistGeocodeCache(cache, cacheFilePath);
-
-          return {
-            lat: result.lat,
-            lng: result.lng,
-            displayName: result.displayName,
-            cached: false,
-          };
-        });
+        return {
+          lat: result.lat,
+          lng: result.lng,
+          displayName: result.displayName,
+          cached: false,
+        };
       } catch (error) {
         if (Number.isInteger(error?.statusCode)) {
           throw error;
@@ -633,6 +647,97 @@ function getRuntimeDataFilePath(fileName) {
 
 function normalizeGeocodeAddress(value) {
   return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+async function fetchGeocodeMatch(query) {
+  const url = new URL(GEOCODE_SEARCH_URL);
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("addressdetails", "0");
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Language": "en-ZA,en;q=0.9",
+        "User-Agent": GEOCODE_USER_AGENT,
+      },
+    });
+  } catch (error) {
+    throw createHttpError(503, `Address lookup needs internet access. ${normalizeErrorMessage(error)}`);
+  }
+
+  const payload = await safeReadJson(response);
+  if (response.status === 429) {
+    throw createHttpError(429, "Address lookup is being rate-limited right now. Please wait a moment and try again.");
+  }
+
+  if (!response.ok) {
+    throw createHttpError(502, payload?.error || "Address lookup failed.");
+  }
+
+  return Array.isArray(payload) ? (payload[0] || null) : null;
+}
+
+function buildGeocodeQueryVariants(address) {
+  const normalizedAddress = normalizeGeocodeAddress(address);
+  const parts = normalizedAddress
+    .split(",")
+    .map((part) => normalizeGeocodeAddress(part))
+    .filter(Boolean);
+  const baseQueries = [];
+  const queries = [];
+
+  const pushBaseQuery = (value) => {
+    const query = normalizeGeocodeAddress(value);
+    if (!query || baseQueries.includes(query) || baseQueries.length >= 4) {
+      return;
+    }
+    baseQueries.push(query);
+  };
+
+  const pushQuery = (value) => {
+    const query = normalizeGeocodeAddress(value);
+    if (!query || queries.includes(query) || queries.length >= 10) {
+      return;
+    }
+    queries.push(query);
+  };
+
+  pushBaseQuery(normalizedAddress);
+
+  if (parts.length > 1 && looksLikePostalCode(parts[parts.length - 1])) {
+    pushBaseQuery(parts.slice(0, -1).join(", "));
+  }
+
+  if (parts.length > 2) {
+    pushBaseQuery(parts.slice(0, -1).join(", "));
+    pushBaseQuery(parts.slice(0, -2).join(", "));
+  }
+
+  baseQueries.forEach((query) => {
+    pushQuery(query);
+
+    if (query.includes("&")) {
+      pushQuery(query.replace(/\s*&\s*/g, " and "));
+    }
+
+    if (!/south africa/i.test(query)) {
+      pushQuery(`${query}, South Africa`);
+
+      if (query.includes("&")) {
+        pushQuery(`${query.replace(/\s*&\s*/g, " and ")}, South Africa`);
+      }
+    }
+  });
+
+  return queries;
+}
+
+function looksLikePostalCode(value) {
+  return /^\d{4,6}$/.test(String(value || "").trim());
 }
 
 function loadGeocodeCache(filePath) {

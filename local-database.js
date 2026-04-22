@@ -5,11 +5,18 @@ const path = require("path");
 
 let DatabaseSync = null;
 let sqliteLoadError = null;
+let bcrypt = null;
 
 try {
   ({ DatabaseSync } = require("node:sqlite"));
 } catch (error) {
   sqliteLoadError = error;
+}
+
+try {
+  bcrypt = require("bcryptjs");
+} catch (error) {
+  bcrypt = null;
 }
 
 const TIME_ZONE = "Africa/Johannesburg";
@@ -78,6 +85,15 @@ function createUnavailableDatabase(reason) {
       throw createHttpError(503, message);
     },
     async getUserByToken() {
+      throw createHttpError(503, message);
+    },
+    exportAllData() {
+      throw createHttpError(503, message);
+    },
+    getTableCounts() {
+      throw createHttpError(503, message);
+    },
+    replaceAllData() {
       throw createHttpError(503, message);
     },
     async close() {},
@@ -492,6 +508,20 @@ class LocalDatabase {
       stock_movements: Number(this.get("select count(*) as count from stock_movements")?.count || 0),
       artwork_requests: Number(this.get("select count(*) as count from artwork_requests")?.count || 0),
       app_sessions: Number(this.get("select count(*) as count from app_sessions")?.count || 0),
+    };
+  }
+
+  exportAllData() {
+    return {
+      app_users: this.all("select * from app_users order by created_at asc, id asc"),
+      suppliers: this.all("select * from suppliers order by created_at asc, id asc"),
+      locations: this.all("select * from locations order by created_at asc, id asc"),
+      orders: this.all("select * from orders order by created_at asc, order_number asc, id asc"),
+      order_delete_log: this.all("select * from order_delete_log order by deleted_at asc, id asc"),
+      stock_items: this.all("select * from stock_items order by created_at asc, id asc"),
+      stock_movements: this.all("select * from stock_movements order by created_at asc, id asc"),
+      artwork_requests: this.all("select * from artwork_requests order by sent_at asc, id asc"),
+      app_sessions: this.all("select * from app_sessions order by created_at asc, token asc"),
     };
   }
 
@@ -3538,6 +3568,9 @@ function hashPassword(password) {
 
 function passwordMatches(password, hash) {
   const stored = String(hash || "");
+  if (/^\$2[aby]\$/.test(stored)) {
+    return Boolean(bcrypt && bcrypt.compareSync(password, stored));
+  }
   const parts = stored.split(":");
   if (parts.length !== 3 || parts[0] !== "scrypt") {
     return false;

@@ -1,0 +1,103 @@
+{
+  "exportedAt": "2026-04-22T12:50:18.789Z",
+  "exportedBy": "Tristan",
+  "storage": "https://logistics-center.vercel.app (snapshot fallback)",
+  "counts": {
+    "app_users": 3,
+    "suppliers": 0,
+    "locations": 2,
+    "orders": 0,
+    "order_delete_log": 0,
+    "stock_items": 0,
+    "stock_movements": 0,
+    "artwork_requests": 0,
+    "app_sessions": 0
+  },
+  "data": {
+    "app_users": [
+      {
+        "id": "768845e5-94f1-42ce-badc-7f1cb045ef92",
+        "name": "Michelle",
+        "role": "admin",
+        "password_hash": "scrypt:331e2585ac3c23ebe9324c185955c569:3a0d4b16dfc3517bdcf7c65a80346900361d3ea4ac91d075263b5175e94a17cdfb0b0c786803329535489746766fd335f10a33ac375b33987218b6eb1f26ac6e",
+        "active": true,
+        "phone": null,
+        "vehicle": null,
+        "last_known_lat": null,
+        "last_known_lng": null,
+        "last_known_recorded_at": null,
+        "created_at": "2026-04-22T12:20:44.340Z",
+        "updated_at": "2026-04-22T12:20:44.340Z"
+      },
+      {
+        "id": "9fd6227e-7c51-4bc8-8509-676bea7a48fb",
+        "name": "Natalie",
+        "role": "admin",
+        "password_hash": "scrypt:ff3d9eb010939feeeb326f86c5b6ee50:b35003035c5056ae984b0d76a1a0f2ca33a05ec7a835418211d6928791b82e83bd1ca7247c240ebb3066ba962e3ca638e1a05e4593ea8d172125bef446812018",
+        "active": true,
+        "phone": null,
+        "vehicle": null,
+        "last_known_lat": null,
+        "last_known_lng": null,
+        "last_known_recorded_at": null,
+        "created_at": "2026-04-22T12:15:18.190Z",
+        "updated_at": "2026-04-22T12:15:18.190Z"
+      },
+      {
+        "id": "6394947e-bcec-4355-93ee-e0d3c5256f01",
+        "name": "Tristan",
+        "role": "admin",
+        "password_hash": "scrypt:89930eeebd798ca04c8d947f35c2363f:c52f5ed46984869ddaaf2a064d7398b63b6d2ea6a675adce5bfb00542c7ec74829bfae8388e12820c8c449308ed5a6483b52e0d12e04db7461ea5214cbbb323c",
+        "active": true,
+        "phone": null,
+        "vehicle": null,
+        "last_known_lat": null,
+        "last_known_lng": null,
+        "last_known_recorded_at": null,
+        "created_at": "2026-04-22T12:20:28.530Z",
+        "updated_at": "2026-04-22T12:20:28.530Z"
+      }
+    ],
+    "suppliers": [],
+    "locations": [
+      {
+        "id": "20cb4b0c-fc33-4bd6-97aa-e2df916f5305",
+        "supplier_id": null,
+        "location_type": "both",
+        "name": "Amrod",
+        "address": "Old Pretoria Road & Beatty Road, Woodmead, Johannesburg, 2090",
+        "lat": -26.050115,
+        "lng": 28.097945,
+        "contact_person": "",
+        "contact_number": "",
+        "notes": "",
+        "created_by": "6394947e-bcec-4355-93ee-e0d3c5256f01",
+        "created_at": "2026-04-22T12:22:28.625Z",
+        "updated_at": "2026-04-22T12:22:28.625Z"
+      },
+      {
+        "id": "1f0d680b-978c-425d-af62-16a52d280baa",
+        "supplier_id": null,
+        "location_type": "supplier",
+        "name": "Office",
+        "address": "Giftwrap Office",
+        "lat": null,
+        "lng": null,
+        "contact_person": "",
+        "contact_number": "",
+        "notes": "System pickup location for office-origin entries.",
+        "created_by": "6394947e-bcec-4355-93ee-e0d3c5256f01",
+        "created_at": "2026-04-22T12:15:18.260Z",
+        "updated_at": "2026-04-22T12:15:18.260Z"
+      }
+    ],
+    "orders": [],
+    "order_delete_log": [],
+    "stock_items": [],
+    "stock_movements": [],
+    "artwork_requests": [],
+    "app_sessions": []
+  },
+  "exportMode": "snapshot-fallback",
+  "warning": "The live site did not expose the full export route, so the migration used the available admin snapshot. Imported accounts were assigned the fallback password used for this rescue run."
+}
