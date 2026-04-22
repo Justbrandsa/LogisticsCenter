@@ -10,4 +10,9 @@ module.exports = {
   artworkTo: "artwork3@giftwrap.co.za",
   adminActionTo: "admin3@giftwrap.co.za",
   rolloverTestTo: "artwork3@giftwrap.co.za",
+  droppedOfficeSsTo: "Sheryl-ann@giftwrap.co.za",
+  droppedOfficeSbTo: "reception@giftwrap.co.za",
+  droppedOfficeMorMarTo: "promo22@giftwrap.co.za",
+  droppedOfficeOrderTo: "orders@giftwrapshop.co.za",
+  droppedOfficeFallbackTo: "order@giftwrapshop.co.za",
 };

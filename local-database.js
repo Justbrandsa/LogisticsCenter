@@ -36,6 +36,11 @@ const APP_SETTING_KEYS = Object.freeze({
   mailArtworkTo: "mail_artwork_to_override",
   mailAdminActionTo: "mail_admin_action_to_override",
   mailRolloverTestTo: "mail_rollover_test_to_override",
+  mailDroppedOfficeSsTo: "mail_dropped_office_ss_to_override",
+  mailDroppedOfficeSbTo: "mail_dropped_office_sb_to_override",
+  mailDroppedOfficeMorMarTo: "mail_dropped_office_mor_mar_to_override",
+  mailDroppedOfficeOrderTo: "mail_dropped_office_order_to_override",
+  mailDroppedOfficeFallbackTo: "mail_dropped_office_fallback_to_override",
 });
 const MAIL_SETTING_KEY_LIST = Object.freeze(Object.values(APP_SETTING_KEYS));
 const DEFAULT_DATABASE_FILENAME = "route-ledger.sqlite";
@@ -131,6 +136,11 @@ function createUnavailableDatabase(reason) {
         artworkTo: "",
         adminActionTo: "",
         rolloverTestTo: "",
+        droppedOfficeSsTo: "",
+        droppedOfficeSbTo: "",
+        droppedOfficeMorMarTo: "",
+        droppedOfficeOrderTo: "",
+        droppedOfficeFallbackTo: "",
       };
     },
     async close() {},
@@ -613,6 +623,11 @@ class LocalDatabase {
     const artworkTo = normalizeEmailDestinationText(parameters?.p_artwork_to, "Artwork inbox");
     const adminActionTo = normalizeEmailDestinationText(parameters?.p_admin_action_to, "Admin action inbox");
     const rolloverTestTo = normalizeEmailDestinationText(parameters?.p_rollover_test_to, "Carry-over test inbox");
+    const droppedOfficeSsTo = normalizeEmailDestinationText(parameters?.p_dropped_office_ss_to, "Dropped-at-office SS inbox");
+    const droppedOfficeSbTo = normalizeEmailDestinationText(parameters?.p_dropped_office_sb_to, "Dropped-at-office SB inbox");
+    const droppedOfficeMorMarTo = normalizeEmailDestinationText(parameters?.p_dropped_office_mor_mar_to, "Dropped-at-office MOR/MAR inbox");
+    const droppedOfficeOrderTo = normalizeEmailDestinationText(parameters?.p_dropped_office_order_to, "Dropped-at-office Order inbox");
+    const droppedOfficeFallbackTo = normalizeEmailDestinationText(parameters?.p_dropped_office_fallback_to, "Dropped-at-office fallback inbox");
     const updatedAt = nowIso();
 
     this.withTransaction(() => {
@@ -622,6 +637,11 @@ class LocalDatabase {
       this.writeAppSetting(APP_SETTING_KEYS.mailArtworkTo, artworkTo, actor.id, updatedAt);
       this.writeAppSetting(APP_SETTING_KEYS.mailAdminActionTo, adminActionTo, actor.id, updatedAt);
       this.writeAppSetting(APP_SETTING_KEYS.mailRolloverTestTo, rolloverTestTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailDroppedOfficeSsTo, droppedOfficeSsTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailDroppedOfficeSbTo, droppedOfficeSbTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailDroppedOfficeMorMarTo, droppedOfficeMorMarTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailDroppedOfficeOrderTo, droppedOfficeOrderTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailDroppedOfficeFallbackTo, droppedOfficeFallbackTo, actor.id, updatedAt);
     });
 
     return {
@@ -687,6 +707,11 @@ class LocalDatabase {
       artworkTo: rowMap[APP_SETTING_KEYS.mailArtworkTo] || "",
       adminActionTo: rowMap[APP_SETTING_KEYS.mailAdminActionTo] || "",
       rolloverTestTo: rowMap[APP_SETTING_KEYS.mailRolloverTestTo] || "",
+      droppedOfficeSsTo: rowMap[APP_SETTING_KEYS.mailDroppedOfficeSsTo] || "",
+      droppedOfficeSbTo: rowMap[APP_SETTING_KEYS.mailDroppedOfficeSbTo] || "",
+      droppedOfficeMorMarTo: rowMap[APP_SETTING_KEYS.mailDroppedOfficeMorMarTo] || "",
+      droppedOfficeOrderTo: rowMap[APP_SETTING_KEYS.mailDroppedOfficeOrderTo] || "",
+      droppedOfficeFallbackTo: rowMap[APP_SETTING_KEYS.mailDroppedOfficeFallbackTo] || "",
     };
   }
 

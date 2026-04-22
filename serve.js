@@ -32,6 +32,11 @@ const DELETE_LOG_CRON_PATH = "/api/jobs/order-delete-log-email";
 const DEFAULT_MAIL_SENDER_NAME = "Logistics Centre";
 const DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL = "admin3@giftwrap.co.za";
 const DEFAULT_ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
+const DEFAULT_DROPPED_OFFICE_SS_EMAIL = "Sheryl-ann@giftwrap.co.za";
+const DEFAULT_DROPPED_OFFICE_SB_EMAIL = "reception@giftwrap.co.za";
+const DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL = "promo22@giftwrap.co.za";
+const DEFAULT_DROPPED_OFFICE_ORDER_EMAIL = "orders@giftwrapshop.co.za";
+const DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL = "order@giftwrapshop.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const GEOCODE_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const GEOCODE_CACHE_FILENAME = "geocode-cache.json";
@@ -329,6 +334,7 @@ async function routeRequest(request, response) {
       const driverTransferEmailContext = await buildDriverTransferEmailContext(functionName, parameters);
       const adminActionEmailContext = await buildAdminActionEmailContext(functionName, parameters);
       const data = await database.call(functionName, parameters);
+      const droppedOfficeEmailContext = await buildDroppedOfficeEmailContext(functionName, parameters, data);
       let responseData = data;
       const warnings = [];
       await maybeSendCarryOverEmail(functionName, data);
@@ -349,6 +355,14 @@ async function routeRequest(request, response) {
         } catch (error) {
           warnings.push(`Admin action email could not be sent: ${normalizeErrorMessage(error)}`);
           console.error("Failed to send admin action email.", error);
+        }
+      }
+      if (droppedOfficeEmailContext) {
+        try {
+          await mailer.sendDroppedOfficeEmail(droppedOfficeEmailContext);
+        } catch (error) {
+          warnings.push(`Dropped-at-office email could not be sent: ${normalizeErrorMessage(error)}`);
+          console.error("Failed to send dropped-at-office email.", error);
         }
       }
       const warning = warnings.join(" ");
@@ -485,6 +499,11 @@ async function updateMailSettings(token, payload = {}) {
     p_artwork_to: payload?.artworkTo,
     p_admin_action_to: payload?.adminActionTo,
     p_rollover_test_to: payload?.rolloverTestTo,
+    p_dropped_office_ss_to: payload?.droppedOfficeSsTo,
+    p_dropped_office_sb_to: payload?.droppedOfficeSbTo,
+    p_dropped_office_mor_mar_to: payload?.droppedOfficeMorMarTo,
+    p_dropped_office_order_to: payload?.droppedOfficeOrderTo,
+    p_dropped_office_fallback_to: payload?.droppedOfficeFallbackTo,
   });
 
   return {
@@ -570,6 +589,42 @@ async function buildAdminActionEmailContext(functionName, parameters) {
     affectedCount: affectedOrders.length,
     affectedOrders: affectedOrders.slice(0, 25),
     remainingCount: Math.max(affectedOrders.length - 25, 0),
+  };
+}
+
+async function buildDroppedOfficeEmailContext(functionName, parameters, result) {
+  if (functionName !== "complete_order") {
+    return null;
+  }
+
+  const orderId = String(parameters?.p_order_id || "").trim();
+  const completionType = String(result?.completionType || "").trim().toLowerCase();
+  if (!orderId || completionType !== "office") {
+    return null;
+  }
+
+  const orders = await database.listOrdersForMailExport();
+  const order = orders.find((entry) => entry.id === orderId) || null;
+  if (!order) {
+    return null;
+  }
+
+  if (String(order?.status || "").trim().toLowerCase() !== "completed") {
+    return null;
+  }
+
+  if (String(order?.completionType || "").trim().toLowerCase() !== "office") {
+    return null;
+  }
+
+  if (isDeliveryOrder(order)) {
+    return null;
+  }
+
+  return {
+    order,
+    completedAt: order.completedAt || new Date().toISOString(),
+    completedByName: String(order?.completedByName || "").trim(),
   };
 }
 
@@ -1089,6 +1144,11 @@ function createMailer() {
         artworkTo: runtime.config.artworkTo,
         adminActionTo: runtime.config.adminActionTo,
         rolloverTestTo: runtime.config.rolloverTestTo,
+        droppedOfficeSsTo: runtime.config.droppedOfficeSsTo,
+        droppedOfficeSbTo: runtime.config.droppedOfficeSbTo,
+        droppedOfficeMorMarTo: runtime.config.droppedOfficeMorMarTo,
+        droppedOfficeOrderTo: runtime.config.droppedOfficeOrderTo,
+        droppedOfficeFallbackTo: runtime.config.droppedOfficeFallbackTo,
       };
     },
     async sendSnapshotCsv(token) {
@@ -1371,6 +1431,75 @@ function createMailer() {
         count: affectedCount,
       };
     },
+    async sendDroppedOfficeEmail(notification) {
+      const runtime = getRuntime();
+      const { status } = runtime;
+      if (!status.configured) {
+        throw createHttpError(503, status.reason || "Email delivery is not configured.");
+      }
+
+      const order = notification?.order || null;
+      if (!order) {
+        throw createHttpError(400, "Dropped-at-office order details are required.");
+      }
+
+      const route = resolveDroppedOfficeEmailRoute(runtime.config, order);
+      const recipient = String(route.to || "").trim();
+      if (!recipient) {
+        return {
+          ok: true,
+          skipped: true,
+          reason: "No dropped-at-office inbox is configured.",
+        };
+      }
+
+      const completedAt = formatDateTime(notification?.completedAt || order?.completedAt || new Date().toISOString());
+      const completedByName = String(notification?.completedByName || order?.completedByName || "").trim() || "Unknown user";
+      const subject = `Dropped at office: ${getOrderPrimaryDisplay(order) || "Route Ledger entry"}`;
+      const identifierText = route.identifier
+        ? route.identifierLabel
+          ? `${route.identifierLabel} ${route.identifier}`
+          : route.identifier
+        : "None";
+      const text = [
+        "A Route Ledger entry was marked as dropped at the office.",
+        "",
+        `Sent to: ${recipient}`,
+        `Routing rule: ${route.ruleLabel}`,
+        `Identifier used: ${identifierText}`,
+        `Entry: ${getOrderPrimaryDisplay(order) || "Unknown"}`,
+        `Other references: ${getOrderOtherReferenceLines(order).join(" | ") || "None"}`,
+        `Entry type: ${getOrderEntryTypeLabel(order.entryType) || "Not set"}`,
+        `Completed by: ${completedByName}`,
+        `Completed at: ${completedAt || "Just now"}`,
+        `Driver: ${String(order.driverName || "").trim() || "Unassigned"}`,
+        `Pickup location: ${String(order.locationName || "").trim() || "Unknown"}`,
+        `Pickup address: ${String(order.locationAddress || "").trim() || "Unknown"}`,
+        `Delivery address: ${String(order.deliveryAddress || "").trim() || "Not set"}`,
+        `Destination: ${getCollectionDestinationLabel(order) || "Office"}`,
+        `Move to factory: ${getMoveToFactoryLabel(order) || "No"}`,
+        `Stock required: ${String(order.stockDescription || "").trim() || "Not set"}`,
+        `Branding: ${String(order.branding || "").trim() || "None"}`,
+        `Notes: ${String(order.notes || "").trim() || "None"}`,
+        `Schedule: ${getOrderScheduleSummary(order) || "Not scheduled"}`,
+      ].join("\n");
+
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
+        to: recipient,
+        subject,
+        text,
+      });
+
+      return {
+        ok: true,
+        sentTo: recipient,
+        sentFrom: status.from,
+        subject,
+        rule: route.ruleKey,
+      };
+    },
     async sendOrderDeleteLogEmail(entries) {
       const runtime = getRuntime();
       const { status } = runtime;
@@ -1574,6 +1703,31 @@ function loadMailConfig() {
     fileConfig.rolloverTestTo,
     DEFAULT_ROLLOVER_TEST_EMAIL,
   ]);
+  const droppedOfficeSsTo = firstNonEmpty([
+    process.env.MAIL_DROPPED_OFFICE_SS_TO,
+    fileConfig.droppedOfficeSsTo,
+    DEFAULT_DROPPED_OFFICE_SS_EMAIL,
+  ]);
+  const droppedOfficeSbTo = firstNonEmpty([
+    process.env.MAIL_DROPPED_OFFICE_SB_TO,
+    fileConfig.droppedOfficeSbTo,
+    DEFAULT_DROPPED_OFFICE_SB_EMAIL,
+  ]);
+  const droppedOfficeMorMarTo = firstNonEmpty([
+    process.env.MAIL_DROPPED_OFFICE_MOR_MAR_TO,
+    fileConfig.droppedOfficeMorMarTo,
+    DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL,
+  ]);
+  const droppedOfficeOrderTo = firstNonEmpty([
+    process.env.MAIL_DROPPED_OFFICE_ORDER_TO,
+    fileConfig.droppedOfficeOrderTo,
+    DEFAULT_DROPPED_OFFICE_ORDER_EMAIL,
+  ]);
+  const droppedOfficeFallbackTo = firstNonEmpty([
+    process.env.MAIL_DROPPED_OFFICE_FALLBACK_TO,
+    fileConfig.droppedOfficeFallbackTo,
+    DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL,
+  ]);
   if (provider === "smtp") {
     const service = firstNonEmpty([
       process.env.SMTP_SERVICE,
@@ -1625,6 +1779,11 @@ function loadMailConfig() {
       artworkTo,
       adminActionTo,
       rolloverTestTo,
+      droppedOfficeSsTo,
+      droppedOfficeSbTo,
+      droppedOfficeMorMarTo,
+      droppedOfficeOrderTo,
+      droppedOfficeFallbackTo,
     };
   }
 
@@ -1637,6 +1796,11 @@ function loadMailConfig() {
     artworkTo,
     adminActionTo,
     rolloverTestTo,
+    droppedOfficeSsTo,
+    droppedOfficeSbTo,
+    droppedOfficeMorMarTo,
+    droppedOfficeOrderTo,
+    droppedOfficeFallbackTo,
     tenantId: firstNonEmpty([
       process.env.MAIL_TENANT_ID,
       fileConfig.tenantId,
@@ -1662,6 +1826,11 @@ function getRuntimeMailConfig(baseConfig, overrides = null) {
     artworkTo: String(safeOverrides.artworkTo || baseConfig.artworkTo || baseConfig.from || "").trim(),
     adminActionTo: String(safeOverrides.adminActionTo || baseConfig.adminActionTo || baseConfig.to || DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL).trim(),
     rolloverTestTo: String(safeOverrides.rolloverTestTo || baseConfig.rolloverTestTo || DEFAULT_ROLLOVER_TEST_EMAIL).trim(),
+    droppedOfficeSsTo: String(safeOverrides.droppedOfficeSsTo || baseConfig.droppedOfficeSsTo || DEFAULT_DROPPED_OFFICE_SS_EMAIL).trim(),
+    droppedOfficeSbTo: String(safeOverrides.droppedOfficeSbTo || baseConfig.droppedOfficeSbTo || DEFAULT_DROPPED_OFFICE_SB_EMAIL).trim(),
+    droppedOfficeMorMarTo: String(safeOverrides.droppedOfficeMorMarTo || baseConfig.droppedOfficeMorMarTo || DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL).trim(),
+    droppedOfficeOrderTo: String(safeOverrides.droppedOfficeOrderTo || baseConfig.droppedOfficeOrderTo || DEFAULT_DROPPED_OFFICE_ORDER_EMAIL).trim(),
+    droppedOfficeFallbackTo: String(safeOverrides.droppedOfficeFallbackTo || baseConfig.droppedOfficeFallbackTo || DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL).trim(),
   };
 
   if (!normalized.artworkTo) {
@@ -1674,6 +1843,26 @@ function getRuntimeMailConfig(baseConfig, overrides = null) {
 
   if (!normalized.rolloverTestTo) {
     normalized.rolloverTestTo = DEFAULT_ROLLOVER_TEST_EMAIL;
+  }
+
+  if (!normalized.droppedOfficeSsTo) {
+    normalized.droppedOfficeSsTo = DEFAULT_DROPPED_OFFICE_SS_EMAIL;
+  }
+
+  if (!normalized.droppedOfficeSbTo) {
+    normalized.droppedOfficeSbTo = DEFAULT_DROPPED_OFFICE_SB_EMAIL;
+  }
+
+  if (!normalized.droppedOfficeMorMarTo) {
+    normalized.droppedOfficeMorMarTo = DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL;
+  }
+
+  if (!normalized.droppedOfficeOrderTo) {
+    normalized.droppedOfficeOrderTo = DEFAULT_DROPPED_OFFICE_ORDER_EMAIL;
+  }
+
+  if (!normalized.droppedOfficeFallbackTo) {
+    normalized.droppedOfficeFallbackTo = DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL;
   }
 
   return normalized;
@@ -1788,6 +1977,76 @@ function getOrderOtherReferenceLines(order) {
 function getOrderReferenceSummary(order) {
   const primary = getOrderPrimaryDisplay(order);
   return [primary, ...getOrderOtherReferenceLines(order)].filter(Boolean).join(" | ");
+}
+
+function getDroppedOfficeReferenceCandidates(order) {
+  return [
+    { label: "Quote", value: getOrderQuoteNumber(order) },
+    { label: "Sales order", value: getOrderSalesOrderNumber(order) },
+    { label: "Invoice", value: String(order?.invoiceNumber || "").trim() },
+    { label: "PO", value: String(order?.poNumber || "").trim() },
+  ].filter((entry) => entry.value);
+}
+
+function resolveDroppedOfficeEmailRoute(config, order) {
+  const safeConfig = config && typeof config === "object" ? config : {};
+  const recipients = {
+    ss: String(safeConfig.droppedOfficeSsTo || DEFAULT_DROPPED_OFFICE_SS_EMAIL).trim() || DEFAULT_DROPPED_OFFICE_SS_EMAIL,
+    sb: String(safeConfig.droppedOfficeSbTo || DEFAULT_DROPPED_OFFICE_SB_EMAIL).trim() || DEFAULT_DROPPED_OFFICE_SB_EMAIL,
+    morMar: String(safeConfig.droppedOfficeMorMarTo || DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL).trim() || DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL,
+    order: String(safeConfig.droppedOfficeOrderTo || DEFAULT_DROPPED_OFFICE_ORDER_EMAIL).trim() || DEFAULT_DROPPED_OFFICE_ORDER_EMAIL,
+    fallback: String(safeConfig.droppedOfficeFallbackTo || DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL).trim() || DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL,
+  };
+  const references = getDroppedOfficeReferenceCandidates(order);
+
+  for (const reference of references) {
+    const normalizedValue = String(reference.value || "").trim().toUpperCase();
+    if (normalizedValue.startsWith("SS")) {
+      return {
+        to: recipients.ss,
+        ruleKey: "ss",
+        ruleLabel: "SS reference",
+        identifier: reference.value,
+        identifierLabel: reference.label,
+      };
+    }
+    if (normalizedValue.startsWith("SB")) {
+      return {
+        to: recipients.sb,
+        ruleKey: "sb",
+        ruleLabel: "SB reference",
+        identifier: reference.value,
+        identifierLabel: reference.label,
+      };
+    }
+    if (normalizedValue.startsWith("MOR") || normalizedValue.startsWith("MAR")) {
+      return {
+        to: recipients.morMar,
+        ruleKey: "mor-mar",
+        ruleLabel: "MAR/MOR reference",
+        identifier: reference.value,
+        identifierLabel: reference.label,
+      };
+    }
+    if (normalizedValue.startsWith("ORDER")) {
+      return {
+        to: recipients.order,
+        ruleKey: "order",
+        ruleLabel: "Order reference",
+        identifier: reference.value,
+        identifierLabel: reference.label,
+      };
+    }
+  }
+
+  const fallbackReference = references[0] || null;
+  return {
+    to: recipients.fallback,
+    ruleKey: fallbackReference ? "fallback" : "no-identifier",
+    ruleLabel: fallbackReference ? "Fallback inbox" : "No identifier fallback",
+    identifier: fallbackReference?.value || "",
+    identifierLabel: fallbackReference?.label || "",
+  };
 }
 
 function getOrderPriority(order) {

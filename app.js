@@ -1009,6 +1009,11 @@ function normalizeMailSettings(data) {
     artworkTo: data?.artworkTo || "",
     adminActionTo: data?.adminActionTo || "",
     rolloverTestTo: data?.rolloverTestTo || "",
+    droppedOfficeSsTo: data?.droppedOfficeSsTo || "",
+    droppedOfficeSbTo: data?.droppedOfficeSbTo || "",
+    droppedOfficeMorMarTo: data?.droppedOfficeMorMarTo || "",
+    droppedOfficeOrderTo: data?.droppedOfficeOrderTo || "",
+    droppedOfficeFallbackTo: data?.droppedOfficeFallbackTo || "",
   };
 }
 
@@ -1950,6 +1955,11 @@ async function saveMaintenanceMailSettings(formData) {
       artworkTo: String(formData.get("artworkTo") || "").trim(),
       adminActionTo: String(formData.get("adminActionTo") || "").trim(),
       rolloverTestTo: String(formData.get("rolloverTestTo") || "").trim(),
+      droppedOfficeSsTo: String(formData.get("droppedOfficeSsTo") || "").trim(),
+      droppedOfficeSbTo: String(formData.get("droppedOfficeSbTo") || "").trim(),
+      droppedOfficeMorMarTo: String(formData.get("droppedOfficeMorMarTo") || "").trim(),
+      droppedOfficeOrderTo: String(formData.get("droppedOfficeOrderTo") || "").trim(),
+      droppedOfficeFallbackTo: String(formData.get("droppedOfficeFallbackTo") || "").trim(),
     };
     const payload = await updateMailSettingsRequest(settings);
     applyMailSettingsState(payload);
@@ -5274,7 +5284,7 @@ function renderMaintenanceMailPanel() {
     <section class="panel">
       <p class="eyebrow">Email settings</p>
       <h3 class="panel-title">Outbound mail controls</h3>
-      <p class="panel-subtitle">The real mailbox stays in place, while the sender label and inbox routing can be maintained here.</p>
+      <p class="panel-subtitle">The real mailbox stays in place, while the sender label, live inbox routing, and dropped-at-office destinations can be maintained here.</p>
       <p class="field-note">${escapeHtml(statusLabel)}</p>
       <form data-form="maintenance-mail-settings">
         <label class="checkbox-row">
@@ -5321,7 +5331,34 @@ function renderMaintenanceMailPanel() {
             <input name="rolloverTestTo" type="text" value="${escapeHtml(settings.rolloverTestTo || "")}" placeholder="artwork3@giftwrap.co.za">
           </label>
         </div>
+        <div class="form-grid">
+          <label>
+            Dropped-at-office SS inbox
+            <input name="droppedOfficeSsTo" type="text" value="${escapeHtml(settings.droppedOfficeSsTo || "")}" placeholder="Sheryl-ann@giftwrap.co.za">
+          </label>
+          <label>
+            Dropped-at-office SB inbox
+            <input name="droppedOfficeSbTo" type="text" value="${escapeHtml(settings.droppedOfficeSbTo || "")}" placeholder="reception@giftwrap.co.za">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Dropped-at-office MAR / MOR inbox
+            <input name="droppedOfficeMorMarTo" type="text" value="${escapeHtml(settings.droppedOfficeMorMarTo || "")}" placeholder="promo22@giftwrap.co.za">
+          </label>
+          <label>
+            Dropped-at-office Order inbox
+            <input name="droppedOfficeOrderTo" type="text" value="${escapeHtml(settings.droppedOfficeOrderTo || "")}" placeholder="orders@giftwrapshop.co.za">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Dropped-at-office fallback inbox
+            <input name="droppedOfficeFallbackTo" type="text" value="${escapeHtml(settings.droppedOfficeFallbackTo || "")}" placeholder="order@giftwrapshop.co.za">
+          </label>
+        </div>
         <p class="field-note">Use commas or semicolons to separate multiple inboxes. Microsoft Graph may still show the mailbox profile name even when the app requests the sender label shown above.</p>
+        <p class="field-note">The dropped-at-office trigger uses these rules: SS, SB, MAR/MOR, Order, then the fallback inbox for anything with no matching identifier.</p>
         <div class="action-row">
           <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
             ${state.busy ? "Saving..." : "Save email settings"}
@@ -5337,7 +5374,9 @@ function renderMaintenanceMailPanel() {
           </button>
         </div>
       </form>
+      <!--
       <p class="field-note">The automatic “dropped at office” email trigger has intentionally been left out for now so we can wire it against your exact requirements later.</p>
+      -->
     </section>
   `;
 }
