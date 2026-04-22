@@ -27,10 +27,11 @@ const ROOT = __dirname;
 const TIME_ZONE = "Africa/Johannesburg";
 const MAX_BODY_BYTES = 1024 * 1024;
 const LIVE_RELOAD_FILES = new Set(["index.html", "app.js", "styles.css"]);
-const ADMIN_ACTION_NOTIFICATION_EMAIL = "admin3@giftwrap.co.za";
 const DELETE_LOG_EMAIL_POLL_MS = 10 * 60 * 1000;
 const DELETE_LOG_CRON_PATH = "/api/jobs/order-delete-log-email";
-const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
+const DEFAULT_MAIL_SENDER_NAME = "Logistics Centre";
+const DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL = "admin3@giftwrap.co.za";
+const DEFAULT_ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const GEOCODE_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const GEOCODE_CACHE_FILENAME = "geocode-cache.json";
@@ -222,6 +223,9 @@ function startServer() {
         ? `Local database ready at ${status.storagePath || "the project data folder"}.`
         : `Local database is not available yet: ${status.reason}`,
     );
+    if (status.seededFromBundledSnapshot) {
+      console.warn("Temporary runtime database was seeded from the bundled project snapshot at startup.");
+    }
     if (status.warning) {
       console.warn(`Local database warning: ${status.warning}`);
     }
@@ -261,15 +265,32 @@ async function routeRequest(request, response) {
     }
 
     if (request.method === "GET" && cleanPath === "/api/status") {
+      const mailStatus = mailer.getStatus();
       sendJson(response, 200, {
         ...database.getStatus(),
-        mailConfigured: mailer.getStatus().configured,
-        mailReason: mailer.getStatus().reason,
-        mailProvider: mailer.getStatus().provider,
-        mailFrom: mailer.getStatus().from,
-        mailTo: mailer.getStatus().to,
-        artworkTo: mailer.getStatus().artworkTo,
+        mailConfigured: mailStatus.configured,
+        mailReason: mailStatus.reason,
+        mailProvider: mailStatus.provider,
+        mailFrom: mailStatus.from,
+        mailFromDisplay: mailStatus.fromDisplay,
+        mailSenderName: mailStatus.senderName,
+        mailTo: mailStatus.to,
+        artworkTo: mailStatus.artworkTo,
       });
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/mail/settings") {
+      const payload = await readJsonBody(request);
+      const result = await getMailSettings(payload?.token);
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/mail/settings/update") {
+      const payload = await readJsonBody(request);
+      const result = await updateMailSettings(payload?.token, payload || {});
+      sendJson(response, 200, result);
       return;
     }
 
@@ -405,6 +426,10 @@ async function routeRequest(request, response) {
 }
 
 async function requireAdminSession(token, deniedMessage = "Only admin users can do that.") {
+  return requireRoleSession(token, ["admin"], deniedMessage);
+}
+
+async function requireRoleSession(token, allowedRoles, deniedMessage = "You do not have permission to do that.") {
   const cleanToken = String(token || "").trim();
   if (!cleanToken) {
     throw createHttpError(400, "Session token is required.");
@@ -415,7 +440,7 @@ async function requireAdminSession(token, deniedMessage = "Only admin users can 
     throw createHttpError(403, "You must be signed in.");
   }
 
-  if (currentUser.role !== "admin") {
+  if (!Array.isArray(allowedRoles) || !allowedRoles.includes(currentUser.role)) {
     throw createHttpError(403, deniedMessage);
   }
 
@@ -442,6 +467,30 @@ async function importDatabaseData(token, data, source = "") {
     ...result,
     importedAt: new Date().toISOString(),
     importedBy: currentUser.name,
+  };
+}
+
+async function getMailSettings(token) {
+  await requireRoleSession(token, ["admin", "maintenance"], "Only admin or maintenance users can manage email settings.");
+  return mailer.getManagementSettings();
+}
+
+async function updateMailSettings(token, payload = {}) {
+  const currentUser = await requireRoleSession(token, ["admin", "maintenance"], "Only admin or maintenance users can manage email settings.");
+  await database.call("update_mail_settings", {
+    p_token: token,
+    p_disabled: normalizeBoolean(payload?.disabled, false),
+    p_sender_name: payload?.senderName,
+    p_to: payload?.to,
+    p_artwork_to: payload?.artworkTo,
+    p_admin_action_to: payload?.adminActionTo,
+    p_rollover_test_to: payload?.rolloverTestTo,
+  });
+
+  return {
+    ...mailer.getManagementSettings(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: currentUser.name,
   };
 }
 
@@ -955,46 +1004,29 @@ async function processOrderDeleteLogNotifications(options = {}) {
 }
 
 function createMailer() {
-  const config = loadMailConfig();
-  const status = {
-    configured: false,
-    reason: "",
-    from: config.from,
-    to: config.to,
-    artworkTo: config.artworkTo,
-    provider: config.provider,
-  };
+  function getRuntime() {
+    const config = getRuntimeMailConfig(
+      loadMailConfig(),
+      typeof database.getMailSettingsOverrides === "function"
+        ? database.getMailSettingsOverrides()
+        : null,
+    );
+    const status = buildMailStatus(config);
+    const transporter = status.configured && config.provider === "smtp"
+      ? nodemailer.createTransport(config.transport)
+      : null;
 
-  if (config.disabled) {
-    status.reason = "Email delivery is temporarily disabled.";
-  } else if (config.provider === "microsoft-graph") {
-    const graphConfigIssue = getMicrosoftGraphConfigIssue(config);
-    if (graphConfigIssue) {
-      status.reason = graphConfigIssue;
-    } else {
-      status.configured = true;
-    }
-  } else if (config.provider === "smtp") {
-    if (mailerLoadError) {
-      status.reason = "Run npm install to add the mailer dependency.";
-    } else if (!config.transport.auth?.user || !config.transport.auth?.pass) {
-      status.reason = "Add SMTP settings in mail-config.js or SMTP_* environment variables.";
-    } else if (!config.transport.service && !config.transport.host) {
-      status.reason = "SMTP host or service is required for CSV email delivery.";
-    } else {
-      status.configured = true;
-    }
-  } else {
-    status.reason = "Unsupported mail provider. Use microsoft-graph or smtp.";
+    return {
+      config,
+      status,
+      transporter,
+    };
   }
 
-  const transporter = status.configured && config.provider === "smtp"
-    ? nodemailer.createTransport(config.transport)
-    : null;
-
   async function getAuthorizedMailContext(token, allowedRoles, deniedMessage) {
-    if (!status.configured) {
-      throw createHttpError(503, status.reason || "Email delivery is not configured.");
+    const runtime = getRuntime();
+    if (!runtime.status.configured) {
+      throw createHttpError(503, runtime.status.reason || "Email delivery is not configured.");
     }
 
     if (!token) {
@@ -1013,19 +1045,27 @@ function createMailer() {
     }
 
     return {
+      runtime,
       currentUser,
       snapshot,
     };
   }
 
-  async function sendMessage(message) {
-    if (config.provider === "microsoft-graph") {
-      await sendViaMicrosoftGraph(config, message);
+  async function sendMessage(runtime, message) {
+    const senderAddress = String(message.fromAddress || runtime.config.from || "").trim();
+    const senderName = String(message.senderName || runtime.status.senderName || "").trim();
+
+    if (runtime.config.provider === "microsoft-graph") {
+      await sendViaMicrosoftGraph(runtime.config, {
+        ...message,
+        fromAddress: senderAddress,
+        senderName,
+      });
       return;
     }
 
-    await transporter.sendMail({
-      from: message.from,
+    await runtime.transporter.sendMail({
+      from: formatMailSender(senderAddress, senderName),
       to: message.to,
       subject: message.subject,
       text: message.text,
@@ -1036,14 +1076,28 @@ function createMailer() {
 
   return {
     getStatus() {
-      return { ...status };
+      return { ...getRuntime().status };
+    },
+    getManagementSettings() {
+      const runtime = getRuntime();
+      return {
+        ...runtime.status,
+        disabled: Boolean(runtime.config.disabled),
+        fromAddress: runtime.config.from,
+        senderName: runtime.config.senderName,
+        to: runtime.config.to,
+        artworkTo: runtime.config.artworkTo,
+        adminActionTo: runtime.config.adminActionTo,
+        rolloverTestTo: runtime.config.rolloverTestTo,
+      };
     },
     async sendSnapshotCsv(token) {
-      const { currentUser, snapshot } = await getAuthorizedMailContext(
+      const { runtime, currentUser, snapshot } = await getAuthorizedMailContext(
         token,
         ["admin", "sales"],
         "Only admin or sales users can send email.",
       );
+      const { status } = runtime;
 
       const dateStamp = String(snapshot?.today || "").trim() || getCurrentLocalDateValue();
       const orders = filterOrdersForScheduledDate(snapshot?.orders, dateStamp);
@@ -1058,8 +1112,9 @@ function createMailer() {
       ].join("\n");
       const csv = buildOrdersCsv(orders);
 
-      await sendMessage({
-        from: status.from,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
         to: status.to,
         subject,
         text,
@@ -1080,11 +1135,12 @@ function createMailer() {
       };
     },
     async sendTestEmail(token) {
-      const { currentUser } = await getAuthorizedMailContext(
+      const { runtime, currentUser } = await getAuthorizedMailContext(
         token,
-        ["admin", "sales"],
-        "Only admin or sales users can send email.",
+        ["admin", "sales", "maintenance"],
+        "Only admin, sales, or maintenance users can send email.",
       );
+      const { status } = runtime;
       const timestamp = new Date().toISOString();
       const subject = `Route Ledger test email ${timestamp}`;
       const text = [
@@ -1092,13 +1148,14 @@ function createMailer() {
         "",
         `Sent by: ${currentUser.name}`,
         `Provider: ${status.provider}`,
-        `From: ${status.from}`,
+        `From: ${status.fromDisplay}`,
         `To: ${status.to}`,
         `Timestamp: ${timestamp}`,
       ].join("\n");
 
-      await sendMessage({
-        from: status.from,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
         to: status.to,
         subject,
         text,
@@ -1112,17 +1169,17 @@ function createMailer() {
       };
     },
     async sendCarryOverTestEmail(token) {
-      const { currentUser, snapshot } = await getAuthorizedMailContext(
+      const { runtime, currentUser, snapshot } = await getAuthorizedMailContext(
         token,
-        ["admin", "sales"],
-        "Only admin or sales users can send email.",
+        ["admin", "sales", "maintenance"],
+        "Only admin, sales, or maintenance users can send email.",
       );
       const rollover = buildCarryOverTestPayload(snapshot);
       const result = await this.sendCarryOverEmail(rollover, {
         allowEmpty: true,
         requestedByName: currentUser.name,
         subjectPrefix: "TEST",
-        to: ROLLOVER_TEST_EMAIL,
+        to: runtime.status.rolloverTestTo,
       });
 
       return {
@@ -1131,6 +1188,8 @@ function createMailer() {
       };
     },
     async sendCarryOverEmail(rollover, options = {}) {
+      const runtime = getRuntime();
+      const { status } = runtime;
       if (!status.configured) {
         throw createHttpError(503, status.reason || "Email delivery is not configured.");
       }
@@ -1171,8 +1230,9 @@ function createMailer() {
       const text = buildCarryOverEmailText(summary);
       const html = buildCarryOverEmailHtml(summary);
 
-      await sendMessage({
-        from: status.from,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
         to: emailTo,
         subject,
         text,
@@ -1196,6 +1256,8 @@ function createMailer() {
       };
     },
     async sendDriverTransferEmail(transfer) {
+      const runtime = getRuntime();
+      const { status } = runtime;
       if (!status.configured) {
         throw createHttpError(503, status.reason || "Email delivery is not configured.");
       }
@@ -1230,8 +1292,9 @@ function createMailer() {
         `Transferred at: ${transferredAt || "Just now"}`,
       ].join("\n");
 
-      await sendMessage({
-        from: status.from,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
         to: status.to,
         subject,
         text,
@@ -1245,6 +1308,8 @@ function createMailer() {
       };
     },
     async sendAdminActionNotification(notification) {
+      const runtime = getRuntime();
+      const { status } = runtime;
       if (!status.configured) {
         throw createHttpError(503, status.reason || "Email delivery is not configured.");
       }
@@ -1290,22 +1355,25 @@ function createMailer() {
         lines.push(`- Plus ${remainingCount} more entr${remainingCount === 1 ? "y" : "ies"}`);
       }
 
-      await sendMessage({
-        from: status.from,
-        to: ADMIN_ACTION_NOTIFICATION_EMAIL,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
+        to: status.adminActionTo,
         subject,
         text: lines.join("\n"),
       });
 
       return {
         ok: true,
-        sentTo: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        sentTo: status.adminActionTo,
         sentFrom: status.from,
         subject,
         count: affectedCount,
       };
     },
     async sendOrderDeleteLogEmail(entries) {
+      const runtime = getRuntime();
+      const { status } = runtime;
       if (!status.configured) {
         throw createHttpError(503, status.reason || "Email delivery is not configured.");
       }
@@ -1342,27 +1410,29 @@ function createMailer() {
         lines.push(`- Plus ${remainingCount} more entr${remainingCount === 1 ? "y" : "ies"}`);
       }
 
-      await sendMessage({
-        from: status.from,
-        to: ADMIN_ACTION_NOTIFICATION_EMAIL,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
+        to: status.adminActionTo,
         subject,
         text: lines.join("\n"),
       });
 
       return {
         ok: true,
-        sentTo: ADMIN_ACTION_NOTIFICATION_EMAIL,
+        sentTo: status.adminActionTo,
         sentFrom: status.from,
         subject,
         count: affectedCount,
       };
     },
     async sendArtworkRequest(token, payload) {
-      const { currentUser, snapshot } = await getAuthorizedMailContext(
+      const { runtime, currentUser, snapshot } = await getAuthorizedMailContext(
         token,
         ["admin", "logistics"],
         "Only admin or logistics users can send artwork requests.",
       );
+      const { status } = runtime;
 
       const stockItemId = String(payload?.stockItemId || "").trim();
       const requestedQuantity = Number(payload?.requestedQuantity || 0);
@@ -1378,7 +1448,7 @@ function createMailer() {
         throw createHttpError(400, "Requested quantity must be greater than zero.");
       }
 
-      const destination = status.artworkTo || status.from;
+      const destination = status.artworkTo || status.fromAddress;
       const subject = `Artwork request: ${stockItem.name}${stockItem.sku ? ` (${stockItem.sku})` : ""}`;
       const text = [
         "Artwork has been requested for stock preparation.",
@@ -1392,8 +1462,9 @@ function createMailer() {
         `Notes: ${notes || "None"}`,
       ].join("\n");
 
-      await sendMessage({
-        from: status.from,
+      await sendMessage(runtime, {
+        fromAddress: status.fromAddress,
+        senderName: status.senderName,
         to: destination,
         subject,
         text,
@@ -1476,6 +1547,11 @@ function loadMailConfig() {
     fileConfig.from,
     "artwork3@giftwrap.co.za",
   ]);
+  const senderName = firstNonEmpty([
+    process.env.MAIL_FROM_NAME,
+    fileConfig.senderName,
+    DEFAULT_MAIL_SENDER_NAME,
+  ]);
   const to = firstNonEmpty([
     process.env.MAIL_TO,
     process.env.SMTP_TO,
@@ -1486,6 +1562,17 @@ function loadMailConfig() {
     process.env.MAIL_ARTWORK_TO,
     fileConfig.artworkTo,
     from,
+  ]);
+  const adminActionTo = firstNonEmpty([
+    process.env.MAIL_ADMIN_ACTION_TO,
+    fileConfig.adminActionTo,
+    to,
+    DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL,
+  ]);
+  const rolloverTestTo = firstNonEmpty([
+    process.env.MAIL_ROLLOVER_TEST_TO,
+    fileConfig.rolloverTestTo,
+    DEFAULT_ROLLOVER_TEST_EMAIL,
   ]);
   if (provider === "smtp") {
     const service = firstNonEmpty([
@@ -1533,8 +1620,11 @@ function loadMailConfig() {
       provider,
       transport,
       from,
+      senderName,
       to,
       artworkTo,
+      adminActionTo,
+      rolloverTestTo,
     };
   }
 
@@ -1542,8 +1632,11 @@ function loadMailConfig() {
     disabled,
     provider,
     from,
+    senderName,
     to,
     artworkTo,
+    adminActionTo,
+    rolloverTestTo,
     tenantId: firstNonEmpty([
       process.env.MAIL_TENANT_ID,
       fileConfig.tenantId,
@@ -1557,6 +1650,90 @@ function loadMailConfig() {
       fileConfig.clientSecret,
     ]) || "",
   };
+}
+
+function getRuntimeMailConfig(baseConfig, overrides = null) {
+  const safeOverrides = overrides && typeof overrides === "object" ? overrides : {};
+  const normalized = {
+    ...baseConfig,
+    disabled: typeof safeOverrides.disabled === "boolean" ? safeOverrides.disabled : Boolean(baseConfig.disabled),
+    senderName: String(safeOverrides.senderName || baseConfig.senderName || DEFAULT_MAIL_SENDER_NAME).trim() || DEFAULT_MAIL_SENDER_NAME,
+    to: String(safeOverrides.to || baseConfig.to || "").trim(),
+    artworkTo: String(safeOverrides.artworkTo || baseConfig.artworkTo || baseConfig.from || "").trim(),
+    adminActionTo: String(safeOverrides.adminActionTo || baseConfig.adminActionTo || baseConfig.to || DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL).trim(),
+    rolloverTestTo: String(safeOverrides.rolloverTestTo || baseConfig.rolloverTestTo || DEFAULT_ROLLOVER_TEST_EMAIL).trim(),
+  };
+
+  if (!normalized.artworkTo) {
+    normalized.artworkTo = normalized.from;
+  }
+
+  if (!normalized.adminActionTo) {
+    normalized.adminActionTo = normalized.to || DEFAULT_ADMIN_ACTION_NOTIFICATION_EMAIL;
+  }
+
+  if (!normalized.rolloverTestTo) {
+    normalized.rolloverTestTo = DEFAULT_ROLLOVER_TEST_EMAIL;
+  }
+
+  return normalized;
+}
+
+function buildMailStatus(config) {
+  const status = {
+    configured: false,
+    reason: "",
+    disabled: Boolean(config.disabled),
+    from: config.from,
+    fromAddress: config.from,
+    fromDisplay: formatMailSender(config.from, config.senderName),
+    senderName: config.senderName,
+    to: config.to,
+    artworkTo: config.artworkTo,
+    adminActionTo: config.adminActionTo,
+    rolloverTestTo: config.rolloverTestTo,
+    provider: config.provider,
+  };
+
+  if (config.disabled) {
+    status.reason = "Email delivery is temporarily disabled.";
+  } else if (config.provider === "microsoft-graph") {
+    const graphConfigIssue = getMicrosoftGraphConfigIssue(config);
+    if (graphConfigIssue) {
+      status.reason = graphConfigIssue;
+    } else {
+      status.configured = true;
+    }
+  } else if (config.provider === "smtp") {
+    if (mailerLoadError) {
+      status.reason = "Run npm install to add the mailer dependency.";
+    } else if (!config.transport.auth?.user || !config.transport.auth?.pass) {
+      status.reason = "Add SMTP settings in mail-config.js or SMTP_* environment variables.";
+    } else if (!config.transport.service && !config.transport.host) {
+      status.reason = "SMTP host or service is required for CSV email delivery.";
+    } else {
+      status.configured = true;
+    }
+  } else {
+    status.reason = "Unsupported mail provider. Use microsoft-graph or smtp.";
+  }
+
+  return status;
+}
+
+function formatMailSender(address, senderName = "") {
+  const normalizedAddress = String(address || "").trim();
+  const normalizedName = String(senderName || "").trim();
+
+  if (!normalizedAddress) {
+    return normalizedName;
+  }
+
+  if (!normalizedName) {
+    return normalizedAddress;
+  }
+
+  return `${normalizedName} <${normalizedAddress}>`;
 }
 
 function getOrderQuoteNumber(order) {
@@ -2343,8 +2520,13 @@ function getEmailRecipientList(value) {
 async function sendViaMicrosoftGraph(config, message) {
   const token = await getMicrosoftGraphAccessToken(config);
   const recipients = getEmailRecipientList(message.to);
+  const fromAddress = String(message.fromAddress || config.from || "").trim();
+  const senderName = String(message.senderName || config.senderName || "").trim();
   if (!recipients.length) {
     throw createHttpError(400, "At least one email recipient is required.");
+  }
+  if (!fromAddress) {
+    throw createHttpError(400, "A sender mailbox is required.");
   }
   const bodyContent = String(message.html || message.text || "");
   const bodyType = message.html ? "HTML" : "Text";
@@ -2368,6 +2550,12 @@ async function sendViaMicrosoftGraph(config, message) {
           address: recipient,
         },
       })),
+      from: {
+        emailAddress: {
+          address: fromAddress,
+          name: senderName || undefined,
+        },
+      },
     },
     saveToSentItems: true,
   };
@@ -2376,7 +2564,7 @@ async function sendViaMicrosoftGraph(config, message) {
     payload.message.attachments = attachments;
   }
 
-  const response = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(message.from)}/sendMail`, {
+  const response = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromAddress)}/sendMail`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

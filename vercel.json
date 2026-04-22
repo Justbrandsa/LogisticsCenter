@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "data/route-ledger.sqlite*"
+    }
+  },
   "crons": [
     {
       "path": "/api/jobs/order-delete-log-email",

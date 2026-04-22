@@ -21,7 +21,7 @@ try {
 
 const TIME_ZONE = "Africa/Johannesburg";
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const USER_ROLES = new Set(["admin", "sales", "driver", "logistics"]);
+const USER_ROLES = new Set(["admin", "sales", "driver", "logistics", "maintenance"]);
 const LOCATION_TYPES = new Set(["supplier", "factory", "both"]);
 const ORDER_PRIORITIES = new Set(["high", "medium", "low"]);
 const ORDER_STATUSES = new Set(["active", "completed"]);
@@ -29,10 +29,30 @@ const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
 const ORDER_FLAG_TYPES = new Set(["not_collected", "not_ready"]);
 const ORDER_COMPLETION_TYPES = new Set(["office", "factory"]);
 const STOCK_MOVEMENT_TYPES = new Set(["in", "out"]);
+const APP_SETTING_KEYS = Object.freeze({
+  mailDisabled: "mail_disabled_override",
+  mailSenderName: "mail_sender_name_override",
+  mailTo: "mail_to_override",
+  mailArtworkTo: "mail_artwork_to_override",
+  mailAdminActionTo: "mail_admin_action_to_override",
+  mailRolloverTestTo: "mail_rollover_test_to_override",
+});
+const MAIL_SETTING_KEY_LIST = Object.freeze(Object.values(APP_SETTING_KEYS));
 const DEFAULT_DATABASE_FILENAME = "route-ledger.sqlite";
 const TEMP_DATA_DIRECTORY_NAME = "logistics-center-data";
 const DATABASE_PATH_ENV_KEYS = ["LOGISTICS_DB_PATH", "LOCAL_DB_PATH", "SQLITE_DB_PATH", "DATABASE_PATH"];
-const DATA_DIR_ENV_KEYS = ["LOGISTICS_DATA_DIR", "LOCAL_DATA_DIR", "SQLITE_DATA_DIR"];
+const DATA_DIR_ENV_KEYS = [
+  "LOGISTICS_DATA_DIR",
+  "LOCAL_DATA_DIR",
+  "SQLITE_DATA_DIR",
+  "PERSISTENT_DATA_DIR",
+  "RENDER_DISK_PATH",
+  "RAILWAY_VOLUME_MOUNT_PATH",
+];
+const REQUIRE_PERSISTENT_STORAGE_ENV_KEYS = [
+  "LOGISTICS_REQUIRE_PERSISTENT_STORAGE",
+  "REQUIRE_PERSISTENT_STORAGE",
+];
 
 function createLocalDatabase(rootDir) {
   if (sqliteLoadError || !DatabaseSync) {
@@ -51,6 +71,8 @@ function createLocalDatabase(rootDir) {
 
 function createUnavailableDatabase(reason) {
   const message = String(reason || "").trim() || "Local database is unavailable.";
+  const hosting = detectHostingEnvironment();
+  const persistentRequirement = getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
   return {
     getStatus() {
       return {
@@ -59,7 +81,12 @@ function createUnavailableDatabase(reason) {
         storage: "local-sqlite",
         storagePath: "",
         storageDir: "",
+        storagePersistent: false,
         storageTemporary: false,
+        storageLabel: "",
+        storageConfiguredBy: "",
+        storageHost: hosting.id || "local",
+        persistentStorageRequired: Boolean(persistentRequirement),
         warning: "",
       };
     },
@@ -96,11 +123,23 @@ function createUnavailableDatabase(reason) {
     replaceAllData() {
       throw createHttpError(503, message);
     },
+    getMailSettingsOverrides() {
+      return {
+        disabled: null,
+        senderName: "",
+        to: "",
+        artworkTo: "",
+        adminActionTo: "",
+        rolloverTestTo: "",
+      };
+    },
     async close() {},
   };
 }
 
 function resolveDatabaseLocation(rootDir) {
+  const hosting = detectHostingEnvironment();
+  const persistentRequirement = getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
   const configuredCandidate = getConfiguredDatabaseCandidate(rootDir);
   const candidates = configuredCandidate
     ? [configuredCandidate]
@@ -108,15 +147,19 @@ function resolveDatabaseLocation(rootDir) {
 
   candidates.push({
     label: "project data folder",
+    configuredBy: "project-data",
     databasePath: path.join(rootDir, "data", DEFAULT_DATABASE_FILENAME),
     temporary: false,
   });
-  candidates.push({
-    label: "temporary runtime folder",
-    databasePath: path.join(os.tmpdir(), TEMP_DATA_DIRECTORY_NAME, DEFAULT_DATABASE_FILENAME),
-    temporary: true,
-    warning: "This host is using temporary runtime storage because the deployed app folder is read-only. Data can reset when the server restarts, scales, or redeploys.",
-  });
+  if (!persistentRequirement) {
+    candidates.push({
+      label: "temporary runtime folder",
+      configuredBy: "temporary-runtime",
+      databasePath: path.join(os.tmpdir(), TEMP_DATA_DIRECTORY_NAME, DEFAULT_DATABASE_FILENAME),
+      temporary: true,
+      warning: buildTemporaryStorageWarning(hosting),
+    });
+  }
 
   const failures = [];
 
@@ -124,9 +167,13 @@ function resolveDatabaseLocation(rootDir) {
     try {
       ensureWritableDatabaseLocation(candidate.databasePath);
       return {
+        label: candidate.label,
+        configuredBy: String(candidate.configuredBy || "").trim(),
         dataDir: path.dirname(candidate.databasePath),
         databasePath: candidate.databasePath,
         temporary: Boolean(candidate.temporary),
+        hosting,
+        persistentStorageRequired: Boolean(persistentRequirement),
         warning: String(candidate.warning || "").trim(),
       };
     } catch (error) {
@@ -138,32 +185,40 @@ function resolveDatabaseLocation(rootDir) {
     }
   }
 
+  if (persistentRequirement) {
+    throw new Error(
+      [
+        `Persistent storage is required by ${persistentRequirement.key}=true.`,
+        "No writable persistent database location was found.",
+        failures.join(" "),
+      ].filter(Boolean).join(" "),
+    );
+  }
+
   throw new Error(`No writable database location was found. ${failures.join(" ")}`.trim());
 }
 
 function getConfiguredDatabaseCandidate(rootDir) {
-  const configuredFilePath = firstNonEmptyString(
-    DATABASE_PATH_ENV_KEYS.map((key) => process.env[key]),
-  );
+  const configuredFilePath = getFirstConfiguredEnvironmentValue(DATABASE_PATH_ENV_KEYS);
   if (configuredFilePath) {
     return {
-      label: "configured database path",
-      databasePath: resolveFromRoot(rootDir, configuredFilePath),
+      label: `configured database path (${configuredFilePath.key})`,
+      configuredBy: configuredFilePath.key,
+      databasePath: resolveFromRoot(rootDir, configuredFilePath.value),
       required: true,
       temporary: false,
     };
   }
 
-  const configuredDataDir = firstNonEmptyString(
-    DATA_DIR_ENV_KEYS.map((key) => process.env[key]),
-  );
+  const configuredDataDir = getFirstConfiguredEnvironmentValue(DATA_DIR_ENV_KEYS);
   if (!configuredDataDir) {
     return null;
   }
 
   return {
-    label: "configured data directory",
-    databasePath: path.join(resolveFromRoot(rootDir, configuredDataDir), DEFAULT_DATABASE_FILENAME),
+    label: `configured data directory (${configuredDataDir.key})`,
+    configuredBy: configuredDataDir.key,
+    databasePath: path.join(resolveFromRoot(rootDir, configuredDataDir.value), DEFAULT_DATABASE_FILENAME),
     required: true,
     temporary: false,
   };
@@ -199,15 +254,74 @@ function ensureWritableDirectory(directoryPath) {
   fs.unlinkSync(probePath);
 }
 
-function firstNonEmptyString(values) {
-  for (const value of values) {
+function getFirstConfiguredEnvironmentValue(keys) {
+  for (const key of keys) {
+    const value = process.env[key];
     const text = String(value || "").trim();
     if (text) {
-      return text;
+      return { key, value: text };
     }
   }
 
-  return "";
+  return null;
+}
+
+function getFirstEnabledEnvironmentFlag(keys) {
+  for (const key of keys) {
+    if (isTruthyEnvironmentValue(process.env[key])) {
+      return {
+        key,
+        value: String(process.env[key]).trim(),
+      };
+    }
+  }
+
+  return null;
+}
+
+function isTruthyEnvironmentValue(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  return !["0", "false", "no", "off"].includes(text);
+}
+
+function detectHostingEnvironment() {
+  if (String(process.env.VERCEL || "").trim()) {
+    return { id: "vercel", label: "Vercel" };
+  }
+  if (String(process.env.RENDER || "").trim()) {
+    return { id: "render", label: "Render" };
+  }
+  if (
+    String(process.env.RAILWAY_ENVIRONMENT_ID || "").trim()
+    || String(process.env.RAILWAY_PROJECT_ID || "").trim()
+    || String(process.env.RAILWAY_SERVICE_ID || "").trim()
+    || String(process.env.RAILWAY_VOLUME_MOUNT_PATH || "").trim()
+  ) {
+    return { id: "railway", label: "Railway" };
+  }
+  return { id: "", label: "" };
+}
+
+function buildTemporaryStorageWarning(hosting) {
+  const baseWarning = "This host is using temporary runtime storage because the deployed app folder is read-only. Data can reset when the server restarts, scales, or redeploys.";
+
+  if (hosting.id === "vercel") {
+    return `${baseWarning} Vercel only provides a read-only deployment filesystem plus temporary /tmp scratch space, so SQLite writes here are not durable. Move this app to a host with a persistent disk or volume for long-term storage.`;
+  }
+
+  if (hosting.id === "render") {
+    return `${baseWarning} Attach a persistent disk and mount it over this app's data folder, or point LOGISTICS_DATA_DIR at the disk mount path.`;
+  }
+
+  if (hosting.id === "railway") {
+    return `${baseWarning} Attach a Railway volume and mount it at /app/data, or point LOGISTICS_DATA_DIR at the mounted volume path.`;
+  }
+
+  return `${baseWarning} For long-term SQLite storage, use a single-instance host with a persistent disk or volume and point LOGISTICS_DATA_DIR or LOGISTICS_DB_PATH at it.`;
 }
 
 function seedTemporaryDatabaseFromProject(rootDir, databasePath) {
@@ -247,7 +361,12 @@ class LocalDatabase {
       storage: "local-sqlite",
       storagePath: this.databasePath,
       storageDir: this.dataDir,
+      storagePersistent: !storageLocation.temporary,
       storageTemporary: storageLocation.temporary,
+      storageLabel: storageLocation.label,
+      storageConfiguredBy: storageLocation.configuredBy,
+      storageHost: storageLocation.hosting.id || "local",
+      persistentStorageRequired: storageLocation.persistentStorageRequired,
       warning: storageLocation.warning,
       seededFromBundledSnapshot: false,
     };
@@ -263,6 +382,7 @@ class LocalDatabase {
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec("PRAGMA temp_store = MEMORY;");
     this.initializeSchema();
+    this.ensureSchemaMigrations();
     this.ensureOfficeLocationForExistingUsers();
 
     this.status.configured = true;
@@ -289,6 +409,8 @@ class LocalDatabase {
           return this.getAppSnapshot(parameters);
         case "record_driver_position":
           return this.recordDriverPosition(parameters);
+        case "update_mail_settings":
+          return this.updateMailSettings(parameters);
         case "create_user_account":
           return this.createUserAccount(parameters);
         case "update_user_account":
@@ -483,6 +605,32 @@ class LocalDatabase {
     };
   }
 
+  updateMailSettings(parameters = {}) {
+    const actor = this.requireUser(parameters?.p_token, ["admin", "maintenance"]);
+    const disabled = Boolean(parameters?.p_disabled);
+    const senderName = normalizeOptionalText(parameters?.p_sender_name);
+    const to = normalizeEmailDestinationText(parameters?.p_to, "General inbox");
+    const artworkTo = normalizeEmailDestinationText(parameters?.p_artwork_to, "Artwork inbox");
+    const adminActionTo = normalizeEmailDestinationText(parameters?.p_admin_action_to, "Admin action inbox");
+    const rolloverTestTo = normalizeEmailDestinationText(parameters?.p_rollover_test_to, "Carry-over test inbox");
+    const updatedAt = nowIso();
+
+    this.withTransaction(() => {
+      this.writeAppSetting(APP_SETTING_KEYS.mailDisabled, disabled ? "true" : "false", actor.id, updatedAt, { allowEmpty: false });
+      this.writeAppSetting(APP_SETTING_KEYS.mailSenderName, senderName, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailTo, to, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailArtworkTo, artworkTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailAdminActionTo, adminActionTo, actor.id, updatedAt);
+      this.writeAppSetting(APP_SETTING_KEYS.mailRolloverTestTo, rolloverTestTo, actor.id, updatedAt);
+    });
+
+    return {
+      ok: true,
+      updatedBy: actor.id,
+      updatedAt,
+    };
+  }
+
   async getUserByToken(token) {
     const cleanToken = normalizeOptionalText(token);
     if (!cleanToken) {
@@ -519,6 +667,65 @@ class LocalDatabase {
     };
   }
 
+  getMailSettingsOverrides() {
+    const rows = this.all(
+      `
+        select key, value
+        from app_settings
+        where key in (${buildPlaceholders(MAIL_SETTING_KEY_LIST.length)})
+      `,
+      MAIL_SETTING_KEY_LIST,
+    );
+    const rowMap = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+
+    return {
+      disabled: Object.prototype.hasOwnProperty.call(rowMap, APP_SETTING_KEYS.mailDisabled)
+        ? normalizeStoredBoolean(rowMap[APP_SETTING_KEYS.mailDisabled], false)
+        : null,
+      senderName: rowMap[APP_SETTING_KEYS.mailSenderName] || "",
+      to: rowMap[APP_SETTING_KEYS.mailTo] || "",
+      artworkTo: rowMap[APP_SETTING_KEYS.mailArtworkTo] || "",
+      adminActionTo: rowMap[APP_SETTING_KEYS.mailAdminActionTo] || "",
+      rolloverTestTo: rowMap[APP_SETTING_KEYS.mailRolloverTestTo] || "",
+    };
+  }
+
+  writeAppSetting(key, value, updatedByUserId, updatedAt, options = {}) {
+    const allowEmpty = options.allowEmpty !== false;
+    const normalizedKey = String(key || "").trim();
+    const normalizedValue = value === null || value === undefined ? "" : String(value);
+
+    if (!normalizedKey) {
+      throw new Error("App setting key is required.");
+    }
+
+    if (!allowEmpty && normalizedValue === "") {
+      throw new Error(`App setting ${normalizedKey} cannot be empty.`);
+    }
+
+    if (allowEmpty && normalizedValue === "") {
+      this.run("delete from app_settings where key = ?", [normalizedKey]);
+      return;
+    }
+
+    this.run(
+      `
+        insert into app_settings (
+          key,
+          value,
+          updated_by_user_id,
+          updated_at
+        )
+        values (?, ?, ?, ?)
+        on conflict(key) do update set
+          value = excluded.value,
+          updated_by_user_id = excluded.updated_by_user_id,
+          updated_at = excluded.updated_at
+      `,
+      [normalizedKey, normalizedValue, updatedByUserId || null, updatedAt || nowIso()],
+    );
+  }
+
   async close() {
     if (this.db) {
       this.db.close();
@@ -536,6 +743,7 @@ class LocalDatabase {
       stock_movements: Number(this.get("select count(*) as count from stock_movements")?.count || 0),
       artwork_requests: Number(this.get("select count(*) as count from artwork_requests")?.count || 0),
       app_sessions: Number(this.get("select count(*) as count from app_sessions")?.count || 0),
+      app_settings: Number(this.get("select count(*) as count from app_settings")?.count || 0),
     };
   }
 
@@ -550,6 +758,7 @@ class LocalDatabase {
       stock_movements: this.all("select * from stock_movements order by created_at asc, id asc"),
       artwork_requests: this.all("select * from artwork_requests order by sent_at asc, id asc"),
       app_sessions: this.all("select * from app_sessions order by created_at asc, token asc"),
+      app_settings: this.all("select * from app_settings order by key asc"),
     };
   }
 
@@ -557,6 +766,7 @@ class LocalDatabase {
     const data = normalizeImportData(rawData);
     return this.withTransaction(() => {
       this.run("delete from app_sessions");
+      this.run("delete from app_settings");
       this.run("delete from artwork_requests");
       this.run("delete from stock_movements");
       this.run("delete from stock_items");
@@ -948,6 +1158,26 @@ class LocalDatabase {
         );
       });
 
+      data.app_settings.forEach((row) => {
+        this.run(
+          `
+            insert into app_settings (
+              key,
+              value,
+              updated_by_user_id,
+              updated_at
+            )
+            values (?, ?, ?, ?)
+          `,
+          [
+            requireImportedText(row.key, "Imported app setting key is required."),
+            importedText(row.value),
+            importedNullableText(row.updated_by_user_id),
+            importedTimestamp(row.updated_at),
+          ],
+        );
+      });
+
       return {
         source: String(options?.source || "").trim() || "unknown",
         importedCounts: countImportRows(data),
@@ -971,7 +1201,7 @@ class LocalDatabase {
         last_known_recorded_at text,
         created_at text not null,
         updated_at text not null,
-        check (role in ('admin', 'sales', 'driver', 'logistics')),
+        check (role in ('admin', 'sales', 'driver', 'logistics', 'maintenance')),
         check (active in (0, 1))
       );
 
@@ -1183,7 +1413,95 @@ class LocalDatabase {
 
       create index if not exists app_sessions_user_idx
         on app_sessions(user_id);
+
+      create table if not exists app_settings (
+        key text primary key,
+        value text not null default '',
+        updated_by_user_id text references app_users(id) on delete set null,
+        updated_at text not null
+      );
     `);
+  }
+
+  ensureSchemaMigrations() {
+    this.ensureAppUsersRoleSchema();
+  }
+
+  ensureAppUsersRoleSchema() {
+    const tableSql = String(
+      this.get(`
+        select sql
+        from sqlite_master
+        where type = 'table'
+          and name = 'app_users'
+        limit 1
+      `)?.sql || "",
+    ).toLowerCase();
+
+    if (tableSql.includes("'maintenance'")) {
+      return;
+    }
+
+    this.db.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.db.exec(`
+        drop table if exists app_users__migrated;
+
+        create table app_users__migrated (
+          id text primary key,
+          name text not null,
+          role text not null,
+          password_hash text not null,
+          active integer not null default 1,
+          phone text,
+          vehicle text,
+          last_known_lat real,
+          last_known_lng real,
+          last_known_recorded_at text,
+          created_at text not null,
+          updated_at text not null,
+          check (role in ('admin', 'sales', 'driver', 'logistics', 'maintenance')),
+          check (active in (0, 1))
+        );
+
+        insert into app_users__migrated (
+          id,
+          name,
+          role,
+          password_hash,
+          active,
+          phone,
+          vehicle,
+          last_known_lat,
+          last_known_lng,
+          last_known_recorded_at,
+          created_at,
+          updated_at
+        )
+        select
+          id,
+          name,
+          role,
+          password_hash,
+          active,
+          phone,
+          vehicle,
+          last_known_lat,
+          last_known_lng,
+          last_known_recorded_at,
+          created_at,
+          updated_at
+        from app_users;
+
+        drop table app_users;
+        alter table app_users__migrated rename to app_users;
+
+        create unique index if not exists app_users_name_unique
+          on app_users(lower(trim(name)));
+      `);
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON;");
+    }
   }
 
   ensureOfficeLocationForExistingUsers() {
@@ -3653,6 +3971,47 @@ function normalizeRole(value) {
   return normalizeOptionalText(value).toLowerCase();
 }
 
+function normalizeEmailDestinationText(value, label = "Email recipients") {
+  const entries = splitEmailRecipientList(value);
+  entries.forEach((entry) => {
+    if (!looksLikeEmailAddress(entry)) {
+      throw createHttpError(400, `${label} must contain valid email addresses.`);
+    }
+  });
+  return entries.join(", ");
+}
+
+function splitEmailRecipientList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => normalizeOptionalText(entry))
+      .filter(Boolean);
+  }
+
+  return String(value || "")
+    .split(/[,\n;]+/)
+    .map((entry) => normalizeOptionalText(entry))
+    .filter(Boolean);
+}
+
+function looksLikeEmailAddress(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function normalizeStoredBoolean(value, fallback = false) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) {
+    return fallback;
+  }
+  if (["true", "1", "yes", "on"].includes(text)) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(text)) {
+    return false;
+  }
+  return fallback;
+}
+
 function normalizeLocationType(value) {
   return normalizeOptionalText(value).toLowerCase();
 }
@@ -3727,6 +4086,7 @@ function normalizeImportData(rawData) {
     stock_movements: Array.isArray(data.stock_movements) ? data.stock_movements : [],
     artwork_requests: Array.isArray(data.artwork_requests) ? data.artwork_requests : [],
     app_sessions: Array.isArray(data.app_sessions) ? data.app_sessions : [],
+    app_settings: Array.isArray(data.app_settings) ? data.app_settings : [],
   };
 }
 

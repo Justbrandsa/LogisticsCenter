@@ -5,6 +5,9 @@ module.exports = {
   clientId: "YOUR_MICROSOFT_APP_CLIENT_ID",
   clientSecret: "YOUR_MICROSOFT_APP_CLIENT_SECRET",
   from: "artwork3@giftwrap.co.za",
+  senderName: "Logistics Centre",
   to: "admin3@giftwrap.co.za",
   artworkTo: "artwork3@giftwrap.co.za",
+  adminActionTo: "admin3@giftwrap.co.za",
+  rolloverTestTo: "artwork3@giftwrap.co.za",
 };

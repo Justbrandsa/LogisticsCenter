@@ -166,6 +166,42 @@ const ROLE_GUIDES = Object.freeze({
       "If artwork or email buttons are disabled, mail delivery is not configured yet and the request cannot be sent from inside the app.",
     ],
   },
+  maintenance: {
+    title: "How to use the maintenance workspace",
+    subtitle: "Maintenance keeps the system plumbing healthy, especially email delivery, sender identity, and recipient routing.",
+    overview: "Use the maintenance workspace when you need to control how Route Ledger emails behave without changing day-to-day dispatch data. This role is focused on mail delivery state, destination inboxes, sender labeling, and future operational automations that will hang off the mail pipeline.",
+    roleFocus: [
+      { label: "When to use this role", text: "Choose maintenance when your work is system support rather than dispatch, stock handling, or route execution." },
+      { label: "What you can control", text: "Maintenance can enable or disable app email, update the inboxes used for different mail flows, and manage the sender label shown by supported providers." },
+      { label: "What stays separate", text: "Maintenance does not create orders, manage users, dispatch routes, or change operational records unless you sign in with another role." },
+    ],
+    startingChecks: [
+      "Open Dashboard first and confirm whether email delivery is configured, disabled, or blocked by missing provider settings.",
+      "Review the sender label and real mailbox address together so you know what recipients should see versus which mailbox is actually sending.",
+      "Check each destination inbox before saving changes so CSV exports, artwork requests, and admin notifications do not get routed to the wrong team.",
+    ],
+    pageNotes: {
+      dashboard: "Use Dashboard to control email delivery, update recipient inboxes, review the active sender identity, and run safe mail tests.",
+      guide: "Use Guide when you need a reminder of what each mail setting affects before you change a live delivery path.",
+    },
+    dailyFlow: [
+      "Start on Dashboard and confirm that email is enabled only when the provider settings are healthy and the target inboxes are correct.",
+      "Update inbox routing when responsibilities change so artwork, CSV exports, and maintenance notifications continue landing in the right place.",
+      "Send a test email after meaningful changes so you can verify the general route before relying on automated messages.",
+      "Leave future event-driven triggers off until their rules are documented and approved, especially for completion-based notifications.",
+    ],
+    keyTasks: [
+      { label: "Pause delivery safely", text: "Use the email toggle when the provider is down, credentials are being changed, or the business needs a temporary stop on outbound app mail." },
+      { label: "Route inboxes correctly", text: "Keep the general, artwork, admin-action, and rollover-test inboxes current so every message type lands with the right team." },
+      { label: "Manage sender labeling", text: "The app can label outbound mail as Logistics Centre where the provider supports a custom display name, but Microsoft Graph may still show the mailbox profile name." },
+      { label: "Protect future automations", text: "Do not enable new trigger-based emails until their business rules, timing, and recipient logic have been agreed in detail." },
+    ],
+    tips: [
+      "Microsoft Graph can still honor the mailbox profile name over an app-supplied display label, so the cleanest result is to keep the mailbox display name aligned with Logistics Centre in Microsoft 365.",
+      "If email is disabled in the dashboard, operational mail buttons may still appear in the app but they should return the disabled reason instead of sending.",
+      "Use the rollover test route after inbox changes when you want to verify grouped email formatting without waiting for the daily rollover job.",
+    ],
+  },
   driver: {
     title: "How to use the driver workspace",
     subtitle: "The driver workspace is designed to keep the day simple: see your route, work each stop, and keep the office updated as conditions change.",
@@ -224,10 +260,18 @@ const state = {
   missingConfig: false,
   missingConfigReason: "",
   databaseWarning: "",
+  databaseStoragePath: "",
+  databaseStorageTemporary: false,
+  databaseStorageLabel: "",
+  databaseSeededFromSnapshot: false,
   mailConfigured: false,
   mailConfigReason: "",
+  mailFromDisplay: "",
+  mailSenderName: "Logistics Centre",
   mailTo: "admin3@giftwrap.co.za",
   artworkTo: "artwork3@giftwrap.co.za",
+  maintenanceMailSettings: null,
+  maintenanceMailSettingsLoading: false,
   currentPage: "",
   editingUserId: "",
   editingSupplierId: "",
@@ -331,8 +375,14 @@ async function boot() {
   try {
     const status = await fetchServerStatus();
     state.databaseWarning = status.warning || "";
+    state.databaseStoragePath = status.storagePath || "";
+    state.databaseStorageTemporary = Boolean(status.storageTemporary);
+    state.databaseStorageLabel = status.storageLabel || "";
+    state.databaseSeededFromSnapshot = Boolean(status.seededFromBundledSnapshot);
     state.mailConfigured = Boolean(status.mailConfigured);
     state.mailConfigReason = status.mailReason || "";
+    state.mailFromDisplay = status.mailFromDisplay || state.mailFromDisplay;
+    state.mailSenderName = status.mailSenderName || state.mailSenderName;
     state.mailTo = status.mailTo || state.mailTo;
     state.artworkTo = status.artworkTo || state.artworkTo;
 
@@ -368,8 +418,15 @@ async function fetchServerStatus() {
   return {
     configured: Boolean(payload?.configured),
     reason: payload?.reason || "",
+    warning: payload?.warning || "",
+    storagePath: payload?.storagePath || "",
+    storageTemporary: Boolean(payload?.storageTemporary),
+    storageLabel: payload?.storageLabel || "",
+    seededFromBundledSnapshot: Boolean(payload?.seededFromBundledSnapshot),
     mailConfigured: Boolean(payload?.mailConfigured),
     mailReason: payload?.mailReason || "",
+    mailFromDisplay: payload?.mailFromDisplay || "",
+    mailSenderName: payload?.mailSenderName || "",
     mailTo: payload?.mailTo || "",
     artworkTo: payload?.artworkTo || "",
   };
@@ -444,6 +501,8 @@ async function refreshPublicState() {
   state.entryFormOpen = false;
   state.flaggingOrderId = "";
   state.transferringOrderId = "";
+  state.maintenanceMailSettings = null;
+  state.maintenanceMailSettingsLoading = false;
   resetDriverRouteOrigin();
   void stopStockScanner();
   render();
@@ -467,7 +526,17 @@ async function refreshSnapshot(options = {}) {
 
   try {
     const data = await callRpc("get_app_snapshot", { p_token: sessionToken });
-    state.snapshot = normalizeSnapshot(data);
+    const nextSnapshot = normalizeSnapshot(data);
+    if (nextSnapshot.user?.role === "maintenance") {
+      state.maintenanceMailSettingsLoading = true;
+      render();
+      applyMailSettingsState(await fetchMailSettings());
+      state.maintenanceMailSettingsLoading = false;
+    } else {
+      state.maintenanceMailSettings = null;
+      state.maintenanceMailSettingsLoading = false;
+    }
+    state.snapshot = nextSnapshot;
     if (!state.snapshot.user || state.snapshot.user.role !== "driver") {
       resetDriverRouteOrigin();
     } else if (state.driverRouteOriginUserId && state.driverRouteOriginUserId !== state.snapshot.user.id) {
@@ -553,6 +622,7 @@ async function refreshSnapshot(options = {}) {
       drawDriverRoute(state.snapshot.user.id);
     }
   } catch (error) {
+    state.maintenanceMailSettingsLoading = false;
     const message = normalizeError(error);
     if (message.toLowerCase().includes("session")) {
       saveSessionToken("");
@@ -698,6 +768,31 @@ async function requestLocationGeocode(address, options = {}) {
     body: JSON.stringify({
       address,
       force: Boolean(options.force),
+    }),
+  });
+}
+
+async function fetchMailSettings() {
+  return requestJson(`${API_ROOT}/mail/settings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      token: sessionToken,
+    }),
+  });
+}
+
+async function updateMailSettingsRequest(settings) {
+  return requestJson(`${API_ROOT}/mail/settings/update`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      token: sessionToken,
+      ...settings,
     }),
   });
 }
@@ -900,6 +995,41 @@ function normalizeSnapshot(data) {
   };
 }
 
+function normalizeMailSettings(data) {
+  return {
+    configured: Boolean(data?.configured),
+    disabled: Boolean(data?.disabled),
+    reason: data?.reason || "",
+    provider: data?.provider || "",
+    from: data?.from || "",
+    fromAddress: data?.fromAddress || data?.from || "",
+    fromDisplay: data?.fromDisplay || "",
+    senderName: data?.senderName || state.mailSenderName || "Logistics Centre",
+    to: data?.to || "",
+    artworkTo: data?.artworkTo || "",
+    adminActionTo: data?.adminActionTo || "",
+    rolloverTestTo: data?.rolloverTestTo || "",
+  };
+}
+
+function applyMailSettingsState(settings) {
+  const normalized = normalizeMailSettings(settings);
+  state.maintenanceMailSettings = normalized;
+  state.mailConfigured = normalized.configured;
+  state.mailConfigReason = normalized.reason;
+  state.mailFromDisplay = normalized.fromDisplay || normalized.fromAddress || "";
+  state.mailSenderName = normalized.senderName || state.mailSenderName;
+  state.mailTo = normalized.to || state.mailTo;
+  state.artworkTo = normalized.artworkTo || state.artworkTo;
+}
+
+function getMailConfigErrorText() {
+  if (state.maintenanceMailSettings?.reason) {
+    return state.maintenanceMailSettings.reason;
+  }
+  return state.mailConfigReason || "Email delivery is not configured yet.";
+}
+
 function normalizeError(error) {
   if (!error) {
     return "Something went wrong.";
@@ -995,6 +1125,10 @@ async function handleSubmit(event) {
   if (formId === "request-artwork" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     await requestArtwork(formData);
   }
+
+  if (formId === "maintenance-mail-settings" && (currentUser.role === "admin" || currentUser.role === "maintenance")) {
+    await saveMaintenanceMailSettings(formData);
+  }
 }
 
 async function handleClick(event) {
@@ -1067,13 +1201,18 @@ async function handleClick(event) {
     return;
   }
 
-  if (action === "email-test" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+  if (action === "email-test" && (currentUser.role === "admin" || currentUser.role === "sales" || currentUser.role === "maintenance")) {
     await sendTestEmail();
     return;
   }
 
-  if (action === "email-rollover-test" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+  if (action === "email-rollover-test" && (currentUser.role === "admin" || currentUser.role === "sales" || currentUser.role === "maintenance")) {
     await sendRolloverTestEmail();
+    return;
+  }
+
+  if (action === "refresh-mail-settings" && (currentUser.role === "admin" || currentUser.role === "maintenance")) {
+    await refreshMaintenanceMailSettings();
     return;
   }
 
@@ -1769,6 +1908,64 @@ async function runMutation(functionName, parameters, successMessage) {
     showFlash(normalizeError(error), "error");
     render();
     return false;
+  }
+}
+
+async function refreshMaintenanceMailSettings(options = {}) {
+  const { silent = false } = options;
+  if (!silent) {
+    state.busy = true;
+  }
+  state.maintenanceMailSettingsLoading = true;
+  render();
+
+  try {
+    applyMailSettingsState(await fetchMailSettings());
+    if (!silent) {
+      showFlash("Email settings refreshed.", "success");
+    }
+  } catch (error) {
+    if (!silent) {
+      showFlash(normalizeError(error), "error");
+    } else {
+      throw error;
+    }
+  } finally {
+    state.maintenanceMailSettingsLoading = false;
+    state.busy = false;
+    render();
+  }
+}
+
+async function saveMaintenanceMailSettings(formData) {
+  state.busy = true;
+  state.maintenanceMailSettingsLoading = true;
+  render();
+
+  try {
+    const settings = {
+      disabled: formData.get("disabled") === "on",
+      senderName: String(formData.get("senderName") || "").trim(),
+      to: String(formData.get("to") || "").trim(),
+      artworkTo: String(formData.get("artworkTo") || "").trim(),
+      adminActionTo: String(formData.get("adminActionTo") || "").trim(),
+      rolloverTestTo: String(formData.get("rolloverTestTo") || "").trim(),
+    };
+    const payload = await updateMailSettingsRequest(settings);
+    applyMailSettingsState(payload);
+    state.maintenanceMailSettingsLoading = false;
+    showFlash("Email settings saved.", "success");
+    render();
+  } catch (error) {
+    state.maintenanceMailSettingsLoading = false;
+    state.busy = false;
+    showFlash(normalizeError(error), "error");
+    render();
+  } finally {
+    if (state.busy) {
+      state.busy = false;
+      render();
+    }
   }
 }
 
@@ -2630,6 +2827,12 @@ function render() {
 
   if (state.snapshot.user.role === "logistics") {
     appEl.innerHTML = renderLogisticsScreen();
+    syncPostRenderUi();
+    return;
+  }
+
+  if (state.snapshot.user.role === "maintenance") {
+    appEl.innerHTML = renderMaintenanceScreen();
     syncPostRenderUi();
     return;
   }
@@ -4139,8 +4342,12 @@ function renderHeader() {
   const liveDate = state.publicState.today
     ? formatDateOnly(state.publicState.today)
     : "Waiting for local database";
-  const storageWarningPill = state.databaseWarning
-    ? `<span class="topbar-pill" title="${escapeHtml(state.databaseWarning)}">Temporary runtime storage</span>`
+  const storageWarningTitle = [
+    state.databaseStoragePath ? `Storage path: ${state.databaseStoragePath}` : "",
+    state.databaseWarning,
+  ].filter(Boolean).join(" ");
+  const storageWarningPill = state.databaseStorageTemporary
+    ? `<span class="topbar-pill" title="${escapeHtml(storageWarningTitle || "Temporary runtime storage")}">Temporary runtime storage</span>`
     : "";
 
   if (!currentUser) {
@@ -4161,7 +4368,13 @@ function renderHeader() {
 
   const summaryLine = currentUser.role === "logistics"
     ? `${state.snapshot.stockMovements.length} logged stock movement${state.snapshot.stockMovements.length === 1 ? "" : "s"}`
-    : `${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}`;
+    : currentUser.role === "maintenance"
+      ? state.maintenanceMailSettings?.configured
+        ? state.maintenanceMailSettings.disabled
+          ? "Email delivery disabled"
+          : "Email delivery ready"
+        : "Email delivery needs attention"
+      : `${state.snapshot.orders.length} visible entr${state.snapshot.orders.length === 1 ? "y" : "ies"}`;
   const refreshLine = getSnapshotRefreshSummary();
   const workspaceLabel = currentUser.role === "driver"
     ? "Driver route workspace"
@@ -4189,6 +4402,30 @@ function renderHeader() {
       <button class="button button-secondary" data-action="logout"${state.busy ? " disabled" : ""}>Logout</button>
     </div>
   `;
+}
+
+function renderStorageNotice() {
+  const fragments = [];
+
+  if (state.databaseStoragePath) {
+    const label = state.databaseStorageTemporary ? "Current runtime database" : "Database path";
+    const decoratedLabel = state.databaseStorageLabel
+      ? `${label} (${escapeHtml(state.databaseStorageLabel)})`
+      : label;
+    fragments.push(`${decoratedLabel}: <code>${escapeHtml(state.databaseStoragePath)}</code>.`);
+  }
+
+  if (state.databaseSeededFromSnapshot) {
+    fragments.push("This temporary runtime copy was seeded from the bundled project snapshot at startup.");
+  }
+
+  if (state.databaseWarning) {
+    fragments.push(escapeHtml(state.databaseWarning));
+  }
+
+  return fragments.length
+    ? `<p class="field-note">${fragments.join(" ")}</p>`
+    : "";
 }
 
 function renderThemeToggleButton() {
@@ -4331,6 +4568,13 @@ function getNavigationItems(role) {
     ];
   }
 
+  if (role === "maintenance") {
+    return [
+      { id: "dashboard", label: "Dashboard" },
+      { id: "guide", label: "Guide" },
+    ];
+  }
+
   return [
     { id: "route", label: "Route" },
     { id: "completed", label: "Completed" },
@@ -4442,7 +4686,7 @@ function renderSetupScreen() {
             </div>
             <div class="credential-item">
               <strong>2. Provide a writable storage folder</strong>
-              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code> or <code>LOGISTICS_DATA_DIR</code>.</div>
+              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code>, <code>LOGISTICS_DATA_DIR</code>, or <code>PERSISTENT_DATA_DIR</code>. Set <code>LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true</code> in production to block temporary fallback storage.</div>
             </div>
             <div class="credential-item">
               <strong>3. Configure email delivery</strong>
@@ -4512,7 +4756,7 @@ function renderBootstrapScreen() {
           <p class="eyebrow">Create admin</p>
           <h2>Initial account</h2>
           ${renderFlash()}
-          ${state.databaseWarning ? `<p class="field-note">${escapeHtml(state.databaseWarning)}</p>` : ""}
+          ${renderStorageNotice()}
           <form data-form="bootstrap-admin">
             <label>
               Name
@@ -4547,7 +4791,7 @@ function renderLoginScreen() {
             User records, locations, and driver entries are all pulled from the local project database. Driver-separated
             lists and the global entries register read from the same saved data.
           </p>
-          ${state.databaseWarning ? `<p class="field-note">${escapeHtml(state.databaseWarning)}</p>` : ""}
+          ${renderStorageNotice()}
           <div class="credential-list">
             <div class="credential-item">
               <strong>Login field changed</strong>
@@ -4607,6 +4851,16 @@ function renderLogisticsScreen() {
     <section class="screen-grid screen-grid-main">
       <div class="content">
         ${renderLogisticsPageContent()}
+      </div>
+    </section>
+  `;
+}
+
+function renderMaintenanceScreen() {
+  return `
+    <section class="screen-grid screen-grid-main">
+      <div class="content">
+        ${renderMaintenancePageContent()}
       </div>
     </section>
   `;
@@ -4789,7 +5043,7 @@ function renderAdminPageContent() {
       <section class="hero-card">
         <p class="eyebrow">Users</p>
         <h2>Team accounts and permissions</h2>
-        <p>Create admin, sales, driver, and logistics accounts, then manage their status from one place.</p>
+        <p>Create admin, sales, driver, logistics, and maintenance accounts, then manage their status from one place.</p>
       </section>
       ${renderFlash()}
       <section class="panel-grid">
@@ -4833,7 +5087,7 @@ function renderAdminPageContent() {
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
       ${renderPageSummaryCard("Stock", "Track stock, send artwork requests, and remove unused items before history exists.", "stock")}
       ${renderPageSummaryCard("Network", "Maintain pickup locations with optional contact details.", "network")}
-      ${renderPageSummaryCard("Users", "Manage admin, sales, driver, and logistics accounts.", "users")}
+      ${renderPageSummaryCard("Users", "Manage admin, sales, driver, logistics, and maintenance accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
@@ -4956,6 +5210,134 @@ function renderLogisticsPageContent() {
     </section>
     <section class="panel-grid">
       ${renderPageSummaryCard("Stock", "Log stock in/out, review history, and send artwork requests.", "stock")}
+    </section>
+  `;
+}
+
+function renderMaintenancePageContent() {
+  if (state.currentPage === "guide") {
+    return renderRoleGuidePage("maintenance");
+  }
+
+  const settings = state.maintenanceMailSettings;
+  const emailStateLabel = state.maintenanceMailSettingsLoading
+    ? "Loading"
+    : !settings
+      ? "Unavailable"
+      : settings.disabled
+        ? "Disabled"
+        : settings.configured
+          ? "Ready"
+          : "Needs setup";
+  const deliveryRouteLabel = settings?.to || state.mailTo || "Not set";
+  const senderLabel = settings?.fromDisplay || state.mailFromDisplay || settings?.fromAddress || "Not set";
+
+  return `
+    <section class="hero-card">
+      <p class="eyebrow">Maintenance</p>
+      <h2>Email control and routing</h2>
+      <p>Use this dashboard to pause outbound mail, maintain the live destination inboxes, and keep the sender identity aligned with Logistics Centre.</p>
+    </section>
+    ${renderFlash()}
+    <section class="metrics">
+      ${renderMetric("Email status", emailStateLabel)}
+      ${renderMetric("Provider", settings?.provider || "Unknown")}
+      ${renderMetric("Sender", senderLabel)}
+      ${renderMetric("General inbox", deliveryRouteLabel)}
+    </section>
+    ${renderMaintenanceMailPanel()}
+    <section class="panel-grid">
+      ${renderPageSummaryCard("Guide", "Review the maintenance role notes before changing live email behavior.", "guide")}
+    </section>
+  `;
+}
+
+function renderMaintenanceMailPanel() {
+  const settings = state.maintenanceMailSettings;
+  if (!settings) {
+    return `
+      <section class="panel">
+        <p class="eyebrow">Email settings</p>
+        <h3 class="panel-title">Loading maintenance controls</h3>
+        <p class="panel-subtitle">The current email settings will appear here once the secure maintenance snapshot finishes loading.</p>
+      </section>
+    `;
+  }
+
+  const statusLabel = settings.disabled
+    ? "Email delivery is disabled from the maintenance dashboard."
+    : settings.configured
+      ? "Email delivery is configured and ready."
+      : settings.reason || "Email delivery still needs provider setup.";
+
+  return `
+    <section class="panel">
+      <p class="eyebrow">Email settings</p>
+      <h3 class="panel-title">Outbound mail controls</h3>
+      <p class="panel-subtitle">The real mailbox stays in place, while the sender label and inbox routing can be maintained here.</p>
+      <p class="field-note">${escapeHtml(statusLabel)}</p>
+      <form data-form="maintenance-mail-settings">
+        <label class="checkbox-row">
+          <input name="disabled" type="checkbox"${settings.disabled ? " checked" : ""}>
+          <span>Temporarily disable all app email</span>
+        </label>
+        <div class="form-grid">
+          <label>
+            Sender label
+            <input name="senderName" type="text" value="${escapeHtml(settings.senderName || "Logistics Centre")}" placeholder="Logistics Centre">
+          </label>
+          <label>
+            Real sender mailbox
+            <input type="text" value="${escapeHtml(settings.fromAddress || settings.from || "Not set")}" readonly>
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Provider
+            <input type="text" value="${escapeHtml(settings.provider || "Unknown")}" readonly>
+          </label>
+          <label>
+            Sender preview
+            <input type="text" value="${escapeHtml(settings.fromDisplay || settings.fromAddress || "")}" readonly>
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            General inbox
+            <input name="to" type="text" value="${escapeHtml(settings.to || "")}" placeholder="admin3@giftwrap.co.za, promo10@giftwrap.co.za">
+          </label>
+          <label>
+            Artwork inbox
+            <input name="artworkTo" type="text" value="${escapeHtml(settings.artworkTo || "")}" placeholder="artwork3@giftwrap.co.za">
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            Admin action inbox
+            <input name="adminActionTo" type="text" value="${escapeHtml(settings.adminActionTo || "")}" placeholder="admin3@giftwrap.co.za">
+          </label>
+          <label>
+            Carry-over test inbox
+            <input name="rolloverTestTo" type="text" value="${escapeHtml(settings.rolloverTestTo || "")}" placeholder="artwork3@giftwrap.co.za">
+          </label>
+        </div>
+        <p class="field-note">Use commas or semicolons to separate multiple inboxes. Microsoft Graph may still show the mailbox profile name even when the app requests the sender label shown above.</p>
+        <div class="action-row">
+          <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
+            ${state.busy ? "Saving..." : "Save email settings"}
+          </button>
+          <button type="button" class="button button-secondary" data-action="refresh-mail-settings"${state.busy ? " disabled" : ""}>
+            Refresh settings
+          </button>
+          <button type="button" class="button button-secondary" data-action="email-test"${state.busy ? " disabled" : ""}>
+            Send test email
+          </button>
+          <button type="button" class="button button-secondary" data-action="email-rollover-test"${state.busy ? " disabled" : ""}>
+            Send rollover test
+          </button>
+        </div>
+      </form>
+      <p class="field-note">The automatic “dropped at office” email trigger has intentionally been left out for now so we can wire it against your exact requirements later.</p>
     </section>
   `;
 }
@@ -5728,7 +6110,7 @@ function renderAccountPanel() {
       <p class="panel-subtitle">
         ${isEditing
       ? "Update the selected account details. Leave the password blank to keep the current password."
-      : "Create admin, sales, driver, or logistics accounts with name-based login."
+      : "Create admin, sales, driver, logistics, or maintenance accounts with name-based login."
     }
       </p>
       <form data-form="add-account">
@@ -5744,6 +6126,7 @@ function renderAccountPanel() {
               <option value="sales"${selectedRole === "sales" ? " selected" : ""}>Sales</option>
               <option value="driver"${selectedRole === "driver" ? " selected" : ""}>Driver</option>
               <option value="logistics"${selectedRole === "logistics" ? " selected" : ""}>Logistics</option>
+              <option value="maintenance"${selectedRole === "maintenance" ? " selected" : ""}>Maintenance</option>
               <option value="admin"${selectedRole === "admin" ? " selected" : ""}>Admin</option>
             </select>
           </label>
@@ -5920,7 +6303,7 @@ function renderUsersSection() {
     <section class="table-card">
       <p class="eyebrow">Users</p>
       <h3 class="panel-title">Team account management</h3>
-      <p class="panel-subtitle">Admin, sales, driver, and logistics accounts all appear in this list.</p>
+      <p class="panel-subtitle">Admin, sales, driver, logistics, and maintenance accounts all appear in this list.</p>
       <div class="table-scroll">
         <table class="responsive-stack">
           <thead>
@@ -9450,7 +9833,7 @@ function exportOrdersCsv() {
 
 async function emailOrdersCsv() {
   if (!state.mailConfigured) {
-    showFlash(state.mailConfigReason || "Email delivery is not configured yet.", "error");
+    showFlash(getMailConfigErrorText(), "error");
     return;
   }
 
@@ -9478,7 +9861,7 @@ async function emailOrdersCsv() {
 
 async function sendTestEmail() {
   if (!state.mailConfigured) {
-    showFlash(state.mailConfigReason || "Email delivery is not configured yet.", "error");
+    showFlash(getMailConfigErrorText(), "error");
     return;
   }
 
@@ -9506,7 +9889,7 @@ async function sendTestEmail() {
 
 async function sendRolloverTestEmail() {
   if (!state.mailConfigured) {
-    showFlash(state.mailConfigReason || "Email delivery is not configured yet.", "error");
+    showFlash(getMailConfigErrorText(), "error");
     return;
   }
 
@@ -9522,7 +9905,7 @@ async function sendRolloverTestEmail() {
       body: JSON.stringify({ token: sessionToken }),
     });
 
-    const sentTo = payload?.sentTo || state.artworkTo;
+    const sentTo = payload?.sentTo || state.maintenanceMailSettings?.rolloverTestTo || state.artworkTo;
     const count = Number(payload?.count || 0);
     const csvCount = Number(payload?.csvCount || 0);
     const itemLabel = count === 1 ? "item" : "items";
