@@ -33,7 +33,7 @@ const DELETE_LOG_CRON_PATH = "/api/jobs/order-delete-log-email";
 const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const GEOCODE_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
-const GEOCODE_CACHE_FILE = path.join(ROOT, "data", "geocode-cache.json");
+const GEOCODE_CACHE_FILENAME = "geocode-cache.json";
 const GEOCODE_CACHE_LIMIT = 500;
 const GEOCODE_MIN_INTERVAL_MS = 1100;
 const GEOCODE_USER_AGENT = "LogisticsCenter/1.0 (self-hosted address lookup)";
@@ -222,6 +222,9 @@ function startServer() {
         ? `Local database ready at ${status.storagePath || "the project data folder"}.`
         : `Local database is not available yet: ${status.reason}`,
     );
+    if (status.warning) {
+      console.warn(`Local database warning: ${status.warning}`);
+    }
     console.log(
       mailStatus.configured
         ? `CSV mail-out is configured via ${mailStatus.provider} for ${mailStatus.from} -> ${mailStatus.to}.`
@@ -489,7 +492,8 @@ function createDatabase() {
 }
 
 function createGeocoder() {
-  const cache = loadGeocodeCache(GEOCODE_CACHE_FILE);
+  const cacheFilePath = getRuntimeDataFilePath(GEOCODE_CACHE_FILENAME);
+  const cache = loadGeocodeCache(cacheFilePath);
   let lastRequestAt = 0;
   let requestQueue = Promise.resolve();
 
@@ -583,7 +587,7 @@ function createGeocoder() {
               notFound: true,
               updatedAt: new Date().toISOString(),
             });
-            persistGeocodeCache(cache);
+            persistGeocodeCache(cache, cacheFilePath);
             throw createHttpError(404, "No coordinates were found for that address.");
           }
 
@@ -600,7 +604,7 @@ function createGeocoder() {
             updatedAt: new Date().toISOString(),
           };
           setGeocodeCacheEntry(cache, normalizedAddress, result);
-          persistGeocodeCache(cache);
+          persistGeocodeCache(cache, cacheFilePath);
 
           return {
             lat: result.lat,
@@ -618,6 +622,13 @@ function createGeocoder() {
       }
     },
   };
+}
+
+function getRuntimeDataFilePath(fileName) {
+  const status = database.getStatus();
+  const preferredDir = String(status?.storageDir || "").trim();
+  const fallbackDir = path.join(os.tmpdir(), "logistics-center-data");
+  return path.join(preferredDir || fallbackDir, fileName);
 }
 
 function normalizeGeocodeAddress(value) {
@@ -697,11 +708,11 @@ function setGeocodeCacheEntry(cache, address, entry) {
   }
 }
 
-function persistGeocodeCache(cache) {
+function persistGeocodeCache(cache, filePath) {
   try {
-    fs.mkdirSync(path.dirname(GEOCODE_CACHE_FILE), { recursive: true });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
-      GEOCODE_CACHE_FILE,
+      filePath,
       JSON.stringify(Object.fromEntries(cache.entries()), null, 2),
       "utf8",
     );

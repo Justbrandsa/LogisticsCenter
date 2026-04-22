@@ -223,6 +223,7 @@ const state = {
   theme: loadThemePreference(),
   missingConfig: false,
   missingConfigReason: "",
+  databaseWarning: "",
   mailConfigured: false,
   mailConfigReason: "",
   mailTo: "admin3@giftwrap.co.za",
@@ -329,6 +330,7 @@ void boot();
 async function boot() {
   try {
     const status = await fetchServerStatus();
+    state.databaseWarning = status.warning || "";
     state.mailConfigured = Boolean(status.mailConfigured);
     state.mailConfigReason = status.mailReason || "";
     state.mailTo = status.mailTo || state.mailTo;
@@ -4137,12 +4139,16 @@ function renderHeader() {
   const liveDate = state.publicState.today
     ? formatDateOnly(state.publicState.today)
     : "Waiting for local database";
+  const storageWarningPill = state.databaseWarning
+    ? `<span class="topbar-pill" title="${escapeHtml(state.databaseWarning)}">Temporary runtime storage</span>`
+    : "";
 
   if (!currentUser) {
     authMetaEl.innerHTML = `
       <div class="topbar-status-strip">
         <span class="topbar-pill topbar-pill-live">Live date ${escapeHtml(liveDate)}</span>
         <span class="topbar-pill">Local database workflow</span>
+        ${storageWarningPill}
       </div>
     `;
     userActionsEl.innerHTML = `
@@ -4167,6 +4173,7 @@ function renderHeader() {
       <span class="topbar-pill topbar-pill-live">Live date ${escapeHtml(liveDate)}</span>
       <span class="topbar-pill">${escapeHtml(summaryLine)}</span>
       <span class="topbar-pill">${escapeHtml(refreshLine)}</span>
+      ${storageWarningPill}
     </div>
     <div class="topbar-user-card">
       <span class="topbar-user-avatar">${escapeHtml(initials)}</span>
@@ -4425,8 +4432,8 @@ function renderSetupScreen() {
           <p class="eyebrow">Local setup</p>
           <h2>Local database is not available yet</h2>
           <p class="muted">
-            This version saves into a local SQLite database file inside the project. If the app cannot open that file,
-            check the local server environment and project write permissions before signing in.
+            This version saves into a local SQLite database file. If the app cannot open it, check the local server
+            environment and make sure there is a writable storage folder available before signing in.
           </p>
           <div class="credential-list">
             <div class="credential-item">
@@ -4434,8 +4441,8 @@ function renderSetupScreen() {
               <div>Run <code>node serve.js</code> from this project folder so the app can create its local database.</div>
             </div>
             <div class="credential-item">
-              <strong>2. Allow project file writes</strong>
-              <div>The server needs to create and update <code>data/route-ledger.sqlite</code> inside the project.</div>
+              <strong>2. Provide a writable storage folder</strong>
+              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code> or <code>LOGISTICS_DATA_DIR</code>.</div>
             </div>
             <div class="credential-item">
               <strong>3. Configure email delivery</strong>
@@ -4505,6 +4512,7 @@ function renderBootstrapScreen() {
           <p class="eyebrow">Create admin</p>
           <h2>Initial account</h2>
           ${renderFlash()}
+          ${state.databaseWarning ? `<p class="field-note">${escapeHtml(state.databaseWarning)}</p>` : ""}
           <form data-form="bootstrap-admin">
             <label>
               Name
@@ -4539,6 +4547,7 @@ function renderLoginScreen() {
             User records, locations, and driver entries are all pulled from the local project database. Driver-separated
             lists and the global entries register read from the same saved data.
           </p>
+          ${state.databaseWarning ? `<p class="field-note">${escapeHtml(state.databaseWarning)}</p>` : ""}
           <div class="credential-list">
             <div class="credential-item">
               <strong>Login field changed</strong>

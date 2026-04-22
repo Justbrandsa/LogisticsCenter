@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 let DatabaseSync = null;
@@ -21,6 +22,10 @@ const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
 const ORDER_FLAG_TYPES = new Set(["not_collected", "not_ready"]);
 const ORDER_COMPLETION_TYPES = new Set(["office", "factory"]);
 const STOCK_MOVEMENT_TYPES = new Set(["in", "out"]);
+const DEFAULT_DATABASE_FILENAME = "route-ledger.sqlite";
+const TEMP_DATA_DIRECTORY_NAME = "logistics-center-data";
+const DATABASE_PATH_ENV_KEYS = ["LOGISTICS_DB_PATH", "LOCAL_DB_PATH", "SQLITE_DB_PATH", "DATABASE_PATH"];
+const DATA_DIR_ENV_KEYS = ["LOGISTICS_DATA_DIR", "LOCAL_DATA_DIR", "SQLITE_DATA_DIR"];
 
 function createLocalDatabase(rootDir) {
   if (sqliteLoadError || !DatabaseSync) {
@@ -46,6 +51,9 @@ function createUnavailableDatabase(reason) {
         reason: message,
         storage: "local-sqlite",
         storagePath: "",
+        storageDir: "",
+        storageTemporary: false,
+        warning: "",
       };
     },
     async call() {
@@ -76,17 +84,131 @@ function createUnavailableDatabase(reason) {
   };
 }
 
+function resolveDatabaseLocation(rootDir) {
+  const configuredCandidate = getConfiguredDatabaseCandidate(rootDir);
+  const candidates = configuredCandidate
+    ? [configuredCandidate]
+    : [];
+
+  candidates.push({
+    label: "project data folder",
+    databasePath: path.join(rootDir, "data", DEFAULT_DATABASE_FILENAME),
+    temporary: false,
+  });
+  candidates.push({
+    label: "temporary runtime folder",
+    databasePath: path.join(os.tmpdir(), TEMP_DATA_DIRECTORY_NAME, DEFAULT_DATABASE_FILENAME),
+    temporary: true,
+    warning: "This host is using temporary runtime storage because the deployed app folder is read-only. Data can reset when the server restarts, scales, or redeploys.",
+  });
+
+  const failures = [];
+
+  for (const candidate of candidates) {
+    try {
+      ensureWritableDatabaseLocation(candidate.databasePath);
+      return {
+        dataDir: path.dirname(candidate.databasePath),
+        databasePath: candidate.databasePath,
+        temporary: Boolean(candidate.temporary),
+        warning: String(candidate.warning || "").trim(),
+      };
+    } catch (error) {
+      const detail = `${candidate.label} (${candidate.databasePath}): ${normalizeErrorMessage(error)}`;
+      if (candidate.required) {
+        throw new Error(detail);
+      }
+      failures.push(detail);
+    }
+  }
+
+  throw new Error(`No writable database location was found. ${failures.join(" ")}`.trim());
+}
+
+function getConfiguredDatabaseCandidate(rootDir) {
+  const configuredFilePath = firstNonEmptyString(
+    DATABASE_PATH_ENV_KEYS.map((key) => process.env[key]),
+  );
+  if (configuredFilePath) {
+    return {
+      label: "configured database path",
+      databasePath: resolveFromRoot(rootDir, configuredFilePath),
+      required: true,
+      temporary: false,
+    };
+  }
+
+  const configuredDataDir = firstNonEmptyString(
+    DATA_DIR_ENV_KEYS.map((key) => process.env[key]),
+  );
+  if (!configuredDataDir) {
+    return null;
+  }
+
+  return {
+    label: "configured data directory",
+    databasePath: path.join(resolveFromRoot(rootDir, configuredDataDir), DEFAULT_DATABASE_FILENAME),
+    required: true,
+    temporary: false,
+  };
+}
+
+function resolveFromRoot(rootDir, value) {
+  const target = String(value || "").trim();
+  if (!target) {
+    return "";
+  }
+
+  return path.isAbsolute(target)
+    ? path.normalize(target)
+    : path.resolve(rootDir, target);
+}
+
+function ensureWritableDatabaseLocation(databasePath) {
+  const directory = path.dirname(databasePath);
+  ensureWritableDirectory(directory);
+
+  if (fs.existsSync(databasePath)) {
+    fs.accessSync(databasePath, fs.constants.R_OK | fs.constants.W_OK);
+  }
+}
+
+function ensureWritableDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+  const probePath = path.join(
+    directoryPath,
+    `.write-test-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  fs.writeFileSync(probePath, "ok", "utf8");
+  fs.unlinkSync(probePath);
+}
+
+function firstNonEmptyString(values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
 class LocalDatabase {
   constructor(rootDir) {
     this.rootDir = rootDir;
-    this.dataDir = path.join(rootDir, "data");
-    this.databasePath = path.join(this.dataDir, "route-ledger.sqlite");
+    const storageLocation = resolveDatabaseLocation(rootDir);
+    this.dataDir = storageLocation.dataDir;
+    this.databasePath = storageLocation.databasePath;
     this.statementCache = new Map();
     this.status = {
       configured: false,
       reason: "",
       storage: "local-sqlite",
       storagePath: this.databasePath,
+      storageDir: this.dataDir,
+      storageTemporary: storageLocation.temporary,
+      warning: storageLocation.warning,
     };
 
     fs.mkdirSync(this.dataDir, { recursive: true });
