@@ -1,4 +1,5 @@
 module.exports = {
+  disabled: false,
   provider: "microsoft-graph",
   tenantId: "YOUR_MICROSOFT_TENANT_ID",
   clientId: "YOUR_MICROSOFT_APP_CLIENT_ID",

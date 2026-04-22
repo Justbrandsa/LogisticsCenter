@@ -2,19 +2,12 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { createLocalDatabase } = require("./local-database");
 
-let Pool = null;
-let driverLoadError = null;
 let nodemailer = null;
 let mailerLoadError = null;
 let QRCode = null;
 let qrLoadError = null;
-
-try {
-  ({ Pool } = require("pg"));
-} catch (error) {
-  driverLoadError = error;
-}
 
 try {
   nodemailer = require("nodemailer");
@@ -39,6 +32,11 @@ const DELETE_LOG_EMAIL_POLL_MS = 10 * 60 * 1000;
 const DELETE_LOG_CRON_PATH = "/api/jobs/order-delete-log-email";
 const ROLLOVER_TEST_EMAIL = "artwork3@giftwrap.co.za";
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
+const GEOCODE_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
+const GEOCODE_CACHE_FILE = path.join(ROOT, "data", "geocode-cache.json");
+const GEOCODE_CACHE_LIMIT = 500;
+const GEOCODE_MIN_INTERVAL_MS = 1100;
+const GEOCODE_USER_AGENT = "LogisticsCenter/1.0 (self-hosted address lookup)";
 const MIME = {
   ".css": "text/css; charset=UTF-8",
   ".html": "text/html; charset=UTF-8",
@@ -144,6 +142,7 @@ const RPC_DEFINITIONS = Object.freeze({
 
 const database = createDatabase();
 const mailer = createMailer();
+const geocoder = createGeocoder();
 const liveReloadClients = new Set();
 
 let liveReloadWatcherStarted = false;
@@ -220,8 +219,8 @@ function startServer() {
     console.log(`Route Ledger available at http://127.0.0.1:${PORT}`);
     console.log(
       status.configured
-        ? "Neon database connection is configured."
-        : `Neon database connection is not configured yet: ${status.reason}`,
+        ? `Local database ready at ${status.storagePath || "the project data folder"}.`
+        : `Local database is not available yet: ${status.reason}`,
     );
     console.log(
       mailStatus.configured
@@ -325,6 +324,15 @@ async function routeRequest(request, response) {
     if (request.method === "POST" && cleanPath === "/api/artwork/request") {
       const payload = await readJsonBody(request);
       const result = await mailer.sendArtworkRequest(payload?.token, payload || {});
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && cleanPath === "/api/geocode/address") {
+      const payload = await readJsonBody(request);
+      const result = await geocoder.lookupAddress(payload?.address, {
+        force: normalizeBoolean(payload?.force, false),
+      });
       sendJson(response, 200, result);
       return;
     }
@@ -477,336 +485,235 @@ function appendWarningToRpcResult(data, warning) {
 }
 
 function createDatabase() {
-  const config = loadDatabaseConfig();
-  const status = {
-    configured: false,
-    reason: "",
+  return createLocalDatabase(ROOT);
+}
+
+function createGeocoder() {
+  const cache = loadGeocodeCache(GEOCODE_CACHE_FILE);
+  let lastRequestAt = 0;
+  let requestQueue = Promise.resolve();
+
+  const scheduleLookup = async (task) => {
+    const scheduledTask = requestQueue.catch(() => undefined).then(async () => {
+      const waitMs = Math.max(0, GEOCODE_MIN_INTERVAL_MS - (Date.now() - lastRequestAt));
+      if (waitMs > 0) {
+        await delay(waitMs);
+      }
+
+      lastRequestAt = Date.now();
+      return task();
+    });
+
+    requestQueue = scheduledTask.then(() => undefined, () => undefined);
+    return scheduledTask;
   };
-
-  if (driverLoadError) {
-    status.reason = "Run npm install to add the PostgreSQL driver.";
-  } else if (!config.connectionString) {
-    status.reason = "Add a Neon connection string in neon-config.js or DATABASE_URL.";
-  } else {
-    status.configured = true;
-    status.reason = "";
-  }
-
-  const pool = status.configured
-    ? new Pool({
-        connectionString: config.connectionString,
-        ssl: shouldUseTls(config.connectionString) ? { rejectUnauthorized: false } : undefined,
-      })
-    : null;
 
   return {
-    getStatus() {
-      return { ...status };
-    },
-    async call(functionName, parameters) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
+    async lookupAddress(address, options = {}) {
+      const normalizedAddress = normalizeGeocodeAddress(address);
+      if (!normalizedAddress) {
+        throw createHttpError(400, "Address is required for coordinate lookup.");
       }
 
-      if (functionName === "clear_all_order_priorities") {
-        return this.clearAllOrderPriorities(parameters?.p_token);
-      }
+      if (!options.force) {
+        const cached = getGeocodeCacheEntry(cache, normalizedAddress);
+        if (cached) {
+          if (cached.notFound) {
+            throw createHttpError(404, "No coordinates were found for that address.");
+          }
 
-      if (functionName === "clear_order_rollovers") {
-        return this.clearOrderRollovers(parameters?.p_token);
+          return {
+            lat: cached.lat,
+            lng: cached.lng,
+            displayName: cached.displayName,
+            cached: true,
+          };
+        }
       }
-
-      const definition = RPC_DEFINITIONS[functionName];
-      if (!definition) {
-        throw createHttpError(404, "Unknown RPC function.");
-      }
-
-      const values = definition.params.map((parameterName) =>
-        Object.prototype.hasOwnProperty.call(parameters, parameterName) ? parameters[parameterName] : null,
-      );
-      const query = buildRpcQuery(functionName, definition.params.length);
-      let result;
 
       try {
-        result = await pool.query(query, values);
+        return await scheduleLookup(async () => {
+          if (!options.force) {
+            const cached = getGeocodeCacheEntry(cache, normalizedAddress);
+            if (cached) {
+              if (cached.notFound) {
+                throw createHttpError(404, "No coordinates were found for that address.");
+              }
+
+              return {
+                lat: cached.lat,
+                lng: cached.lng,
+                displayName: cached.displayName,
+                cached: true,
+              };
+            }
+          }
+
+          const url = new URL(GEOCODE_SEARCH_URL);
+          url.searchParams.set("q", normalizedAddress);
+          url.searchParams.set("format", "jsonv2");
+          url.searchParams.set("limit", "1");
+          url.searchParams.set("addressdetails", "0");
+
+          let response;
+          try {
+            response = await fetch(url, {
+              headers: {
+                Accept: "application/json",
+                "Accept-Language": "en-ZA,en;q=0.9",
+                "User-Agent": GEOCODE_USER_AGENT,
+              },
+            });
+          } catch (error) {
+            throw createHttpError(503, `Address lookup needs internet access. ${normalizeErrorMessage(error)}`);
+          }
+
+          const payload = await safeReadJson(response);
+          if (response.status === 429) {
+            throw createHttpError(429, "Address lookup is being rate-limited right now. Please wait a moment and try again.");
+          }
+
+          if (!response.ok) {
+            throw createHttpError(502, payload?.error || "Address lookup failed.");
+          }
+
+          const match = Array.isArray(payload) ? payload[0] : null;
+          if (!match) {
+            setGeocodeCacheEntry(cache, normalizedAddress, {
+              notFound: true,
+              updatedAt: new Date().toISOString(),
+            });
+            persistGeocodeCache(cache);
+            throw createHttpError(404, "No coordinates were found for that address.");
+          }
+
+          const lat = Number(match.lat);
+          const lng = Number(match.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            throw createHttpError(502, "Address lookup returned invalid coordinates.");
+          }
+
+          const result = {
+            lat,
+            lng,
+            displayName: String(match.display_name || "").trim(),
+            updatedAt: new Date().toISOString(),
+          };
+          setGeocodeCacheEntry(cache, normalizedAddress, result);
+          persistGeocodeCache(cache);
+
+          return {
+            lat: result.lat,
+            lng: result.lng,
+            displayName: result.displayName,
+            cached: false,
+          };
+        });
       } catch (error) {
-        if (typeof error?.code === "string") {
-          throw createHttpError(400, normalizeErrorMessage(error));
+        if (Number.isInteger(error?.statusCode)) {
+          throw error;
         }
-        throw error;
-      }
 
-      return result.rows[0]?.data ?? null;
-    },
-    async listOrdersForMailExport(scheduledFor = "") {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const targetDate = String(scheduledFor || "").trim() || null;
-
-      const result = await pool.query(`
-        select
-          o.id,
-          concat('ORD-', o.order_number) as "reference",
-          o.order_number as "orderNumber",
-          o.entry_type as "entryType",
-          o.move_to_factory as "moveToFactory",
-          o.factory_destination_location_id as "factoryDestinationLocationId",
-          coalesce(f.name, '') as "factoryDestinationName",
-          coalesce(f.address, '') as "factoryDestinationAddress",
-          o.factory_order_number as "factoryOrderNumber",
-          o.inhouse_order_number as "inhouseOrderNumber",
-          o.factory_order_number as "salesOrderNumber",
-          o.inhouse_order_number as "quoteNumber",
-          o.invoice_number as "invoiceNumber",
-          o.po_number as "poNumber",
-          o.delivery_address as "deliveryAddress",
-          o.branding as "branding",
-          o.stock_description as "stockDescription",
-          o.customer_name as "customerName",
-          o.driver_user_id as "driverUserId",
-          coalesce(d.name, '') as "driverName",
-          o.location_id as "locationId",
-          l.name as "locationName",
-          l.address as "locationAddress",
-          l.location_type as "locationType",
-          l.contact_person as "locationContactPerson",
-          l.contact_number as "locationContactNumber",
-          o.priority as "priority",
-          o.notes as "notes",
-          o.driver_flag_type as "driverFlagType",
-          o.driver_flag_note as "driverFlagNote",
-          o.driver_flagged_at as "driverFlaggedAt",
-          o.driver_flagged_by_user_id as "driverFlaggedByUserId",
-          coalesce(g.name, '') as "driverFlaggedByName",
-          o.picked_up_at as "pickedUpAt",
-          o.picked_up_by_user_id as "pickedUpByUserId",
-          coalesce(i.name, '') as "pickedUpByName",
-          o.completion_type as "completionType",
-          o.completed_by_user_id as "completedByUserId",
-          coalesce(h.name, '') as "completedByName",
-          o.status as "status",
-          to_char(o.scheduled_for, 'YYYY-MM-DD') as "scheduledFor",
-          to_char(o.original_scheduled_for, 'YYYY-MM-DD') as "originalScheduledFor",
-          o.carry_over_count as "carryOverCount",
-          o.created_by_user_id as "createdByUserId",
-          c.name as "createdByName",
-          c.role as "createdByRole",
-          o.created_at as "createdAt",
-          o.completed_at as "completedAt"
-        from private.orders o
-        left join private.app_users d on d.id = o.driver_user_id
-        join private.locations l on l.id = o.location_id
-        left join private.locations f on f.id = o.factory_destination_location_id
-        left join private.app_users g on g.id = o.driver_flagged_by_user_id
-        left join private.app_users h on h.id = o.completed_by_user_id
-        left join private.app_users i on i.id = o.picked_up_by_user_id
-        join private.app_users c on c.id = o.created_by_user_id
-        where ($1::date is null or o.scheduled_for = $1::date)
-        order by
-          case when o.status = 'active' then 0 else 1 end,
-          o.created_at desc,
-          o.order_number desc
-      `, [targetDate]);
-
-      return result.rows;
-    },
-    async listPendingOrderDeleteNotifications(limit = 100) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 250));
-      const result = await pool.query(`
-        select
-          id,
-          order_id as "orderId",
-          order_number as "orderNumber",
-          reference,
-          quote_number as "quoteNumber",
-          sales_order_number as "salesOrderNumber",
-          invoice_number as "invoiceNumber",
-          po_number as "poNumber",
-          entry_type as "entryType",
-          priority,
-          delivery_address as "deliveryAddress",
-          branding,
-          stock_description as "stockDescription",
-          notes,
-          move_to_factory as "moveToFactory",
-          factory_destination_location_id as "factoryDestinationLocationId",
-          factory_destination_name as "factoryDestinationName",
-          factory_destination_address as "factoryDestinationAddress",
-          location_id as "locationId",
-          location_name as "locationName",
-          location_address as "locationAddress",
-          driver_user_id as "driverUserId",
-          driver_name as "driverName",
-          created_by_user_id as "createdByUserId",
-          created_by_name as "createdByName",
-          created_at as "createdAt",
-          to_char(scheduled_for, 'YYYY-MM-DD') as "scheduledFor",
-          to_char(original_scheduled_for, 'YYYY-MM-DD') as "originalScheduledFor",
-          carry_over_count as "carryOverCount",
-          status,
-          deleted_by_user_id as "deletedByUserId",
-          deleted_by_name as "deletedByName",
-          deleted_by_role as "deletedByRole",
-          deleted_at as "deletedAt",
-          notification_attempts as "notificationAttempts",
-          last_notification_error as "lastNotificationError",
-          notification_sent_at as "notificationSentAt"
-        from private.order_delete_log
-        where notification_sent_at is null
-        order by deleted_at asc, id asc
-        limit $1
-      `, [safeLimit]);
-
-      return result.rows;
-    },
-    async markOrderDeleteNotificationsSent(logIds) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const cleanIds = Array.isArray(logIds)
-        ? logIds.map((value) => String(value || "").trim()).filter(Boolean)
-        : [];
-      if (!cleanIds.length) {
-        return 0;
-      }
-
-      const result = await pool.query(`
-        update private.order_delete_log
-        set notification_sent_at = now(),
-            notification_attempts = notification_attempts + 1,
-            last_notification_error = ''
-        where id = any($1::uuid[])
-      `, [cleanIds]);
-
-      return result.rowCount || 0;
-    },
-    async markOrderDeleteNotificationFailure(logIds, errorMessage) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const cleanIds = Array.isArray(logIds)
-        ? logIds.map((value) => String(value || "").trim()).filter(Boolean)
-        : [];
-      if (!cleanIds.length) {
-        return 0;
-      }
-
-      const message = String(errorMessage || "").trim() || "Delete-log email failed.";
-      const result = await pool.query(`
-        update private.order_delete_log
-        set notification_attempts = notification_attempts + 1,
-            last_notification_error = $2
-        where id = any($1::uuid[])
-      `, [cleanIds, message]);
-
-      return result.rowCount || 0;
-    },
-    async clearAllOrderPriorities(token) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const currentUser = await this.getUserByToken(token);
-      if (!currentUser) {
-        throw createHttpError(403, "Invalid session.");
-      }
-      if (currentUser.role !== "admin") {
-        throw createHttpError(403, "Permission denied.");
-      }
-
-      await pool.query(`
-        update private.app_sessions
-        set last_seen_at = now()
-        where token = $1
-      `, [String(token || "").trim()]);
-
-      const result = await pool.query(`
-        update private.orders
-        set priority = 'medium',
-            updated_at = now()
-        where status = 'active'
-          and priority = 'high'
-      `);
-
-      return {
-        ok: true,
-        updatedOrders: result.rowCount || 0,
-      };
-    },
-    async clearOrderRollovers(token) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const currentUser = await this.getUserByToken(token);
-      if (!currentUser) {
-        throw createHttpError(403, "Invalid session.");
-      }
-      if (currentUser.role !== "admin") {
-        throw createHttpError(403, "Permission denied.");
-      }
-
-      await pool.query(`
-        update private.app_sessions
-        set last_seen_at = now()
-        where token = $1
-      `, [String(token || "").trim()]);
-
-      const result = await pool.query(`
-        update private.orders
-        set carry_over_count = 0,
-            original_scheduled_for = scheduled_for,
-            updated_at = now()
-        where status = 'active'
-          and carry_over_count > 0
-      `);
-
-      return {
-        ok: true,
-        updatedOrders: result.rowCount || 0,
-      };
-    },
-    async getUserByToken(token) {
-      if (!pool) {
-        throw createHttpError(503, status.reason || "Database connection is not configured.");
-      }
-
-      const cleanToken = String(token || "").trim();
-      if (!cleanToken) {
-        return null;
-      }
-
-      const result = await pool.query(`
-        select
-          u.id,
-          u.name,
-          u.role,
-          u.active
-        from private.app_sessions s
-        join private.app_users u on u.id = s.user_id
-        where s.token = $1
-          and s.expires_at > now()
-          and u.active
-        order by s.created_at desc
-        limit 1
-      `, [cleanToken]);
-
-      return result.rows[0] || null;
-    },
-    async close() {
-      if (pool) {
-        await pool.end();
+        throw createHttpError(503, normalizeErrorMessage(error));
       }
     },
   };
+}
+
+function normalizeGeocodeAddress(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function loadGeocodeCache(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const entries = Object.entries(parsed || {})
+      .map(([key, value]) => [normalizeGeocodeAddress(key).toLowerCase(), normalizeGeocodeCacheEntry(value)])
+      .filter((entry) => entry[0] && entry[1]);
+    return new Map(entries);
+  } catch (error) {
+    return new Map();
+  }
+}
+
+function normalizeGeocodeCacheEntry(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  if (value.notFound) {
+    return {
+      notFound: true,
+      updatedAt: String(value.updatedAt || "").trim(),
+    };
+  }
+
+  const lat = Number(value.lat);
+  const lng = Number(value.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+
+  return {
+    lat,
+    lng,
+    displayName: String(value.displayName || "").trim(),
+    updatedAt: String(value.updatedAt || "").trim(),
+  };
+}
+
+function getGeocodeCacheEntry(cache, address) {
+  const key = normalizeGeocodeAddress(address).toLowerCase();
+  if (!key) {
+    return null;
+  }
+
+  const entry = cache.get(key) || null;
+  if (!entry) {
+    return null;
+  }
+
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry;
+}
+
+function setGeocodeCacheEntry(cache, address, entry) {
+  const key = normalizeGeocodeAddress(address).toLowerCase();
+  if (!key || !entry) {
+    return;
+  }
+
+  cache.delete(key);
+  cache.set(key, entry);
+
+  while (cache.size > GEOCODE_CACHE_LIMIT) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    cache.delete(oldestKey);
+  }
+}
+
+function persistGeocodeCache(cache) {
+  try {
+    fs.mkdirSync(path.dirname(GEOCODE_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(
+      GEOCODE_CACHE_FILE,
+      JSON.stringify(Object.fromEntries(cache.entries()), null, 2),
+      "utf8",
+    );
+  } catch (error) {
+    console.warn(`Failed to persist geocode cache: ${normalizeErrorMessage(error)}`);
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function maybeSendCarryOverEmail(functionName, payload) {
@@ -942,7 +849,9 @@ function createMailer() {
     provider: config.provider,
   };
 
-  if (config.provider === "microsoft-graph") {
+  if (config.disabled) {
+    status.reason = "Email delivery is temporarily disabled.";
+  } else if (config.provider === "microsoft-graph") {
     const graphConfigIssue = getMicrosoftGraphConfigIssue(config);
     if (graphConfigIssue) {
       status.reason = graphConfigIssue;
@@ -1417,34 +1326,6 @@ function looksLikeTemplateValue(value) {
   return normalized.startsWith("YOUR_") || normalized.includes("MICROSOFT_APP_CLIENT_SECRET");
 }
 
-function loadDatabaseConfig() {
-  const filePath = path.join(ROOT, "neon-config.js");
-  let fileConfig = {};
-
-  if (fs.existsSync(filePath)) {
-    try {
-      const resolvedPath = require.resolve(filePath);
-      delete require.cache[resolvedPath];
-      const loadedConfig = require(resolvedPath);
-      fileConfig = typeof loadedConfig === "string" ? { connectionString: loadedConfig } : loadedConfig || {};
-    } catch (error) {
-      console.error("Failed to load neon-config.js", error);
-    }
-  }
-
-  const connectionString = [
-    process.env.NEON_DATABASE_URL,
-    process.env.DATABASE_URL,
-    fileConfig.connectionString,
-  ]
-    .find((value) => typeof value === "string" && value.trim())
-    ?.trim();
-
-  return {
-    connectionString: connectionString || "",
-  };
-}
-
 function loadMailConfig() {
   const filePath = path.join(ROOT, "mail-config.js");
   let fileConfig = {};
@@ -1459,6 +1340,13 @@ function loadMailConfig() {
     }
   }
 
+  const disabled = normalizeBoolean(
+    firstNonEmpty([
+      process.env.MAIL_DISABLED,
+      fileConfig.disabled,
+    ]),
+    false,
+  );
   const provider = String(
     firstNonEmpty([
       process.env.MAIL_PROVIDER,
@@ -1525,6 +1413,7 @@ function loadMailConfig() {
     }
 
     return {
+      disabled,
       provider,
       transport,
       from,
@@ -1534,6 +1423,7 @@ function loadMailConfig() {
   }
 
   return {
+    disabled,
     provider,
     from,
     to,
@@ -1551,34 +1441,6 @@ function loadMailConfig() {
       fileConfig.clientSecret,
     ]) || "",
   };
-}
-
-function shouldUseTls(connectionString) {
-  try {
-    const parsed = new URL(connectionString);
-    const sslMode = (parsed.searchParams.get("sslmode") || "").toLowerCase();
-
-    if (sslMode === "disable") {
-      return false;
-    }
-
-    return parsed.protocol.startsWith("postgres");
-  } catch (error) {
-    return true;
-  }
-}
-
-function buildRpcQuery(functionName, parameterCount) {
-  if (!RPC_DEFINITIONS[functionName]) {
-    throw createHttpError(404, "Unknown RPC function.");
-  }
-
-  if (parameterCount === 0) {
-    return `select public.${functionName}() as data`;
-  }
-
-  const placeholders = Array.from({ length: parameterCount }, (_, index) => `$${index + 1}`).join(", ");
-  return `select public.${functionName}(${placeholders}) as data`;
 }
 
 function getOrderQuoteNumber(order) {

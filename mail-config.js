@@ -1,4 +1,5 @@
 module.exports = {
+  disabled: false,
   provider: "microsoft-graph",
   tenantId: process.env.MAIL_TENANT_ID || "3046c5ed-044f-4ada-9ad4-d4e085cb4cb6",
   clientId: process.env.MAIL_CLIENT_ID || "bc1465b4-e922-4fad-94ac-a13861d7ad36",

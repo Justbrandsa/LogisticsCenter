@@ -1836,6 +1836,15 @@ table.responsive-stack td[data-label="Action"] .action-row button {
   align-items: start;
 }
 
+.driver-dropoff-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.driver-dropoff-section .panel-subtitle {
+  margin-bottom: 0;
+}
+
 .global-location-groups {
   display: grid;
   gap: 1rem;

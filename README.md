@@ -1,6 +1,6 @@
 # Logictics Centre
 
-Logictics Centre is a Neon-backed browser app for managing driver-separated pickup and delivery entries.
+Logictics Centre is a local-database browser app for managing driver-separated pickup and delivery entries.
 
 ## User guide
 
@@ -9,7 +9,7 @@ Logictics Centre is a Neon-backed browser app for managing driver-separated pick
 ## Current workflow
 
 - The browser talks only to the local Node server.
-- The local Node server executes the allowed PostgreSQL RPC functions against Neon.
+- The local Node server reads and writes a SQLite database file stored inside the project.
 - Admin and sales users can download the global list as CSV, send it to `admin3@giftwrap.co.za`, or run a test email.
 - Microsoft Graph delivery sends from `artwork3@giftwrap.co.za` once `mail-config.js` or the `MAIL_*` environment variables are configured.
 - When active driver-list items roll forward to a new day, the server emails a grouped carry-over breakdown to the configured `MAIL_TO` recipient.
@@ -21,21 +21,19 @@ Logictics Centre is a Neon-backed browser app for managing driver-separated pick
 - `index.html` - app shell and page navigation mount
 - `app.js` - UI, page navigation, CSV download, and email actions
 - `styles.css` - layout and styling
-- `serve.js` - static server, Neon RPC API, and email endpoints
-- `neon-config.example.js` - local Neon connection string template
+- `serve.js` - static server, local database API, and email endpoints
+- `local-database.js` - SQLite-backed project-local persistence layer
 - `mail-config.example.js` - local Microsoft Graph config template
-- `neon.sql` - tables, functions, sessions, and entry logic for Neon/Postgres
+- `data/route-ledger.sqlite` - auto-created local database file at runtime
 
 ## Setup
 
-1. Create a Neon project and database.
-2. Run `npm install`.
-3. Create `neon-config.js` from `neon-config.example.js`, or set `NEON_DATABASE_URL` / `DATABASE_URL`.
-4. Create `mail-config.js` from `mail-config.example.js`, or set the `MAIL_*` environment variables.
-5. Run `neon.sql` against your Neon database.
-6. Start the local server with `node serve.js`.
-7. Open `http://127.0.0.1:4173/`.
-8. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
+1. Run `npm install`.
+2. Create `mail-config.js` from `mail-config.example.js`, or set the `MAIL_*` environment variables.
+3. Start the local server with `node serve.js`.
+4. Open `http://127.0.0.1:4173/`.
+5. On first start, the app creates `data/route-ledger.sqlite` automatically and then asks for the first admin account.
+6. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
 
 ## Microsoft Graph mail
 

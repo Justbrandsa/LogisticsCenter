@@ -304,6 +304,7 @@ let stockScannerDetector = null;
 let stockScannerVideoTrack = null;
 let routeMap = null;
 let routeMapContainer = null;
+const locationGeocodeRequests = new WeakMap();
 let routeMapLayers = null;
 let adminDriverMap = null;
 let adminDriverMapContainer = null;
@@ -686,6 +687,174 @@ async function requestText(url, options = {}) {
   return payload;
 }
 
+async function requestLocationGeocode(address, options = {}) {
+  return requestJson(`${API_ROOT}/geocode/address`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      address,
+      force: Boolean(options.force),
+    }),
+  });
+}
+
+function normalizeLocationAddress(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function getLocationFormFields(form) {
+  if (!(form instanceof HTMLFormElement) || form.dataset.form !== "add-location") {
+    return null;
+  }
+
+  const addressInput = form.querySelector('[name="address"]');
+  const latInput = form.querySelector('[name="lat"]');
+  const lngInput = form.querySelector('[name="lng"]');
+  const statusEl = form.querySelector("[data-location-geocode-status]");
+  const button = form.querySelector('[data-action="lookup-location-coordinates"]');
+
+  if (
+    !(addressInput instanceof HTMLInputElement)
+    || !(latInput instanceof HTMLInputElement)
+    || !(lngInput instanceof HTMLInputElement)
+  ) {
+    return null;
+  }
+
+  return {
+    form,
+    addressInput,
+    latInput,
+    lngInput,
+    statusEl: statusEl instanceof HTMLElement ? statusEl : null,
+    button: button instanceof HTMLButtonElement ? button : null,
+  };
+}
+
+function clearLocationLookupMarker(form) {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  delete form.dataset.locationGeocodeSource;
+  delete form.dataset.locationGeocodeAddress;
+}
+
+function markLocationLookupMarker(form, address) {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  form.dataset.locationGeocodeSource = "lookup";
+  form.dataset.locationGeocodeAddress = normalizeLocationAddress(address).toLowerCase();
+}
+
+function setLocationGeocodeStatus(form, message, options = {}) {
+  const fields = getLocationFormFields(form);
+  if (!fields) {
+    return;
+  }
+
+  if (fields.statusEl) {
+    fields.statusEl.textContent = String(message || "").trim();
+  }
+
+  if (fields.button) {
+    fields.button.disabled = state.busy || Boolean(options.pending);
+    fields.button.textContent = options.pending ? "Looking up..." : "Use address";
+  }
+}
+
+function getLocationGeocodeDefaultMessage() {
+  return 'Coordinates auto-fill from the address when blank. Use "Use address" to refresh them.';
+}
+
+async function fillLocationCoordinatesFromAddress(form, options = {}) {
+  const fields = getLocationFormFields(form);
+  if (!fields) {
+    return { skipped: true };
+  }
+
+  const address = normalizeLocationAddress(fields.addressInput.value);
+  const normalizedAddress = address.toLowerCase();
+  const latText = fields.latInput.value.trim();
+  const lngText = fields.lngInput.value.trim();
+  const hasCoordinatePair = Boolean(latText && lngText);
+  const hasPartialCoordinates = Boolean(latText || lngText) && !hasCoordinatePair;
+  const priorLookupAddress = String(form.dataset.locationGeocodeAddress || "").trim();
+  const shouldRefreshAutoLookup = (
+    hasCoordinatePair
+    && form.dataset.locationGeocodeSource === "lookup"
+    && priorLookupAddress
+    && priorLookupAddress !== normalizedAddress
+  );
+
+  if (!address) {
+    setLocationGeocodeStatus(form, "Enter the physical address first.");
+    return { skipped: true };
+  }
+
+  if (hasPartialCoordinates && !options.force) {
+    setLocationGeocodeStatus(form, "Finish both coordinates manually, or clear them to fill from the address.");
+    return { skipped: true };
+  }
+
+  if (!options.force && !shouldRefreshAutoLookup && hasCoordinatePair) {
+    return { skipped: true };
+  }
+
+  const activeRequest = locationGeocodeRequests.get(form);
+  if (activeRequest && activeRequest.address === normalizedAddress && (!options.force || activeRequest.force)) {
+    return activeRequest.promise;
+  }
+
+  const promise = (async () => {
+    setLocationGeocodeStatus(form, "Looking up coordinates from the recorded address...", { pending: true });
+
+    try {
+      const payload = await requestLocationGeocode(address, { force: options.force });
+      const lat = Number(payload?.lat);
+      const lng = Number(payload?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        throw new Error("Address lookup returned invalid coordinates.");
+      }
+
+      fields.latInput.value = String(lat);
+      fields.lngInput.value = String(lng);
+      markLocationLookupMarker(form, address);
+      setLocationGeocodeStatus(
+        form,
+        payload?.cached
+          ? "Coordinates filled from the saved address lookup."
+          : "Coordinates filled from the recorded address.",
+      );
+      return { filled: true, lat, lng, cached: Boolean(payload?.cached) };
+    } catch (error) {
+      clearLocationLookupMarker(form);
+      setLocationGeocodeStatus(
+        form,
+        `Coordinates could not be filled automatically. ${normalizeError(error)}`,
+      );
+      return { filled: false, error };
+    } finally {
+      const latestRequest = locationGeocodeRequests.get(form);
+      if (latestRequest?.promise === promise) {
+        locationGeocodeRequests.delete(form);
+      }
+    }
+  })();
+
+  locationGeocodeRequests.set(form, {
+    address: normalizedAddress,
+    force: Boolean(options.force),
+    promise,
+  });
+
+  return promise;
+}
+
 function createEmptySnapshot() {
   return {
     user: null,
@@ -758,7 +927,7 @@ function normalizeError(error) {
     || lowerMessage.includes("column \"last_known_lng\"")
     || lowerMessage.includes("column \"last_known_recorded_at\"")
   ) {
-    return "The app code is ahead of the database. Apply the latest neon.sql update, then try again.";
+    return "The app code is ahead of the local database schema. Restart node serve.js so the latest local update can run, then try again.";
   }
 
   return message;
@@ -798,7 +967,7 @@ async function handleSubmit(event) {
   }
 
   if (formId === "add-location" && currentUser.role === "admin") {
-    await createLocation(formData);
+    await createLocation(formData, form);
   }
 
   if (formId === "add-order" && (currentUser.role === "admin" || currentUser.role === "sales")) {
@@ -993,6 +1162,12 @@ async function handleClick(event) {
   if (action === "cancel-edit-location" && currentUser.role === "admin") {
     state.editingLocationId = "";
     render();
+    return;
+  }
+
+  if (action === "lookup-location-coordinates" && currentUser.role === "admin") {
+    const locationForm = button.closest('form[data-form="add-location"]');
+    await fillLocationCoordinatesFromAddress(locationForm, { force: true });
     return;
   }
 
@@ -1345,6 +1520,47 @@ function handleChange(event) {
     return;
   }
 
+  const locationForm = target.closest('form[data-form="add-location"]');
+  if (locationForm instanceof HTMLFormElement && target.matches('[name="address"]') && target instanceof HTMLInputElement) {
+    const fields = getLocationFormFields(locationForm);
+    if (!fields) {
+      return;
+    }
+
+    const address = normalizeLocationAddress(target.value);
+    const normalizedAddress = address.toLowerCase();
+    const latText = fields.latInput.value.trim();
+    const lngText = fields.lngInput.value.trim();
+    const hasCoordinatePair = Boolean(latText && lngText);
+    const hasPartialCoordinates = Boolean(latText || lngText) && !hasCoordinatePair;
+    const priorLookupAddress = String(locationForm.dataset.locationGeocodeAddress || "").trim();
+    const shouldRefreshAutoLookup = (
+      hasCoordinatePair
+      && locationForm.dataset.locationGeocodeSource === "lookup"
+      && priorLookupAddress
+      && priorLookupAddress !== normalizedAddress
+    );
+
+    if (!address) {
+      clearLocationLookupMarker(locationForm);
+      setLocationGeocodeStatus(locationForm, getLocationGeocodeDefaultMessage());
+      return;
+    }
+
+    if (hasPartialCoordinates) {
+      setLocationGeocodeStatus(locationForm, "Finish both coordinates manually, or clear them to fill from the address.");
+      return;
+    }
+
+    if (!hasCoordinatePair || shouldRefreshAutoLookup) {
+      void fillLocationCoordinatesFromAddress(locationForm);
+      return;
+    }
+
+    setLocationGeocodeStatus(locationForm, 'Existing coordinates will be kept. Use "Use address" to replace them.');
+    return;
+  }
+
   const orderForm = target.closest('form[data-form="add-order"], form[data-form="edit-order"]');
   if (
     orderForm instanceof HTMLFormElement
@@ -1370,6 +1586,34 @@ function handleChange(event) {
 function handleInput(event) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const locationForm = target.closest('form[data-form="add-location"]');
+  if (
+    locationForm instanceof HTMLFormElement
+    && target instanceof HTMLInputElement
+    && (target.matches('[name="lat"]') || target.matches('[name="lng"]'))
+  ) {
+    const fields = getLocationFormFields(locationForm);
+    if (!fields) {
+      return;
+    }
+
+    clearLocationLookupMarker(locationForm);
+    const latText = fields.latInput.value.trim();
+    const lngText = fields.lngInput.value.trim();
+    if (!latText && !lngText) {
+      setLocationGeocodeStatus(locationForm, getLocationGeocodeDefaultMessage());
+      return;
+    }
+
+    if (latText && lngText) {
+      setLocationGeocodeStatus(locationForm, 'Manual coordinates will be kept unless you use "Use address".');
+      return;
+    }
+
+    setLocationGeocodeStatus(locationForm, "Finish both coordinates manually, or clear them to fill from the address.");
     return;
   }
 
@@ -1606,13 +1850,11 @@ async function createSupplier(formData) {
   }
 }
 
-async function createLocation(formData) {
+async function createLocation(formData, form = null) {
   const locationId = String(formData.get("locationId") || "").trim();
   const locationType = String(formData.get("locationType") || "").trim();
   const name = String(formData.get("name") || "").trim();
   const address = String(formData.get("address") || "").trim();
-  const lat = parseOptionalNumber(formData.get("lat"));
-  const lng = parseOptionalNumber(formData.get("lng"));
   const contactPerson = String(formData.get("contactPerson") || "").trim();
   const contactNumber = String(formData.get("contactNumber") || "").trim();
 
@@ -1621,6 +1863,24 @@ async function createLocation(formData) {
     render();
     return;
   }
+
+  if (form instanceof HTMLFormElement) {
+    const fields = getLocationFormFields(form);
+    if (fields && !fields.latInput.value.trim() && !fields.lngInput.value.trim()) {
+      await fillLocationCoordinatesFromAddress(form);
+    }
+  }
+
+  const lat = parseOptionalNumber(
+    form instanceof HTMLFormElement
+      ? form.querySelector('[name="lat"]')?.value
+      : formData.get("lat"),
+  );
+  const lng = parseOptionalNumber(
+    form instanceof HTMLFormElement
+      ? form.querySelector('[name="lng"]')?.value
+      : formData.get("lng"),
+  );
 
   if (Number.isNaN(lat) || Number.isNaN(lng)) {
     showFlash("Latitude and longitude must be valid numbers.", "error");
@@ -3876,13 +4136,13 @@ function renderHeader() {
   const currentUser = state.snapshot.user;
   const liveDate = state.publicState.today
     ? formatDateOnly(state.publicState.today)
-    : "Waiting for database connection";
+    : "Waiting for local database";
 
   if (!currentUser) {
     authMetaEl.innerHTML = `
       <div class="topbar-status-strip">
         <span class="topbar-pill topbar-pill-live">Live date ${escapeHtml(liveDate)}</span>
-        <span class="topbar-pill">Neon-backed workflow</span>
+        <span class="topbar-pill">Local database workflow</span>
       </div>
     `;
     userActionsEl.innerHTML = `
@@ -4162,20 +4422,20 @@ function renderSetupScreen() {
     <section class="login-wrap">
       <div class="login-card">
         <article class="login-intro">
-          <p class="eyebrow">Neon setup</p>
-          <h2>Database connection is not configured yet</h2>
+          <p class="eyebrow">Local setup</p>
+          <h2>Local database is not available yet</h2>
           <p class="muted">
-            This version reads and writes everything through Neon by way of the local Node server. Add your
-            connection string, then run the SQL setup file before signing in.
+            This version saves into a local SQLite database file inside the project. If the app cannot open that file,
+            check the local server environment and project write permissions before signing in.
           </p>
           <div class="credential-list">
             <div class="credential-item">
-              <strong>1. Configure the local server</strong>
-              <div>Create <code>neon-config.js</code> from <code>neon-config.example.js</code> or set <code>DATABASE_URL</code>.</div>
+              <strong>1. Start the local server</strong>
+              <div>Run <code>node serve.js</code> from this project folder so the app can create its local database.</div>
             </div>
             <div class="credential-item">
-              <strong>2. Create the database objects</strong>
-              <div>Run <code>neon.sql</code> against your Neon database.</div>
+              <strong>2. Allow project file writes</strong>
+              <div>The server needs to create and update <code>data/route-ledger.sqlite</code> inside the project.</div>
             </div>
             <div class="credential-item">
               <strong>3. Configure email delivery</strong>
@@ -4185,11 +4445,11 @@ function renderSetupScreen() {
         </article>
         <article class="login-form">
           <p class="eyebrow">Current status</p>
-          <h2>Connection required</h2>
+          <h2>Database required</h2>
           ${renderFlash()}
           ${state.missingConfigReason ? `<p class="muted">${escapeHtml(state.missingConfigReason)}</p>` : ""}
           <p class="muted">
-            After you add the server connection details, refresh this page and the app will switch to either first-admin
+            Once the local database becomes available, refresh this page and the app will switch to either first-admin
             setup or name-based sign-in.
           </p>
         </article>
@@ -4204,9 +4464,9 @@ function renderLoadingScreen() {
       <div class="login-card">
         <article class="login-intro">
           <p class="eyebrow">${escapeHtml(APP_NAME)}</p>
-          <h2>Loading the live database workspace</h2>
+          <h2>Loading the local workspace</h2>
           <p class="muted">
-            Pulling live entries, driver lists, and account data from Neon.
+            Pulling entries, driver lists, and account data from the local project database.
           </p>
         </article>
         <article class="login-form">
@@ -4273,11 +4533,11 @@ function renderLoginScreen() {
     <section class="login-wrap">
       <div class="login-card">
         <article class="login-intro">
-          <p class="eyebrow">Live database</p>
+          <p class="eyebrow">Local workspace</p>
           <h2>Sign in with your name</h2>
           <p class="muted">
-            User records, locations, and driver entries are all pulled from Neon. Driver-separated lists and the
-            global entries register read from the same live data.
+            User records, locations, and driver entries are all pulled from the local project database. Driver-separated
+            lists and the global entries register read from the same saved data.
           </p>
           <div class="credential-list">
             <div class="credential-item">
@@ -5397,12 +5657,13 @@ function renderDriverPageContent() {
     <section class="hero-card">
       <p class="eyebrow">Route</p>
       <h2>Optimized run sheet for your live active entries</h2>
-      <p>You only see the entries assigned to your name for the live date. Completing an entry removes it from the live route sequence.</p>
+      <p>You only see the entries assigned to your name for the live date. Once you mark an entry as picked up, it moves into a separate drop-off queue so your live route only shows the stops you still need to collect from.</p>
     </section>
     ${renderFlash()}
     <section class="metrics">
       ${renderMetric("Active stops", plan.stops.length)}
       ${renderMetric("Priority stops", plan.priorityStopCount)}
+      ${renderMetric("Pending drop-offs", plan.dropOffCount)}
       ${renderMetric("Estimated km", plan.totalKm.toFixed(1))}
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
@@ -5420,11 +5681,15 @@ function renderDriverPageContent() {
       ? plan.stops.map((stop, index) => renderStopCard(stop, index, "driver", currentUser.id)).join("")
       : `
             <div class="empty-state">
-              No active entries are scheduled for you today. Future-dated work will appear here on the scheduled day.
+              ${plan.dropOffCount
+          ? "No pickup stops remain for you today. Picked-up entries are waiting in the drop-off queue below."
+          : "No active entries are scheduled for you today. Future-dated work will appear here on the scheduled day."
+        }
             </div>
           `
     }
     </section>
+    ${renderDriverDropOffSection(plan.dropOffGroups, "driver", currentUser.id)}
   `;
 }
 
@@ -5526,8 +5791,8 @@ function renderSupplierNetworkSection() {
         <h3 class="panel-title">${isEditingLocation ? "Edit location" : "Add location"}</h3>
         <p class="panel-subtitle">
           ${isEditingLocation
-      ? "Update the selected location details. Contact details and coordinates can be left blank when unavailable."
-      : "Contact details and coordinates can be left blank when they are not available."
+      ? "Update the selected location details. Contact details can stay blank, and coordinates will fill from the address when available."
+      : "Contact details can stay blank, and coordinates will fill from the address when available."
     }
         </p>
         <form data-form="add-location">
@@ -5548,7 +5813,7 @@ function renderSupplierNetworkSection() {
           </div>
           <label>
             Physical address
-            <input name="address" type="text" value="${escapeHtml(editingLocation?.address || "")}" required>
+            <input name="address" type="text" value="${escapeHtml(editingLocation?.address || "")}" autocomplete="street-address" required>
           </label>
           <div class="form-grid">
             <label>
@@ -5559,6 +5824,12 @@ function renderSupplierNetworkSection() {
               Longitude
               <input name="lng" type="number" step="0.000001" value="${escapeHtml(editingLocation?.lng ?? "")}" placeholder="Optional">
             </label>
+          </div>
+          <p class="field-note" data-location-geocode-status aria-live="polite">${escapeHtml(getLocationGeocodeDefaultMessage())}</p>
+          <div class="action-row">
+            <button type="button" class="button button-ghost" data-action="lookup-location-coordinates"${state.busy ? " disabled" : ""}>
+              Use address
+            </button>
           </div>
           <div class="form-grid">
             <label>
@@ -6261,8 +6532,12 @@ function renderDriverListOverview(viewerRole) {
               <h3 class="panel-title">${escapeHtml(driver.name)}</h3>
             </div>
             <div class="chip-row">
-              <span class="chip">${plan.totalOrders} entries</span>
+              <span class="chip">${plan.totalOrders} active entr${plan.totalOrders === 1 ? "y" : "ies"}</span>
               <span class="chip">${plan.totalKm.toFixed(1)} km</span>
+              ${plan.dropOffCount
+          ? `<span class="chip chip-success">${plan.dropOffCount} pending drop-off${plan.dropOffCount === 1 ? "" : "s"}</span>`
+          : ""
+        }
               ${plan.priorityStopCount
           ? `<span class="chip chip-priority-high">${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? "" : "s"}</span>`
           : ""
@@ -6276,8 +6551,9 @@ function renderDriverListOverview(viewerRole) {
           <p class="panel-subtitle">Active pickup route sequence.</p>
           ${plan.stops.length
           ? plan.stops.map((stop, index) => renderStopCard(stop, index, viewerRole, driver.id)).join("")
-          : '<div class="empty-state">No active work on this driver list.</div>'
+          : `<div class="empty-state">${plan.dropOffCount ? "No pickup stops remain. Picked-up entries are waiting below." : "No active work on this driver list."}</div>`
         }
+          ${renderDriverDropOffSection(plan.dropOffGroups, viewerRole, driver.id)}
         </article>
       `;
     })
@@ -6963,12 +7239,270 @@ function renderArtworkRequestRow(request) {
   `;
 }
 
-function renderStopCard(stop, index, viewerRole, driverUserId = "") {
+function renderDriverDropOffSection(dropOffGroups, viewerRole, driverUserId = "") {
+  const groups = Array.isArray(dropOffGroups) ? dropOffGroups.filter(Boolean) : [];
+  if (!groups.length) {
+    return "";
+  }
+
+  return `
+    <section class="driver-dropoff-section">
+      <div>
+        <p class="eyebrow">After pickup</p>
+        <h4 class="panel-title">Pending drop-offs</h4>
+        <p class="panel-subtitle">Picked-up entries move here so the live pickup list stays focused on the stops you still need to visit.</p>
+      </div>
+      <div class="global-location-groups">
+        ${groups.map((group, index) => renderDropOffCard(group, index, viewerRole, driverUserId)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderOrderStopSummary(label, name, address) {
+  const lines = [];
+  const cleanLabel = String(label || "").trim();
+  const cleanName = String(name || "").trim();
+  const cleanAddress = String(address || "").trim();
+
+  if (cleanLabel) {
+    lines.push(`<span class="muted">${escapeHtml(cleanLabel)}</span>`);
+  }
+  if (cleanName) {
+    lines.push(escapeHtml(cleanName));
+  }
+  if (cleanAddress) {
+    lines.push(escapeHtml(cleanAddress));
+  }
+
+  if (!lines.length) {
+    return "";
+  }
+
+  return `<p>${lines.join("<br>")}</p>`;
+}
+
+function renderDriverOrderCard(order, viewerRole, options = {}) {
   const allowComplete = viewerRole === "admin" || viewerRole === "driver";
   const allowDelete = viewerRole === "admin";
   const allowFlag = viewerRole === "admin" || viewerRole === "driver";
   const allowPriority = viewerRole === "admin";
   const allowTransfer = viewerRole === "admin" || viewerRole === "driver";
+  const isFlagging = state.flaggingOrderId === order.id;
+  const isTransferring = state.transferringOrderId === order.id;
+  const canFlag = allowFlag && order.status === "active";
+  const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
+  const isPriority = isPriorityOrder(order);
+  const pickedUp = isOrderPickedUp(order);
+  const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
+  const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
+  const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
+  const canEdit = (viewerRole === "admin" || viewerRole === "sales") && order.status === "active";
+  const showActions = canEdit || allowComplete || allowDelete || canFlag || allowPriority || canTransfer;
+  const locationLabel = String(options.locationLabel || "").trim();
+  const locationName = Object.prototype.hasOwnProperty.call(options, "locationName")
+    ? String(options.locationName || "").trim()
+    : String(order.locationName || "").trim();
+  const locationAddress = Object.prototype.hasOwnProperty.call(options, "locationAddress")
+    ? String(options.locationAddress || "").trim()
+    : String(order.locationAddress || "").trim();
+
+  return `
+    <div class="order-card${isPriority ? " order-card-priority" : ""}">
+      <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
+      <div class="order-meta">
+        ${getOrderListReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
+      </div>
+      ${renderOrderStockDetails(order)}
+      <div class="chip-row">
+        ${renderTypeChip(order.entryType)}
+        ${renderOrderScheduledChip(order)}
+        ${renderOrderPriorityChip(order)}
+        ${renderOrderPickupChip(order)}
+        ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
+        ${renderOrderFlagChip(order)}
+        <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
+        ${renderStatusChip(order.status)}
+      </div>
+      ${renderOrderNotice(order)}
+      ${renderOrderStopSummary(locationLabel, locationName, locationAddress)}
+      ${showActions
+    ? `
+            <div class="action-row">
+              ${canEdit
+        ? `
+                    <button
+                      class="button button-secondary"
+                      data-action="edit-order"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      Edit
+                    </button>
+                  `
+        : ""
+      }
+              ${allowPriority
+        ? `
+                    <button
+                      class="button ${isPriority ? "button-secondary" : "button-primary"}"
+                      data-action="toggle-order-priority"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      ${isPriority ? "Clear priority" : "Make priority"}
+                    </button>
+                  `
+        : ""
+      }
+              ${canMarkPickedUp
+        ? `
+                    <button
+                      class="button button-primary"
+                      data-action="pick-up-order"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      Picked up
+                    </button>
+                  `
+        : ""
+      }
+              ${canTransfer
+        ? `
+                    <button
+                      class="button button-secondary"
+                      data-action="toggle-transfer-order"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      ${isTransferring ? "Cancel transfer" : "Transfer"}
+                    </button>
+                  `
+        : ""
+      }
+              ${canDropAtOffice
+        ? `
+                    <button
+                      class="button button-primary"
+                      data-action="complete-order"
+                      data-order-id="${order.id}"
+                      data-completion-type="office"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      ${escapeHtml(getOrderCompletionTypeLabel("office", order) || "Dropped at office")}
+                    </button>
+                  `
+        : ""
+      }
+              ${canDropAtFactory
+        ? `
+                    <button
+                      class="button button-secondary"
+                      data-action="complete-order"
+                      data-order-id="${order.id}"
+                      data-completion-type="factory"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      Dropped at factory
+                    </button>
+                  `
+        : ""
+      }
+              ${canFlag
+        ? `
+                    <button
+                      class="button button-ghost"
+                      data-action="toggle-order-flag"
+                      data-order-id="${order.id}"
+                      ${state.busy ? " disabled" : ""}
+                    >
+                      ${isFlagging ? "Cancel flag" : order.driverFlagType ? "Update flag" : "Flag issue"}
+                    </button>
+                  `
+        : ""
+      }
+              ${allowDelete
+        ? `
+                    <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"${state.busy ? " disabled" : ""}>
+                      Delete
+                    </button>
+                  `
+        : ""
+      }
+            </div>
+          `
+    : ""
+  }
+      ${isTransferring ? renderOrderTransferForm(order) : ""}
+      ${isFlagging ? renderOrderFlagForm(order) : ""}
+    </div>
+  `;
+}
+
+function renderDropOffCard(group, index, viewerRole, driverUserId = "") {
+  const navigationUrl = getGoogleMapsNavigateUrl(group.location);
+  const stopCardKey = buildStopCardKey(driverUserId, `dropoff:${group.key}`);
+  const isOpen = isStopCardOpen(stopCardKey);
+  const locationName = String(group.location?.name || "").trim();
+  const locationAddress = String(group.location?.address || "").trim();
+
+  return `
+    <article class="stop-card${group.priorityCount ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
+      <div class="stop-header">
+        <div>
+          <p class="eyebrow">Drop-off ${index + 1}</p>
+          <h4 class="stop-title">${escapeHtml(group.title)}</h4>
+          ${isOpen && locationAddress ? `<p class="stop-address">${escapeHtml(locationAddress)}</p>` : ""}
+        </div>
+        <div class="chip-row">
+          ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+          <span class="chip">${group.orders.length} order${group.orders.length === 1 ? "" : "s"}</span>
+        </div>
+      </div>
+      <div class="action-row stop-actions">
+        ${navigationUrl
+      ? `
+              <a
+                class="button button-primary"
+                href="${escapeHtml(navigationUrl)}"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Navigate
+              </a>
+            `
+      : ""
+    }
+        <button
+          type="button"
+          class="button button-ghost"
+          data-action="toggle-stop-card"
+          data-stop-card-key="${escapeHtml(stopCardKey)}"
+          ${state.busy ? " disabled" : ""}
+        >
+          ${isOpen ? "Hide orders" : "Show orders"}
+        </button>
+      </div>
+      ${isOpen
+      ? `
+            <div class="stop-orders">
+              ${group.orders
+          .map((order) => renderDriverOrderCard(order, viewerRole, {
+            locationLabel: "Drop-off destination",
+            locationName,
+            locationAddress,
+          }))
+          .join("")}
+            </div>
+          `
+      : ""
+    }
+    </article>
+  `;
+}
+
+function renderStopCard(stop, index, viewerRole, driverUserId = "") {
   const allowNavigate = viewerRole === "admin" || viewerRole === "driver" || viewerRole === "sales";
   const navigationUrl = allowNavigate ? getGoogleMapsNavigateUrl(stop.location) : "";
   const stopCardKey = buildStopCardKey(driverUserId, stop.id);
@@ -7019,150 +7553,11 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
       ? `
             <div class="stop-orders">
         ${stop.orders
-        .map((order) => {
-          const isFlagging = state.flaggingOrderId === order.id;
-          const isTransferring = state.transferringOrderId === order.id;
-          const canFlag = allowFlag && order.status === "active";
-          const canTransfer = allowTransfer && order.status === "active" && getTransferDriverChoices(order).length > 0;
-          const isPriority = isPriorityOrder(order);
-          const pickedUp = isOrderPickedUp(order);
-          const canMarkPickedUp = allowComplete && order.status === "active" && !pickedUp;
-          const canDropAtOffice = allowComplete && order.status === "active" && pickedUp;
-          const canDropAtFactory = allowComplete && order.status === "active" && pickedUp && order.moveToFactory;
-          const canEdit = (viewerRole === "admin" || viewerRole === "sales") && order.status === "active";
-
-          return `
-              <div class="order-card${isPriority ? " order-card-priority" : ""}">
-                <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
-                <div class="order-meta">
-                  ${getOrderListReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
-                </div>
-                ${renderOrderStockDetails(order)}
-                <div class="chip-row">
-                  ${renderTypeChip(order.entryType)}
-                  ${renderOrderScheduledChip(order)}
-                  ${renderOrderPriorityChip(order)}
-                  ${renderOrderPickupChip(order)}
-                  ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
-                  ${renderOrderFlagChip(order)}
-                  <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
-                  ${renderStatusChip(order.status)}
-                </div>
-                ${renderOrderNotice(order)}
-                <p>${escapeHtml(order.locationName || stop.location.name)}<br>${escapeHtml(order.locationAddress || stop.location.address)}</p>
-                ${allowComplete || allowDelete || canFlag || allowPriority
-              ? `
-                      <div class="action-row">
-                        ${canEdit
-                ? `
-                              <button
-                                class="button button-secondary"
-                                data-action="edit-order"
-                                data-order-id="${order.id}"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                Edit
-                              </button>
-                            `
-                : ""
-              }
-                        ${allowPriority
-                ? `
-                              <button
-                                class="button ${isPriority ? "button-secondary" : "button-primary"}"
-                                data-action="toggle-order-priority"
-                                data-order-id="${order.id}"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                ${isPriority ? "Clear priority" : "Make priority"}
-                              </button>
-                            `
-                : ""
-              }
-                        ${canMarkPickedUp
-                ? `
-                              <button
-                                class="button button-primary"
-                                data-action="pick-up-order"
-                                data-order-id="${order.id}"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                Picked up
-                              </button>
-                            `
-                : ""
-              }
-                        ${canTransfer
-                ? `
-                              <button
-                                class="button button-secondary"
-                                data-action="toggle-transfer-order"
-                                data-order-id="${order.id}"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                ${isTransferring ? "Cancel transfer" : "Transfer"}
-                              </button>
-                            `
-                : ""
-              }
-                        ${canDropAtOffice
-                ? `
-                              <button
-                                class="button button-primary"
-                                data-action="complete-order"
-                                data-order-id="${order.id}"
-                                data-completion-type="office"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                ${escapeHtml(getOrderCompletionTypeLabel("office", order) || "Dropped at office")}
-                              </button>
-                            `
-                : ""
-              }
-                        ${canDropAtFactory
-                ? `
-                              <button
-                                class="button button-secondary"
-                                data-action="complete-order"
-                                data-order-id="${order.id}"
-                                data-completion-type="factory"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                Dropped at factory
-                              </button>
-                            `
-                : ""
-              }
-                        ${canFlag
-                ? `
-                              <button
-                                class="button button-ghost"
-                                data-action="toggle-order-flag"
-                                data-order-id="${order.id}"
-                                ${state.busy ? " disabled" : ""}
-                              >
-                                ${isFlagging ? "Cancel flag" : order.driverFlagType ? "Update flag" : "Flag issue"}
-                              </button>
-                            `
-                : ""
-              }
-                        ${allowDelete
-                ? `
-                              <button class="button button-danger" data-action="delete-order" data-order-id="${order.id}" data-order-reference="${escapeHtml(getOrderPrimaryDisplay(order))}"${state.busy ? " disabled" : ""}>
-                                Delete
-                              </button>
-                            `
-                : ""
-              }
-                      </div>
-                    `
-              : ""
-            }
-                ${isTransferring ? renderOrderTransferForm(order) : ""}
-                ${isFlagging ? renderOrderFlagForm(order) : ""}
-              </div>
-            `;
-        })
+        .map((order) => renderDriverOrderCard(order, viewerRole, {
+          locationLabel: "Pickup location",
+          locationName: order.locationName || stop.location.name,
+          locationAddress: order.locationAddress || stop.location.address,
+        }))
         .join("")}
             </div>
           `
@@ -7572,6 +7967,10 @@ function isSystemOfficeLocation(location) {
   return String(location?.name || "").trim().toLowerCase() === "office";
 }
 
+function getOfficeLocation() {
+  return state.snapshot.locations.find((location) => isSystemOfficeLocation(location)) || null;
+}
+
 function renderLocationOptions(selectedLocationId = "") {
   if (!state.snapshot.locations.length) {
     return '<option value="">Create a location first</option>';
@@ -7926,7 +8325,10 @@ async function recordDriverPosition(lat, lng) {
     });
   } catch (error) {
     const message = normalizeError(error);
-    state.driverRouteOriginError = message.includes("latest neon.sql")
+    state.driverRouteOriginError = (
+      message.includes("latest local update")
+      || message.includes("local database schema")
+    )
       ? `${message} Driver tracking will start working after that update is applied.`
       : "Your location was found, but it could not be saved for admin tracking right now.";
     render();
@@ -8059,17 +8461,84 @@ function isStopCardOpen(stopCardKey) {
   return state.driverOpenStops[stopCardKey] !== false;
 }
 
+function getDropOffDestination(order) {
+  if (isDeliveryOrder(order)) {
+    const customerName = String(order?.customerName || "").trim();
+    const deliveryAddress = String(order?.deliveryAddress || "").trim();
+    return {
+      key: [
+        "delivery",
+        customerName.toLowerCase(),
+        deliveryAddress.toLowerCase(),
+      ].filter(Boolean).join("|") || `delivery:${order.id}`,
+      title: customerName ? `Deliver to ${customerName}` : "Deliver to client",
+      location: {
+        name: customerName || "Client",
+        address: deliveryAddress,
+      },
+      sortRank: 1,
+    };
+  }
+
+  const officeLocation = getOfficeLocation();
+  return {
+    key: `office:${officeLocation?.id || "default"}`,
+    title: "Drop at the Office",
+    location: officeLocation || { name: "Office", address: "" },
+    sortRank: 0,
+  };
+}
+
+function buildDropOffGroups(orders) {
+  const items = Array.isArray(orders) ? orders.filter(Boolean) : [];
+  const grouped = new Map();
+
+  items.forEach((order) => {
+    const destination = getDropOffDestination(order);
+    if (!grouped.has(destination.key)) {
+      grouped.set(destination.key, {
+        key: destination.key,
+        title: destination.title,
+        location: destination.location,
+        sortRank: destination.sortRank,
+        priorityCount: 0,
+        priorityRank: getOrderPriorityRank(order),
+        orders: [],
+      });
+    }
+
+    const group = grouped.get(destination.key);
+    group.orders.push(order);
+    group.priorityRank = Math.min(group.priorityRank, getOrderPriorityRank(order));
+    if (isPriorityOrder(order)) {
+      group.priorityCount += 1;
+    }
+  });
+
+  return Array.from(grouped.values())
+    .map((group) => ({
+      ...group,
+      orders: [...group.orders].sort(orderRouteSort),
+    }))
+    .sort(dropOffGroupSort);
+}
+
 function getRoutePlan(driverUserId, options = {}) {
   const scheduledFor = String(options?.scheduledFor || "").trim();
   const activeOrders = getOrdersForDriver(driverUserId)
     .filter((order) => order.status === "active")
-    .filter((order) => !scheduledFor || getOrderScheduledForValue(order) === scheduledFor)
+    .filter((order) => !scheduledFor || getOrderScheduledForValue(order) === scheduledFor);
+  const pickupOrders = activeOrders
+    .filter((order) => !isOrderPickedUp(order))
+    .sort(orderRouteSort);
+  const dropOffOrders = activeOrders
+    .filter((order) => isOrderPickedUp(order))
     .sort(orderRouteSort);
   const routeOrigin = getRouteOrigin(driverUserId);
 
   const grouped = new Map();
 
-  activeOrders.forEach((order) => {
+  pickupOrders.forEach((order) => {
     const location = getLocation(order.locationId);
     if (!location) {
       return;
@@ -8131,9 +8600,12 @@ function getRoutePlan(driverUserId, options = {}) {
   return {
     origin: routeOrigin,
     totalOrders: activeOrders.length,
+    pickupOrderCount: pickupOrders.length,
+    dropOffCount: dropOffOrders.length,
     totalKm: totalRouteDistance(routeableStops, routeOrigin),
     priorityStopCount: stops.filter((stop) => stop.isPriority).length,
     stops: enrichedStops,
+    dropOffGroups: buildDropOffGroups(dropOffOrders),
   };
 }
 
@@ -8223,7 +8695,7 @@ function haversineKm(pointA, pointB) {
 }
 
 function drawDriverRoute(driverUserId) {
-  const plan = getRoutePlan(driverUserId);
+  const plan = getRoutePlan(driverUserId, { scheduledFor: getLiveScheduleDate() });
   const routeableStops = plan.stops.filter((stop) => stop.hasCoordinates);
   if (drawDriverRouteMap(plan, routeableStops)) {
     return;
@@ -8514,7 +8986,7 @@ function getAdminDriverLocationStatus(positionedDrivers = getDriversWithRecorded
   }
 
   if (!hasDriverLocationTrackingFields()) {
-    return "Driver location tracking is not available in this database yet. Apply the latest neon.sql update, then have drivers open their route page and allow location access.";
+    return "Driver location tracking is not available in this local database yet. Restart node serve.js so the latest local update can run, then have drivers open their route page and allow location access.";
   }
 
   if (!positionedDrivers.length) {
@@ -8584,7 +9056,13 @@ function getDriverRouteStatus(plan, routeableStops) {
     ? `${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? " is" : "s are"} highlighted first when coordinates are available.`
     : "";
   if (!plan.stops.length) {
-    return [originMessage, priorityMessage, "No active entries are assigned to you right now."].filter(Boolean).join(" ");
+    return [
+      originMessage,
+      priorityMessage,
+      plan.dropOffCount
+        ? `${plan.dropOffCount} picked-up entr${plan.dropOffCount === 1 ? "y is" : "ies are"} waiting in the drop-off queue below.`
+        : "No active entries are assigned to you right now.",
+    ].filter(Boolean).join(" ");
   }
 
   const missingCoordinatesCount = plan.stops.length - routeableStops.length;
@@ -8705,6 +9183,29 @@ function stopDisplaySort(left, right) {
   const leftName = String(left?.location?.name || "").toLowerCase();
   const rightName = String(right?.location?.name || "").toLowerCase();
   return leftName.localeCompare(rightName);
+}
+
+function dropOffGroupSort(left, right) {
+  const rankCompare = (left.sortRank ?? 0) - (right.sortRank ?? 0);
+  if (rankCompare) {
+    return rankCompare;
+  }
+
+  const priorityCompare = (left.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY])
+    - (right.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY]);
+  if (priorityCompare) {
+    return priorityCompare;
+  }
+
+  const leftName = String(left?.location?.name || left?.title || "").toLowerCase();
+  const rightName = String(right?.location?.name || right?.title || "").toLowerCase();
+  if (leftName !== rightName) {
+    return leftName.localeCompare(rightName);
+  }
+
+  const leftAddress = String(left?.location?.address || "").toLowerCase();
+  const rightAddress = String(right?.location?.address || "").toLowerCase();
+  return leftAddress.localeCompare(rightAddress);
 }
 
 function getPaginationData(items, pageKey, pageSize) {
