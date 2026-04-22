@@ -210,6 +210,30 @@ function firstNonEmptyString(values) {
   return "";
 }
 
+function seedTemporaryDatabaseFromProject(rootDir, databasePath) {
+  const projectDatabasePath = path.join(rootDir, "data", DEFAULT_DATABASE_FILENAME);
+  const targetExists = fs.existsSync(databasePath) && Number(fs.statSync(databasePath).size || 0) > 0;
+  if (targetExists || !fs.existsSync(projectDatabasePath)) {
+    return false;
+  }
+
+  fs.accessSync(projectDatabasePath, fs.constants.R_OK);
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+
+  const suffixes = ["", "-wal", "-shm"];
+  suffixes.forEach((suffix) => {
+    const sourcePath = `${projectDatabasePath}${suffix}`;
+    const targetPath = `${databasePath}${suffix}`;
+    if (!fs.existsSync(sourcePath)) {
+      return;
+    }
+
+    fs.copyFileSync(sourcePath, targetPath);
+  });
+
+  return true;
+}
+
 class LocalDatabase {
   constructor(rootDir) {
     this.rootDir = rootDir;
@@ -225,9 +249,13 @@ class LocalDatabase {
       storageDir: this.dataDir,
       storageTemporary: storageLocation.temporary,
       warning: storageLocation.warning,
+      seededFromBundledSnapshot: false,
     };
 
     fs.mkdirSync(this.dataDir, { recursive: true });
+    if (storageLocation.temporary) {
+      this.status.seededFromBundledSnapshot = seedTemporaryDatabaseFromProject(rootDir, this.databasePath);
+    }
     this.db = new DatabaseSync(this.databasePath);
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec("PRAGMA journal_mode = WAL;");
