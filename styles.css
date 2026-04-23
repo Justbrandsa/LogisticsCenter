@@ -1180,6 +1180,330 @@ textarea {
   font-size: 0.88rem;
 }
 
+.maintenance-dashboard {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.maintenance-vision-hero,
+.maintenance-metrics,
+.maintenance-workspace {
+  display: grid;
+  gap: 1rem;
+}
+
+.maintenance-vision-hero {
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.82fr);
+}
+
+.maintenance-hero-card,
+.maintenance-status-card,
+.maintenance-route-panel {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(128, 150, 255, 0.16);
+  background:
+    linear-gradient(135deg, rgba(16, 25, 54, 0.92) 0%, rgba(7, 13, 31, 0.94) 58%, rgba(8, 20, 46, 0.96) 100%),
+    radial-gradient(circle at 92% 8%, rgba(75, 224, 213, 0.24), transparent 30%);
+  box-shadow: 0 28px 72px rgba(3, 8, 24, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+
+.maintenance-hero-card {
+  min-height: 270px;
+  padding: clamp(1.2rem, 3vw, 2rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 0.38fr);
+  align-items: center;
+  isolation: isolate;
+}
+
+.maintenance-hero-card::before,
+.maintenance-status-card::before,
+.maintenance-route-panel::before,
+.maintenance-mail-panel::before,
+.maintenance-metric-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(75, 224, 213, 0.6) 28%, rgba(74, 125, 255, 0.54) 60%, transparent 100%);
+}
+
+.maintenance-hero-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -8rem -9rem auto;
+  width: 28rem;
+  height: 24rem;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, rgba(75, 224, 213, 0.28) 0%, transparent 58%),
+    radial-gradient(circle at 35% 30%, rgba(74, 125, 255, 0.28) 0%, transparent 50%);
+  filter: blur(3px);
+  z-index: -1;
+}
+
+.maintenance-hero-copy {
+  position: relative;
+  z-index: 1;
+  max-width: 680px;
+}
+
+.maintenance-hero-copy h2 {
+  margin: 0;
+  max-width: 12ch;
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: clamp(2.45rem, 6vw, 4.9rem);
+  line-height: 0.9;
+  letter-spacing: -0.075em;
+}
+
+.maintenance-hero-copy p:last-child {
+  max-width: 58ch;
+  margin: 1rem 0 0;
+  color: #b9c6e8;
+  font-size: clamp(0.95rem, 2vw, 1.05rem);
+}
+
+.maintenance-hero-orbit {
+  position: relative;
+  min-height: 190px;
+  display: grid;
+  place-items: center;
+}
+
+.maintenance-orbit-ring,
+.maintenance-orbit-core {
+  position: absolute;
+  border-radius: 999px;
+}
+
+.maintenance-orbit-ring-one {
+  width: 11.5rem;
+  height: 11.5rem;
+  border: 1px solid rgba(75, 224, 213, 0.28);
+  box-shadow: 0 0 46px rgba(75, 224, 213, 0.16), inset 0 0 34px rgba(75, 224, 213, 0.08);
+}
+
+.maintenance-orbit-ring-two {
+  width: 8rem;
+  height: 8rem;
+  border: 1px solid rgba(74, 125, 255, 0.34);
+  transform: rotate(28deg) scaleX(1.22);
+  box-shadow: 0 0 42px rgba(74, 125, 255, 0.18);
+}
+
+.maintenance-orbit-core {
+  width: 5.5rem;
+  height: 5.5rem;
+  display: grid;
+  place-items: center;
+  color: #06101f;
+  font: 800 1.2rem/1 "Space Grotesk", sans-serif;
+  background: linear-gradient(135deg, #4be0d5 0%, #4a7dff 100%);
+  box-shadow: 0 22px 48px rgba(31, 109, 220, 0.38), 0 0 48px rgba(75, 224, 213, 0.34);
+}
+
+.maintenance-status-card,
+.maintenance-route-panel {
+  padding: 1.15rem;
+}
+
+.maintenance-status-card h3 {
+  margin: 0;
+  font-family: "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.065em;
+}
+
+.maintenance-status-card > p:not(.eyebrow) {
+  margin: 0.55rem 0 1rem;
+  color: var(--muted);
+}
+
+.maintenance-status-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.maintenance-status-list span,
+.maintenance-route-row {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.75rem 0.8rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(122, 144, 216, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.maintenance-status-list strong,
+.maintenance-route-row span {
+  color: rgba(185, 198, 232, 0.78);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.maintenance-status-list span {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.maintenance-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.maintenance-metric-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 148px;
+  padding: 1rem 1.05rem;
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(19, 29, 61, 0.92) 0%, rgba(9, 15, 33, 0.96) 100%);
+  border: 1px solid rgba(122, 144, 216, 0.14);
+  box-shadow: 0 22px 50px rgba(2, 7, 22, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.maintenance-metric-glow {
+  position: absolute;
+  right: -2.4rem;
+  bottom: -2.6rem;
+  width: 8rem;
+  height: 8rem;
+  border-radius: 999px;
+  background: rgba(75, 224, 213, 0.2);
+  filter: blur(8px);
+}
+
+.maintenance-metric-card .metric-value {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: clamp(1.3rem, 2vw, 1.85rem);
+  line-height: 1.05;
+}
+
+.maintenance-metric-caption {
+  position: relative;
+  z-index: 1;
+  margin: 0.7rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.maintenance-metric-success .maintenance-metric-glow {
+  background: rgba(73, 214, 155, 0.22);
+}
+
+.maintenance-metric-warning .maintenance-metric-glow {
+  background: rgba(244, 191, 103, 0.22);
+}
+
+.maintenance-metric-danger .maintenance-metric-glow {
+  background: rgba(255, 110, 141, 0.2);
+}
+
+.maintenance-metric-info .maintenance-metric-glow {
+  background: rgba(74, 125, 255, 0.23);
+}
+
+.maintenance-metric-accent .maintenance-metric-glow {
+  background: rgba(255, 181, 109, 0.2);
+}
+
+.maintenance-workspace {
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.72fr);
+  align-items: start;
+}
+
+.maintenance-mail-panel {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(1.1rem, 2vw, 1.45rem);
+  border-radius: 28px;
+  background:
+    linear-gradient(160deg, rgba(18, 27, 56, 0.94) 0%, rgba(8, 14, 31, 0.96) 100%),
+    radial-gradient(circle at 4% 0%, rgba(75, 224, 213, 0.16), transparent 30%);
+}
+
+.maintenance-mail-panel form {
+  gap: 1rem;
+}
+
+.maintenance-mail-panel .checkbox-row {
+  padding: 0.85rem 0.95rem;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(75, 224, 213, 0.1) 0%, rgba(74, 125, 255, 0.08) 100%);
+  border: 1px solid rgba(75, 224, 213, 0.16);
+}
+
+.maintenance-mail-panel input,
+.maintenance-mail-panel textarea,
+.maintenance-mail-panel select {
+  border-radius: 16px;
+  background: rgba(2, 8, 25, 0.5);
+}
+
+.maintenance-route-panel {
+  display: grid;
+  gap: 0.8rem;
+  position: sticky;
+  top: 1rem;
+}
+
+.maintenance-route-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.maintenance-route-row {
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+  align-items: center;
+}
+
+.maintenance-route-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.maintenance-guide-button {
+  width: 100%;
+  margin-top: 0.2rem;
+}
+
+:root[data-theme="light"] .maintenance-hero-card,
+:root[data-theme="light"] .maintenance-status-card,
+:root[data-theme="light"] .maintenance-route-panel,
+:root[data-theme="light"] .maintenance-mail-panel,
+:root[data-theme="light"] .maintenance-metric-card {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.92) 0%, rgba(238, 245, 255, 0.96) 100%),
+    radial-gradient(circle at 90% 10%, rgba(34, 201, 192, 0.14), transparent 32%);
+  border-color: rgba(108, 127, 170, 0.16);
+  box-shadow: 0 24px 54px rgba(96, 120, 167, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+:root[data-theme="light"] .maintenance-hero-copy p:last-child,
+:root[data-theme="light"] .maintenance-status-list strong,
+:root[data-theme="light"] .maintenance-route-row span {
+  color: var(--muted);
+}
+
+:root[data-theme="light"] .maintenance-status-list span,
+:root[data-theme="light"] .maintenance-route-row {
+  background: rgba(255, 255, 255, 0.68);
+  border-color: rgba(108, 127, 170, 0.14);
+}
+
 .flash {
   padding: 0.95rem 1rem;
   border-radius: var(--radius-md);
@@ -2209,6 +2533,20 @@ canvas {
     grid-template-columns: 1fr;
   }
 
+  .maintenance-vision-hero,
+  .maintenance-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .maintenance-route-panel {
+    position: relative;
+    top: auto;
+  }
+
   .sidebar {
     position: static;
   }
@@ -2295,6 +2633,20 @@ canvas {
   .login-intro,
   .login-form {
     padding: 1rem;
+  }
+
+  .maintenance-hero-card {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .maintenance-hero-copy h2 {
+    max-width: 11ch;
+  }
+
+  .maintenance-hero-orbit {
+    min-height: 145px;
+    margin-top: 0.6rem;
   }
 
   .table-card {
@@ -2458,6 +2810,30 @@ canvas {
 
   .action-row {
     grid-template-columns: 1fr;
+  }
+
+  .maintenance-metrics,
+  .maintenance-route-row {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-hero-copy h2 {
+    font-size: clamp(2.3rem, 13vw, 3.45rem);
+  }
+
+  .maintenance-orbit-ring-one {
+    width: 9rem;
+    height: 9rem;
+  }
+
+  .maintenance-orbit-ring-two {
+    width: 6.4rem;
+    height: 6.4rem;
+  }
+
+  .maintenance-orbit-core {
+    width: 4.7rem;
+    height: 4.7rem;
   }
 
   .panel-title {

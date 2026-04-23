@@ -58,6 +58,10 @@ const REQUIRE_PERSISTENT_STORAGE_ENV_KEYS = [
   "LOGISTICS_REQUIRE_PERSISTENT_STORAGE",
   "REQUIRE_PERSISTENT_STORAGE",
 ];
+const ALLOW_TEMPORARY_STORAGE_ENV_KEYS = [
+  "LOGISTICS_ALLOW_TEMPORARY_STORAGE",
+  "ALLOW_TEMPORARY_STORAGE",
+];
 
 function createLocalDatabase(rootDir) {
   if (sqliteLoadError || !DatabaseSync) {
@@ -149,7 +153,12 @@ function createUnavailableDatabase(reason) {
 
 function resolveDatabaseLocation(rootDir) {
   const hosting = detectHostingEnvironment();
-  const persistentRequirement = getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
+  const explicitPersistentRequirement = getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
+  const temporaryStorageAllowance = getFirstEnabledEnvironmentFlag(ALLOW_TEMPORARY_STORAGE_ENV_KEYS);
+  const persistentRequirement = explicitPersistentRequirement
+    || (hosting.id === "vercel" && !temporaryStorageAllowance
+      ? { key: "VERCEL", value: "persistent-storage-required-by-default" }
+      : null);
   const configuredCandidate = getConfiguredDatabaseCandidate(rootDir);
   const candidates = configuredCandidate
     ? [configuredCandidate]
@@ -176,12 +185,15 @@ function resolveDatabaseLocation(rootDir) {
   for (const candidate of candidates) {
     try {
       ensureWritableDatabaseLocation(candidate.databasePath);
+      if (persistentRequirement && isTemporaryDatabasePath(candidate.databasePath)) {
+        throw new Error("Configured database path is inside temporary runtime storage.");
+      }
       return {
         label: candidate.label,
         configuredBy: String(candidate.configuredBy || "").trim(),
         dataDir: path.dirname(candidate.databasePath),
         databasePath: candidate.databasePath,
-        temporary: Boolean(candidate.temporary),
+        temporary: Boolean(candidate.temporary || isTemporaryDatabasePath(candidate.databasePath)),
         hosting,
         persistentStorageRequired: Boolean(persistentRequirement),
         warning: String(candidate.warning || "").trim(),
@@ -196,9 +208,12 @@ function resolveDatabaseLocation(rootDir) {
   }
 
   if (persistentRequirement) {
+    const requirementMessage = persistentRequirement.key === "VERCEL"
+      ? "Persistent storage is required on Vercel because its writable filesystem is temporary. Move this app to a host with a persistent disk/volume, or set LOGISTICS_ALLOW_TEMPORARY_STORAGE=true only for a disposable demo."
+      : `Persistent storage is required by ${persistentRequirement.key}=true.`;
     throw new Error(
       [
-        `Persistent storage is required by ${persistentRequirement.key}=true.`,
+        requirementMessage,
         "No writable persistent database location was found.",
         failures.join(" "),
       ].filter(Boolean).join(" "),
@@ -243,6 +258,13 @@ function resolveFromRoot(rootDir, value) {
   return path.isAbsolute(target)
     ? path.normalize(target)
     : path.resolve(rootDir, target);
+}
+
+function isTemporaryDatabasePath(databasePath) {
+  const tempDir = path.resolve(os.tmpdir());
+  const targetPath = path.resolve(databasePath);
+  const relativePath = path.relative(tempDir, targetPath);
+  return Boolean(relativePath) && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
 }
 
 function ensureWritableDatabaseLocation(databasePath) {
@@ -657,6 +679,8 @@ class LocalDatabase {
       return null;
     }
 
+    const now = Date.now();
+    const nowText = new Date(now).toISOString();
     const row = this.get(
       `
         select
@@ -672,12 +696,14 @@ class LocalDatabase {
         order by s.created_at desc
         limit 1
       `,
-      [cleanToken, nowIso()],
+      [cleanToken, nowText],
     );
 
     if (!row) {
       return null;
     }
+
+    this.refreshSessionExpiry(cleanToken, now);
 
     return {
       id: row.id,
@@ -3678,6 +3704,8 @@ class LocalDatabase {
       throw createHttpError(403, "Invalid session");
     }
 
+    const now = Date.now();
+    const nowText = new Date(now).toISOString();
     const user = this.get(
       `
         select u.*
@@ -3689,7 +3717,7 @@ class LocalDatabase {
         order by s.created_at desc
         limit 1
       `,
-      [cleanToken, nowIso()],
+      [cleanToken, nowText],
     );
 
     if (!user) {
@@ -3699,8 +3727,22 @@ class LocalDatabase {
       throw createHttpError(403, "Permission denied");
     }
 
-    this.run("update app_sessions set last_seen_at = ? where token = ?", [nowIso(), cleanToken]);
+    this.refreshSessionExpiry(cleanToken, now);
     return user;
+  }
+
+  refreshSessionExpiry(token, now = Date.now()) {
+    const cleanToken = normalizeOptionalText(token);
+    if (!cleanToken) {
+      return;
+    }
+
+    const seenAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+    this.run(
+      "update app_sessions set last_seen_at = ?, expires_at = ? where token = ?",
+      [seenAt, expiresAt, cleanToken],
+    );
   }
 
   ensureOfficeLocation(actorId) {

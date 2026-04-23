@@ -4696,7 +4696,7 @@ function renderSetupScreen() {
             </div>
             <div class="credential-item">
               <strong>2. Provide a writable storage folder</strong>
-              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code>, <code>LOGISTICS_DATA_DIR</code>, or <code>PERSISTENT_DATA_DIR</code>. Set <code>LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true</code> in production to block temporary fallback storage.</div>
+              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code>, <code>LOGISTICS_DATA_DIR</code>, or <code>PERSISTENT_DATA_DIR</code>. Vercel temporary storage is blocked by default; only set <code>LOGISTICS_ALLOW_TEMPORARY_STORAGE=true</code> for a disposable demo.</div>
             </div>
             <div class="credential-item">
               <strong>3. Configure email delivery</strong>
@@ -5241,24 +5241,95 @@ function renderMaintenancePageContent() {
           : "Needs setup";
   const deliveryRouteLabel = settings?.to || state.mailTo || "Not set";
   const senderLabel = settings?.fromDisplay || state.mailFromDisplay || settings?.fromAddress || "Not set";
+  const providerLabel = settings?.provider || "Unknown";
+  const statusCaption = settings?.disabled
+    ? "Outbound messages are paused from maintenance."
+    : settings?.configured
+      ? "Provider settings are valid and ready."
+      : getMailConfigErrorText();
 
   return `
-    <section class="hero-card">
-      <p class="eyebrow">Maintenance</p>
-      <h2>Email control and routing</h2>
-      <p>Use this dashboard to pause outbound mail, maintain the live destination inboxes, and keep the sender identity aligned with Logistics Centre.</p>
-    </section>
-    ${renderFlash()}
-    <section class="metrics">
-      ${renderMetric("Email status", emailStateLabel)}
-      ${renderMetric("Provider", settings?.provider || "Unknown")}
-      ${renderMetric("Sender", senderLabel)}
-      ${renderMetric("General inbox", deliveryRouteLabel)}
-    </section>
-    ${renderMaintenanceMailPanel()}
-    <section class="panel-grid">
-      ${renderPageSummaryCard("Guide", "Review the maintenance role notes before changing live email behavior.", "guide")}
-    </section>
+    <div class="maintenance-dashboard">
+      <section class="maintenance-vision-hero">
+        <article class="maintenance-hero-card">
+          <div class="maintenance-hero-copy">
+            <p class="eyebrow">Maintenance command</p>
+            <h2>Email control and routing</h2>
+            <p>Pause outbound mail, maintain the live destination inboxes, and keep the sender identity aligned with Logistics Centre from one focused workspace.</p>
+          </div>
+          <div class="maintenance-hero-orbit" aria-hidden="true">
+            <span class="maintenance-orbit-ring maintenance-orbit-ring-one"></span>
+            <span class="maintenance-orbit-ring maintenance-orbit-ring-two"></span>
+            <span class="maintenance-orbit-core">LC</span>
+          </div>
+        </article>
+        <article class="maintenance-status-card">
+          <p class="eyebrow">System health</p>
+          <h3>${escapeHtml(emailStateLabel)}</h3>
+          <p>${escapeHtml(statusCaption)}</p>
+          <div class="maintenance-status-list">
+            <span><strong>Provider</strong>${escapeHtml(providerLabel)}</span>
+            <span><strong>Sender</strong>${escapeHtml(senderLabel)}</span>
+            <span><strong>General inbox</strong>${escapeHtml(deliveryRouteLabel)}</span>
+          </div>
+        </article>
+      </section>
+      ${renderFlash()}
+      <section class="maintenance-metrics" aria-label="Maintenance email summary">
+        ${renderMaintenanceMetricCard("Email status", emailStateLabel, settings?.disabled ? "warning" : settings?.configured ? "success" : "danger", "Live outbound state")}
+        ${renderMaintenanceMetricCard("Provider", providerLabel, "info", "Mail transport")}
+        ${renderMaintenanceMetricCard("Sender", senderLabel, "accent", "Displayed identity")}
+        ${renderMaintenanceMetricCard("General inbox", deliveryRouteLabel, "neutral", "Default destination")}
+      </section>
+      <section class="maintenance-workspace">
+        ${renderMaintenanceMailPanel()}
+        ${renderMaintenanceRouteOverview(settings)}
+      </section>
+    </div>
+  `;
+}
+
+function renderMaintenanceMetricCard(label, value, tone = "neutral", caption = "") {
+  return `
+    <article class="maintenance-metric-card maintenance-metric-${tone}">
+      <span class="maintenance-metric-glow" aria-hidden="true"></span>
+      <p class="metric-label">${escapeHtml(label)}</p>
+      <p class="metric-value">${escapeHtml(String(value || "Not set"))}</p>
+      ${caption ? `<p class="maintenance-metric-caption">${escapeHtml(caption)}</p>` : ""}
+    </article>
+  `;
+}
+
+function renderMaintenanceRouteOverview(settings) {
+  const routes = [
+    ["CSV / general", settings?.to],
+    ["Artwork", settings?.artworkTo],
+    ["Admin actions", settings?.adminActionTo],
+    ["Carry-over test", settings?.rolloverTestTo],
+    ["SS dropped office", settings?.droppedOfficeSsTo],
+    ["SB dropped office", settings?.droppedOfficeSbTo],
+    ["MAR / MOR", settings?.droppedOfficeMorMarTo],
+    ["Order", settings?.droppedOfficeOrderTo],
+    ["Fallback", settings?.droppedOfficeFallbackTo],
+  ];
+
+  return `
+    <aside class="maintenance-route-panel">
+      <p class="eyebrow">Inbox map</p>
+      <h3 class="panel-title">Routing overview</h3>
+      <p class="panel-subtitle">A quick scan of where each automated message will land before you save or test changes.</p>
+      <div class="maintenance-route-list">
+        ${routes.map(([label, value]) => `
+          <div class="maintenance-route-row">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(String(value || "Not set"))}</strong>
+          </div>
+        `).join("")}
+      </div>
+      <button class="button button-secondary maintenance-guide-button" data-action="navigate-page" data-page-id="guide"${state.busy ? " disabled" : ""}>
+        Open maintenance guide
+      </button>
+    </aside>
   `;
 }
 
@@ -5266,7 +5337,7 @@ function renderMaintenanceMailPanel() {
   const settings = state.maintenanceMailSettings;
   if (!settings) {
     return `
-      <section class="panel">
+      <section class="panel maintenance-mail-panel">
         <p class="eyebrow">Email settings</p>
         <h3 class="panel-title">Loading maintenance controls</h3>
         <p class="panel-subtitle">The current email settings will appear here once the secure maintenance snapshot finishes loading.</p>
@@ -5281,7 +5352,7 @@ function renderMaintenanceMailPanel() {
       : settings.reason || "Email delivery still needs provider setup.";
 
   return `
-    <section class="panel">
+    <section class="panel maintenance-mail-panel">
       <p class="eyebrow">Email settings</p>
       <h3 class="panel-title">Outbound mail controls</h3>
       <p class="panel-subtitle">The real mailbox stays in place, while the sender label, live inbox routing, and dropped-at-office destinations can be maintained here.</p>
@@ -5374,9 +5445,6 @@ function renderMaintenanceMailPanel() {
           </button>
         </div>
       </form>
-      <!--
-      <p class="field-note">The automatic “dropped at office” email trigger has intentionally been left out for now so we can wire it against your exact requirements later.</p>
-      -->
     </section>
   `;
 }
@@ -7171,59 +7239,62 @@ function renderAssignmentLocationGroup(group, viewerRole) {
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
         </div>
       </div>
-      <div class="assignment-location-toolbar">
-        <div class="assignment-control">
-          <select data-assignment-location-driver data-group-key="${escapeHtml(group.key)}">
-            ${renderAssignmentLocationDriverOptions(group.selectedDriverId, group.hasMixedDriverSelection)}
-          </select>
-          ${viewerRole === "admin"
+      <div class="action-row stop-actions assignment-location-actions">
+        ${navigationUrl
       ? `
-                <label class="inline-check assignment-inline">
-                  <input type="checkbox" data-assignment-location-allow-duplicate data-group-key="${escapeHtml(group.key)}">
-                  Admin override
-                </label>
-              `
+              <a
+                class="button button-secondary"
+                href="${escapeHtml(navigationUrl)}"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Navigate
+              </a>
+            `
       : ""
     }
-          <p class="field-note">
-            ${escapeHtml(`This applies to ${group.orders.length} visible active entr${group.orders.length === 1 ? "y" : "ies"} at this pickup location.`)}
-          </p>
-        </div>
-        <div class="action-row stop-actions">
-          ${navigationUrl
-      ? `
-                <a
-                  class="button button-secondary"
-                  href="${escapeHtml(navigationUrl)}"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                >
-                  Navigate
-                </a>
-              `
-      : ""
-    }
-          <button
-            class="button button-primary"
-            data-action="save-location-assignment"
-            data-group-key="${escapeHtml(group.key)}"
-            ${state.busy ? " disabled" : ""}
-          >
-            Save location
-          </button>
-          <button
-            type="button"
-            class="button button-ghost"
-            data-action="toggle-stop-card"
-            data-stop-card-key="${escapeHtml(stopCardKey)}"
-            ${state.busy ? " disabled" : ""}
-          >
-            ${isOpen ? "Hide entries" : "Show entries"}
-          </button>
-        </div>
+        <button
+          type="button"
+          class="button button-ghost"
+          data-action="toggle-stop-card"
+          data-stop-card-key="${escapeHtml(stopCardKey)}"
+          aria-expanded="${isOpen ? "true" : "false"}"
+          ${state.busy ? " disabled" : ""}
+        >
+          ${isOpen ? "Hide entries" : "Show entries"}
+        </button>
       </div>
       ${isOpen
       ? `
+            <div class="assignment-location-toolbar">
+              <div class="assignment-control">
+                <select data-assignment-location-driver data-group-key="${escapeHtml(group.key)}">
+                  ${renderAssignmentLocationDriverOptions(group.selectedDriverId, group.hasMixedDriverSelection)}
+                </select>
+                ${viewerRole === "admin"
+      ? `
+                      <label class="inline-check assignment-inline">
+                        <input type="checkbox" data-assignment-location-allow-duplicate data-group-key="${escapeHtml(group.key)}">
+                        Admin override
+                      </label>
+                    `
+      : ""
+    }
+                <p class="field-note">
+                  ${escapeHtml(`This applies to ${group.orders.length} visible active entr${group.orders.length === 1 ? "y" : "ies"} at this pickup location.`)}
+                </p>
+              </div>
+              <div class="action-row stop-actions">
+                <button
+                  class="button button-primary"
+                  data-action="save-location-assignment"
+                  data-group-key="${escapeHtml(group.key)}"
+                  ${state.busy ? " disabled" : ""}
+                >
+                  Save location
+                </button>
+              </div>
+            </div>
             <div class="location-group-orders">
               ${group.orders.map((order) => renderGlobalOrderCard(order, viewerRole)).join("")}
             </div>
@@ -8885,7 +8956,7 @@ function isStopCardOpen(stopCardKey) {
     return true;
   }
 
-  if (stopCardKey.startsWith("global-location:")) {
+  if (stopCardKey.startsWith("global-location:") || stopCardKey.startsWith("assignment-location:")) {
     return state.driverOpenStops[stopCardKey] === true;
   }
 

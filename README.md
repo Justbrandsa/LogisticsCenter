@@ -37,12 +37,13 @@ Logictics Centre is a local-database browser app for managing driver-separated p
 5. On first start, the app creates the SQLite file automatically and then asks for the first admin account.
 6. Optional: set `LOGISTICS_DB_PATH` to choose an exact SQLite file path, or set `LOGISTICS_DATA_DIR` / `PERSISTENT_DATA_DIR` to choose the folder that should hold `route-ledger.sqlite`.
 7. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
-8. Set `LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true` in production if you want the app to fail fast instead of silently falling back to temporary runtime storage.
-9. Vercel-style serverless hosts do not offer durable project-local disk storage. If the app falls back to a temporary runtime folder, writes will work but the data can reset on restart, scale-out, or redeploy.
+8. Set `LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true` in production if you want the app to fail fast instead of falling back to temporary runtime storage.
+9. Vercel-style serverless hosts do not offer durable project-local disk storage. The app now blocks temporary Vercel storage by default so live data is not silently written to a reset-prone `/tmp` database.
 
 ## Durable hosting for SQLite
 
-- Vercel is not a long-term writable SQLite host for this project. It can read the bundled database file, and it can write to temporary runtime storage, but those writes are not durable across restarts or redeploys.
+- Vercel is not a long-term writable SQLite host for this project. It can read the bundled database file, but writable SQLite storage on Vercel is temporary and not durable across restarts or redeploys.
+- To prevent accidental data loss, Vercel deployments now require persistent storage by default and will not use temporary storage unless you explicitly set `LOGISTICS_ALLOW_TEMPORARY_STORAGE=true` for a disposable demo.
 - For long-term writable SQLite, run `npm start` on a single-instance Node host with a persistent disk or volume.
 - Railway: attach a Volume and mount it at `/app/data` for the simplest setup. The app will then write to `/app/data/route-ledger.sqlite`, and Railway also exposes `RAILWAY_VOLUME_MOUNT_PATH` automatically if you prefer a custom mount path.
 - Render: attach a persistent disk and either mount it at `/opt/render/project/src/data` so the default project `data/` folder becomes durable, or mount it elsewhere and set `LOGISTICS_DATA_DIR` or `PERSISTENT_DATA_DIR` to that disk path. If you want to use `RENDER_DISK_PATH`, define it yourself as an app environment variable.
