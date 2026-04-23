@@ -1,9 +1,11 @@
 {
   "scripts": {
     "start": "node serve.js",
-    "migrate:live": "node migrate-live-data.js"
+    "migrate:live": "node migrate-live-data.js",
+    "migrate:turso": "node migrate-local-to-turso.js"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.2",
     "bcryptjs": "^3.0.3",
     "nodemailer": "^8.0.2",
     "qrcode": "^1.5.4"

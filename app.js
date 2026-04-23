@@ -4696,7 +4696,7 @@ function renderSetupScreen() {
             </div>
             <div class="credential-item">
               <strong>2. Provide a writable storage folder</strong>
-              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or you can point it elsewhere with <code>LOGISTICS_DB_PATH</code>, <code>LOGISTICS_DATA_DIR</code>, or <code>PERSISTENT_DATA_DIR</code>. Vercel temporary storage is blocked by default; only set <code>LOGISTICS_ALLOW_TEMPORARY_STORAGE=true</code> for a disposable demo.</div>
+              <div>The server uses <code>data/route-ledger.sqlite</code> when the project folder is writable, or Turso Cloud when <code>TURSO_DATABASE_URL</code> and <code>TURSO_AUTH_TOKEN</code> are set. Vercel temporary storage is blocked by default unless Turso is configured.</div>
             </div>
             <div class="credential-item">
               <strong>3. Configure email delivery</strong>

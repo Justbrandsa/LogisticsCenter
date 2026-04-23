@@ -25,24 +25,38 @@ Logictics Centre is a local-database browser app for managing driver-separated p
 - `styles.css` - layout and styling
 - `serve.js` - static server, local database API, and email endpoints
 - `local-database.js` - SQLite-backed project-local persistence layer
+- `load-project-env.js` - loads ignored `.env.local` / `.env` files for local runs
+- `.env.example` - safe environment variable template for local and hosted setup
 - `mail-config.example.js` - local Microsoft Graph config template
 - `data/route-ledger.sqlite` - preferred local database file path when the project folder is writable
 
 ## Setup
 
 1. Run `npm install`.
-2. Create `mail-config.js` from `mail-config.example.js`, or set the `MAIL_*` environment variables.
-3. Start the local server with `node serve.js`.
-4. Open `http://127.0.0.1:4173/`.
-5. On first start, the app creates the SQLite file automatically and then asks for the first admin account.
-6. Optional: set `LOGISTICS_DB_PATH` to choose an exact SQLite file path, or set `LOGISTICS_DATA_DIR` / `PERSISTENT_DATA_DIR` to choose the folder that should hold `route-ledger.sqlite`.
-7. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
-8. Set `LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true` in production if you want the app to fail fast instead of falling back to temporary runtime storage.
-9. Vercel-style serverless hosts do not offer durable project-local disk storage. The app now blocks temporary Vercel storage by default so live data is not silently written to a reset-prone `/tmp` database.
+2. Optional: copy `.env.example` to `.env.local` for local development, then fill in real values. `.env.local` is ignored by Git.
+3. Create `mail-config.js` from `mail-config.example.js`, or set the `MAIL_*` environment variables.
+4. Start the local server with `node serve.js`.
+5. Open `http://127.0.0.1:4173/`.
+6. On first start, the app creates the SQLite file automatically and then asks for the first admin account.
+7. Optional: set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` to use Turso Cloud as the durable database backing store.
+8. Optional: set `LOGISTICS_DB_PATH` to choose an exact SQLite file path, or set `LOGISTICS_DATA_DIR` / `PERSISTENT_DATA_DIR` to choose the folder that should hold `route-ledger.sqlite`.
+9. If you deploy on Vercel, add `CRON_SECRET` so the `/api/jobs/order-delete-log-email` cron endpoint can stay protected.
+10. Set `LOGISTICS_REQUIRE_PERSISTENT_STORAGE=true` in production if you want the app to fail fast instead of falling back to temporary runtime storage.
+11. Vercel-style serverless hosts do not offer durable project-local disk storage. The app now blocks temporary Vercel storage by default unless Turso Cloud is configured.
+
+## Turso Cloud
+
+- Set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in Vercel or your host. The Vercel Turso Cloud integration exposes these names automatically.
+- When Turso is configured, the app keeps using the existing SQLite code path as a local runtime cache, but Turso stores the durable exported app state in a `logistics_center_state` table.
+- If the Turso state table is empty, the app seeds Turso from the bundled/local SQLite data on first startup.
+- To force-copy the current local SQLite data into Turso, set the Turso env vars and run `npm run migrate:turso`.
+- Use `npm run migrate:turso -- --dry-run` to preview the local counts without writing to Turso.
+- Use the built-in admin data export before switching database providers, then import that export after Turso is connected if you need to force a specific data snapshot.
 
 ## Durable hosting for SQLite
 
-- Vercel is not a long-term writable SQLite host for this project. It can read the bundled database file, but writable SQLite storage on Vercel is temporary and not durable across restarts or redeploys.
+- Vercel is not a long-term writable project-file SQLite host for this project. It can read the bundled database file, but writable filesystem storage on Vercel is temporary and not durable across restarts or redeploys.
+- Vercel can be used when `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are configured, because Turso becomes the durable backing store.
 - To prevent accidental data loss, Vercel deployments now require persistent storage by default and will not use temporary storage unless you explicitly set `LOGISTICS_ALLOW_TEMPORARY_STORAGE=true` for a disposable demo.
 - For long-term writable SQLite, run `npm start` on a single-instance Node host with a persistent disk or volume.
 - Railway: attach a Volume and mount it at `/app/data` for the simplest setup. The app will then write to `/app/data/route-ledger.sqlite`, and Railway also exposes `RAILWAY_VOLUME_MOUNT_PATH` automatically if you prefer a custom mount path.

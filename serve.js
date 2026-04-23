@@ -2,6 +2,10 @@ const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { loadProjectEnv } = require("./load-project-env");
+
+loadProjectEnv(__dirname);
+
 const { createLocalDatabase } = require("./local-database");
 
 let nodemailer = null;
@@ -474,7 +478,7 @@ async function exportDatabaseData(token) {
 
 async function importDatabaseData(token, data, source = "") {
   const currentUser = await requireAdminSession(token, "Only admin users can import data.");
-  const result = database.replaceAllData(data, {
+  const result = await database.replaceAllData(data, {
     source: String(source || "").trim() || `admin import by ${currentUser.name}`,
   });
   return {

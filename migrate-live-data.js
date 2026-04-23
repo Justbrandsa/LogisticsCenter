@@ -1,7 +1,10 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { loadProjectEnv } = require("./load-project-env");
 const { createLocalDatabase } = require("./local-database");
+
+loadProjectEnv(__dirname);
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -54,7 +57,7 @@ async function main() {
   }
 
   try {
-    const result = database.replaceAllData(exportPayload.data, {
+    const result = await database.replaceAllData(exportPayload.data, {
       source: String(exportPayload.storage || sourceUrl).trim() || sourceUrl,
     });
     console.log(`Imported into: ${status.storagePath}`);

@@ -6,6 +6,8 @@ const path = require("path");
 let DatabaseSync = null;
 let sqliteLoadError = null;
 let bcrypt = null;
+let createLibsqlClient = null;
+let libsqlLoadError = null;
 
 try {
   ({ DatabaseSync } = require("node:sqlite"));
@@ -17,6 +19,12 @@ try {
   bcrypt = require("bcryptjs");
 } catch (error) {
   bcrypt = null;
+}
+
+try {
+  ({ createClient: createLibsqlClient } = require("@libsql/client"));
+} catch (error) {
+  libsqlLoadError = error;
 }
 
 const TIME_ZONE = "Africa/Johannesburg";
@@ -62,6 +70,10 @@ const ALLOW_TEMPORARY_STORAGE_ENV_KEYS = [
   "LOGISTICS_ALLOW_TEMPORARY_STORAGE",
   "ALLOW_TEMPORARY_STORAGE",
 ];
+const TURSO_DATABASE_URL_ENV_KEYS = ["TURSO_DATABASE_URL", "LIBSQL_DATABASE_URL"];
+const TURSO_AUTH_TOKEN_ENV_KEYS = ["TURSO_AUTH_TOKEN", "LIBSQL_AUTH_TOKEN"];
+const TURSO_STATE_TABLE_NAME = "logistics_center_state";
+const TURSO_STATE_ID = "route-ledger";
 
 function createLocalDatabase(rootDir) {
   if (sqliteLoadError || !DatabaseSync) {
@@ -72,10 +84,34 @@ function createLocalDatabase(rootDir) {
   }
 
   try {
+    const tursoConfig = getTursoConfig();
+    if (tursoConfig) {
+      if (!createLibsqlClient) {
+        return createUnavailableDatabase(`Turso Cloud is configured, but the libSQL client could not load: ${normalizeErrorMessage(libsqlLoadError)}`);
+      }
+
+      return new TursoBackedDatabase(rootDir, tursoConfig);
+    }
+
     return new LocalDatabase(rootDir);
   } catch (error) {
     return createUnavailableDatabase(`Failed to start the local database: ${normalizeErrorMessage(error)}`);
   }
+}
+
+function getTursoConfig() {
+  const databaseUrl = getFirstConfiguredEnvironmentValue(TURSO_DATABASE_URL_ENV_KEYS);
+  if (!databaseUrl) {
+    return null;
+  }
+
+  const authToken = getFirstConfiguredEnvironmentValue(TURSO_AUTH_TOKEN_ENV_KEYS);
+  return {
+    url: databaseUrl.value,
+    urlKey: databaseUrl.key,
+    authToken: authToken?.value || "",
+    authTokenKey: authToken?.key || "",
+  };
 }
 
 function createUnavailableDatabase(reason) {
@@ -151,12 +187,16 @@ function createUnavailableDatabase(reason) {
   };
 }
 
-function resolveDatabaseLocation(rootDir) {
+function resolveDatabaseLocation(rootDir, options = {}) {
   const hosting = detectHostingEnvironment();
-  const explicitPersistentRequirement = getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
+  const allowTemporaryStorage = Boolean(options.allowTemporaryStorage);
+  const preferTemporaryStorage = Boolean(options.preferTemporaryStorage);
+  const explicitPersistentRequirement = allowTemporaryStorage
+    ? null
+    : getFirstEnabledEnvironmentFlag(REQUIRE_PERSISTENT_STORAGE_ENV_KEYS);
   const temporaryStorageAllowance = getFirstEnabledEnvironmentFlag(ALLOW_TEMPORARY_STORAGE_ENV_KEYS);
   const persistentRequirement = explicitPersistentRequirement
-    || (hosting.id === "vercel" && !temporaryStorageAllowance
+    || (hosting.id === "vercel" && !temporaryStorageAllowance && !allowTemporaryStorage
       ? { key: "VERCEL", value: "persistent-storage-required-by-default" }
       : null);
   const configuredCandidate = getConfiguredDatabaseCandidate(rootDir);
@@ -164,12 +204,14 @@ function resolveDatabaseLocation(rootDir) {
     ? [configuredCandidate]
     : [];
 
-  candidates.push({
-    label: "project data folder",
-    configuredBy: "project-data",
-    databasePath: path.join(rootDir, "data", DEFAULT_DATABASE_FILENAME),
-    temporary: false,
-  });
+  if (!preferTemporaryStorage) {
+    candidates.push({
+      label: "project data folder",
+      configuredBy: "project-data",
+      databasePath: path.join(rootDir, "data", DEFAULT_DATABASE_FILENAME),
+      temporary: false,
+    });
+  }
   if (!persistentRequirement) {
     candidates.push({
       label: "temporary runtime folder",
@@ -380,10 +422,233 @@ function seedTemporaryDatabaseFromProject(rootDir, databasePath) {
   return true;
 }
 
-class LocalDatabase {
-  constructor(rootDir) {
+class TursoBackedDatabase {
+  constructor(rootDir, config) {
     this.rootDir = rootDir;
-    const storageLocation = resolveDatabaseLocation(rootDir);
+    this.config = config;
+    this.client = createLibsqlClient({
+      url: config.url,
+      authToken: config.authToken || undefined,
+    });
+    this.local = new LocalDatabase(rootDir, {
+      allowTemporaryStorage: true,
+      preferTemporaryStorage: true,
+    });
+    const localStatus = this.local.getStatus();
+    this.status = {
+      ...localStatus,
+      storage: "turso-cloud",
+      storagePath: config.url,
+      storageDir: "Turso Cloud",
+      storagePersistent: true,
+      storageTemporary: false,
+      storageLabel: "Turso Cloud",
+      storageConfiguredBy: config.urlKey,
+      storageHost: "turso",
+      persistentStorageRequired: true,
+      warning: "",
+      localCachePath: localStatus.storagePath,
+      localCacheTemporary: localStatus.storageTemporary,
+      seededFromBundledSnapshot: localStatus.seededFromBundledSnapshot,
+      tursoConnected: false,
+      tursoLastSyncedAt: "",
+    };
+    this.persistQueue = Promise.resolve();
+    this.readyPromise = this.initialize().catch((error) => {
+      this.status.configured = false;
+      this.status.reason = `Failed to connect to Turso Cloud: ${normalizeErrorMessage(error)}`;
+      throw error;
+    });
+  }
+
+  async initialize() {
+    this.assertTursoCredentials();
+    await this.ensureTursoStateTable();
+    const restored = await this.restoreFromTurso();
+    if (!restored) {
+      await this.persistCurrentState("initial-seed");
+    }
+
+    this.status.configured = true;
+    this.status.reason = "";
+    this.status.tursoConnected = true;
+  }
+
+  assertTursoCredentials() {
+    const url = String(this.config.url || "").trim();
+    const isRemote = /^(libsql|https|http):\/\//i.test(url);
+    if (isRemote && !String(this.config.authToken || "").trim()) {
+      throw new Error("TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL points at Turso Cloud.");
+    }
+  }
+
+  async ensureReady() {
+    await this.readyPromise;
+  }
+
+  getStatus() {
+    return { ...this.status };
+  }
+
+  async call(functionName, parameters = {}) {
+    await this.ensureReady();
+    const result = await this.local.call(functionName, parameters);
+    if (shouldPersistTursoAfterCall(functionName)) {
+      await this.persistCurrentState(functionName);
+    }
+    return result;
+  }
+
+  async listOrdersForMailExport(scheduledFor = "") {
+    await this.ensureReady();
+    return this.local.listOrdersForMailExport(scheduledFor);
+  }
+
+  async listPendingOrderDeleteNotifications(limit = 100) {
+    await this.ensureReady();
+    return this.local.listPendingOrderDeleteNotifications(limit);
+  }
+
+  async markOrderDeleteNotificationsSent(logIds) {
+    await this.ensureReady();
+    const result = await this.local.markOrderDeleteNotificationsSent(logIds);
+    await this.persistCurrentState("mark-order-delete-notifications-sent");
+    return result;
+  }
+
+  async markOrderDeleteNotificationFailure(logIds, errorMessage) {
+    await this.ensureReady();
+    const result = await this.local.markOrderDeleteNotificationFailure(logIds, errorMessage);
+    await this.persistCurrentState("mark-order-delete-notification-failure");
+    return result;
+  }
+
+  async clearAllOrderPriorities(token) {
+    await this.ensureReady();
+    const result = await this.local.clearAllOrderPriorities(token);
+    await this.persistCurrentState("clear-all-order-priorities");
+    return result;
+  }
+
+  async clearOrderRollovers(token) {
+    await this.ensureReady();
+    const result = await this.local.clearOrderRollovers(token);
+    await this.persistCurrentState("clear-order-rollovers");
+    return result;
+  }
+
+  async getUserByToken(token) {
+    await this.ensureReady();
+    const user = await this.local.getUserByToken(token);
+    if (user) {
+      await this.persistCurrentState("session-refresh");
+    }
+    return user;
+  }
+
+  exportAllData() {
+    return this.local.exportAllData();
+  }
+
+  getTableCounts() {
+    return this.local.getTableCounts();
+  }
+
+  async replaceAllData(data, options = {}) {
+    await this.ensureReady();
+    const result = this.local.replaceAllData(data, options);
+    await this.persistCurrentState(options?.source || "replace-all-data");
+    return result;
+  }
+
+  getMailSettingsOverrides() {
+    return this.local.getMailSettingsOverrides();
+  }
+
+  async close() {
+    await this.persistQueue.catch(() => {});
+    if (typeof this.client?.close === "function") {
+      this.client.close();
+    }
+    await this.local.close();
+  }
+
+  async ensureTursoStateTable() {
+    await this.client.execute(`
+      create table if not exists ${TURSO_STATE_TABLE_NAME} (
+        id text primary key,
+        data text not null,
+        counts text not null default '{}',
+        source text not null default '',
+        updated_at text not null
+      )
+    `);
+  }
+
+  async restoreFromTurso() {
+    const result = await this.client.execute({
+      sql: `select data, updated_at from ${TURSO_STATE_TABLE_NAME} where id = ? limit 1`,
+      args: [TURSO_STATE_ID],
+    });
+    const row = Array.isArray(result.rows) ? result.rows[0] : null;
+    const rawData = row?.data ? String(row.data) : "";
+    if (!rawData) {
+      return false;
+    }
+
+    const parsed = JSON.parse(rawData);
+    this.local.replaceAllData(parsed, {
+      source: `turso-cloud ${row?.updated_at || ""}`.trim(),
+    });
+    this.status.tursoLastSyncedAt = String(row?.updated_at || "").trim();
+    return true;
+  }
+
+  async persistCurrentState(source = "app") {
+    this.persistQueue = this.persistQueue.then(async () => {
+      const data = this.local.exportAllData();
+      const counts = this.local.getTableCounts();
+      const updatedAt = nowIso();
+      await this.client.execute({
+        sql: `
+          insert into ${TURSO_STATE_TABLE_NAME} (
+            id,
+            data,
+            counts,
+            source,
+            updated_at
+          )
+          values (?, ?, ?, ?, ?)
+          on conflict(id) do update set
+            data = excluded.data,
+            counts = excluded.counts,
+            source = excluded.source,
+            updated_at = excluded.updated_at
+        `,
+        args: [
+          TURSO_STATE_ID,
+          JSON.stringify(data),
+          JSON.stringify(counts),
+          String(source || "").trim() || "app",
+          updatedAt,
+        ],
+      });
+      this.status.tursoLastSyncedAt = updatedAt;
+      this.status.tursoConnected = true;
+    });
+
+    return this.persistQueue;
+  }
+}
+
+function shouldPersistTursoAfterCall(functionName) {
+  return String(functionName || "").trim() !== "get_login_state";
+}
+
+class LocalDatabase {
+  constructor(rootDir, options = {}) {
+    this.rootDir = rootDir;
+    const storageLocation = resolveDatabaseLocation(rootDir, options);
     this.dataDir = storageLocation.dataDir;
     this.databasePath = storageLocation.databasePath;
     this.statementCache = new Map();
