@@ -90,6 +90,7 @@ Each new entry now captures:
 
 - Driver
 - Pickup location
+- Saved delivery location or one-off delivery address
 - Collection or delivery
 - Quote number
 - Sales order number

@@ -30,7 +30,7 @@ try {
 const TIME_ZONE = "Africa/Johannesburg";
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const USER_ROLES = new Set(["admin", "sales", "driver", "logistics", "maintenance"]);
-const LOCATION_TYPES = new Set(["supplier", "factory", "both"]);
+const LOCATION_TYPES = new Set(["supplier", "factory", "both", "client"]);
 const ORDER_PRIORITIES = new Set(["high", "medium", "low"]);
 const ORDER_STATUSES = new Set(["active", "completed"]);
 const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
@@ -792,6 +792,9 @@ class LocalDatabase {
           entry_type as entryType,
           priority,
           delivery_address as deliveryAddress,
+          delivery_location_id as deliveryLocationId,
+          delivery_location_name as deliveryLocationName,
+          delivery_location_address as deliveryLocationAddress,
           branding,
           stock_description as stockDescription,
           notes,
@@ -1209,6 +1212,7 @@ class LocalDatabase {
               po_number,
               customer_name,
               delivery_address,
+              delivery_location_id,
               priority,
               notes,
               driver_flag_type,
@@ -1232,7 +1236,7 @@ class LocalDatabase {
               branding,
               stock_description
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             requireImportedText(row.id, "Imported order id is required."),
@@ -1246,6 +1250,7 @@ class LocalDatabase {
             importedText(row.po_number),
             importedText(row.customer_name),
             importedText(row.delivery_address),
+            importedNullableText(row.delivery_location_id),
             importedText(row.priority) || "medium",
             importedText(row.notes),
             importedNullableText(row.driver_flag_type),
@@ -1287,6 +1292,9 @@ class LocalDatabase {
               entry_type,
               priority,
               delivery_address,
+              delivery_location_id,
+              delivery_location_name,
+              delivery_location_address,
               branding,
               stock_description,
               notes,
@@ -1314,7 +1322,7 @@ class LocalDatabase {
               last_notification_error,
               notification_sent_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             requireImportedText(row.id, "Imported delete-log id is required."),
@@ -1328,6 +1336,9 @@ class LocalDatabase {
             importedText(row.entry_type) || "delivery",
             importedText(row.priority) || "medium",
             importedText(row.delivery_address),
+            importedNullableText(row.delivery_location_id),
+            importedText(row.delivery_location_name),
+            importedText(row.delivery_location_address),
             importedText(row.branding),
             importedText(row.stock_description),
             importedText(row.notes),
@@ -1553,11 +1564,11 @@ class LocalDatabase {
         created_by text not null references app_users(id) on delete restrict,
         created_at text not null,
         updated_at text not null,
-        check (location_type in ('supplier', 'factory', 'both'))
+        check (location_type in ('supplier', 'factory', 'both', 'client'))
       );
 
       create unique index if not exists locations_supplier_name_unique
-        on locations(coalesce(supplier_id, ''), lower(trim(name)));
+        on locations(coalesce(supplier_id, ''), location_type, lower(trim(name)));
 
       create table if not exists orders (
         id text primary key,
@@ -1571,6 +1582,7 @@ class LocalDatabase {
         po_number text not null default '',
         customer_name text not null,
         delivery_address text not null default '',
+        delivery_location_id text references locations(id) on delete restrict,
         priority text not null default 'medium',
         notes text not null default '',
         driver_flag_type text,
@@ -1611,6 +1623,9 @@ class LocalDatabase {
       create index if not exists orders_factory_destination_idx
         on orders(factory_destination_location_id);
 
+      create index if not exists orders_delivery_location_idx
+        on orders(delivery_location_id);
+
       create table if not exists order_delete_log (
         id text primary key,
         order_id text not null,
@@ -1623,6 +1638,9 @@ class LocalDatabase {
         entry_type text not null default 'delivery',
         priority text not null default 'medium',
         delivery_address text not null default '',
+        delivery_location_id text,
+        delivery_location_name text not null default '',
+        delivery_location_address text not null default '',
         branding text not null default '',
         stock_description text not null default '',
         notes text not null default '',
@@ -1741,18 +1759,128 @@ class LocalDatabase {
 
   ensureSchemaMigrations() {
     this.ensureAppUsersRoleSchema();
+    this.ensureReusableDeliveryLocationSchema();
+  }
+
+  getTableSql(tableName) {
+    return String(
+      this.get(
+        `
+          select sql
+          from sqlite_master
+          where type = 'table'
+            and name = ?
+          limit 1
+        `,
+        [tableName],
+      )?.sql || "",
+    );
+  }
+
+  hasTableColumn(tableName, columnName) {
+    return this.all(`pragma table_info(${tableName})`)
+      .some((column) => String(column?.name || "").toLowerCase() === String(columnName || "").toLowerCase());
+  }
+
+  ensureReusableDeliveryLocationSchema() {
+    const locationsSql = this.getTableSql("locations").toLowerCase();
+    if (locationsSql && !locationsSql.includes("'client'")) {
+      this.rebuildLocationsForClientType();
+    } else {
+      this.db.exec(`
+        drop index if exists locations_supplier_name_unique;
+        create unique index if not exists locations_supplier_name_unique
+          on locations(coalesce(supplier_id, ''), location_type, lower(trim(name)));
+      `);
+    }
+
+    if (!this.hasTableColumn("orders", "delivery_location_id")) {
+      this.db.exec("alter table orders add column delivery_location_id text references locations(id) on delete restrict;");
+    }
+
+    this.db.exec(`
+      create index if not exists orders_delivery_location_idx
+        on orders(delivery_location_id);
+    `);
+
+    if (!this.hasTableColumn("order_delete_log", "delivery_location_id")) {
+      this.db.exec("alter table order_delete_log add column delivery_location_id text;");
+    }
+    if (!this.hasTableColumn("order_delete_log", "delivery_location_name")) {
+      this.db.exec("alter table order_delete_log add column delivery_location_name text not null default '';");
+    }
+    if (!this.hasTableColumn("order_delete_log", "delivery_location_address")) {
+      this.db.exec("alter table order_delete_log add column delivery_location_address text not null default '';");
+    }
+  }
+
+  rebuildLocationsForClientType() {
+    this.db.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.db.exec(`
+        drop table if exists locations__migrated;
+
+        create table locations__migrated (
+          id text primary key,
+          supplier_id text references suppliers(id) on delete restrict,
+          location_type text not null default 'supplier',
+          name text not null,
+          address text not null,
+          lat real,
+          lng real,
+          contact_person text not null default '',
+          contact_number text not null default '',
+          notes text not null default '',
+          created_by text not null references app_users(id) on delete restrict,
+          created_at text not null,
+          updated_at text not null,
+          check (location_type in ('supplier', 'factory', 'both', 'client'))
+        );
+
+        insert into locations__migrated (
+          id,
+          supplier_id,
+          location_type,
+          name,
+          address,
+          lat,
+          lng,
+          contact_person,
+          contact_number,
+          notes,
+          created_by,
+          created_at,
+          updated_at
+        )
+        select
+          id,
+          supplier_id,
+          location_type,
+          name,
+          address,
+          lat,
+          lng,
+          contact_person,
+          contact_number,
+          notes,
+          created_by,
+          created_at,
+          updated_at
+        from locations;
+
+        drop table locations;
+        alter table locations__migrated rename to locations;
+
+        create unique index if not exists locations_supplier_name_unique
+          on locations(coalesce(supplier_id, ''), location_type, lower(trim(name)));
+      `);
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON;");
+    }
   }
 
   ensureAppUsersRoleSchema() {
-    const tableSql = String(
-      this.get(`
-        select sql
-        from sqlite_master
-        where type = 'table'
-          and name = 'app_users'
-        limit 1
-      `)?.sql || "",
-    ).toLowerCase();
+    const tableSql = this.getTableSql("app_users").toLowerCase();
 
     if (tableSql.includes("'maintenance'")) {
       return;
@@ -2240,7 +2368,7 @@ class LocalDatabase {
     const contactNumber = normalizeOptionalText(parameters?.p_contact_number);
 
     if (!LOCATION_TYPES.has(locationType)) {
-      throw createHttpError(400, "Location type must be supplier, factory, or both.");
+      throw createHttpError(400, "Location type must be supplier, factory, both, or client.");
     }
     if (normalizeNameKey(name) === "office") {
       throw createHttpError(400, "Office already exists as a built-in location. Edit it instead.");
@@ -2292,7 +2420,7 @@ class LocalDatabase {
     const contactNumber = normalizeOptionalText(parameters?.p_contact_number);
 
     if (!LOCATION_TYPES.has(locationType)) {
-      throw createHttpError(400, "Location type must be supplier, factory, or both.");
+      throw createHttpError(400, "Location type must be supplier, factory, both, or client.");
     }
     if ((lat === null) !== (lng === null)) {
       throw createHttpError(400, "Latitude and longitude must both be provided, or both left blank.");
@@ -2344,9 +2472,10 @@ class LocalDatabase {
           from orders
           where location_id = ?
              or factory_destination_location_id = ?
+             or delivery_location_id = ?
           limit 1
         `,
-        [locationId, locationId],
+        [locationId, locationId, locationId],
       )
     ) {
       throw createHttpError(400, "This location has order history and cannot be deleted.");
@@ -2354,6 +2483,108 @@ class LocalDatabase {
 
     this.run("delete from locations where id = ?", [locationId]);
     return { ok: true, deletedBy: actor.id };
+  }
+
+  resolveDeliveryLocationForOrder({ actor, deliveryLocationId, deliveryAddress, saveDeliveryLocation, deliveryLocationName }) {
+    const normalizedLocationId = normalizeOptionalText(deliveryLocationId);
+    const normalizedAddress = normalizeOptionalText(deliveryAddress);
+
+    if (normalizedLocationId) {
+      const deliveryLocation = this.selectLocationById(normalizedLocationId);
+      if (!deliveryLocation || deliveryLocation.location_type !== "client") {
+        throw createHttpError(400, "Delivery location not found.");
+      }
+
+      return {
+        deliveryLocationId: deliveryLocation.id,
+        deliveryAddress: normalizeOptionalText(deliveryLocation.address) || normalizedAddress,
+      };
+    }
+
+    if (!normalizedAddress) {
+      throw createHttpError(400, "Delivery address is required for delivery entries.");
+    }
+
+    if (!saveDeliveryLocation) {
+      return {
+        deliveryLocationId: null,
+        deliveryAddress: normalizedAddress,
+      };
+    }
+
+    const deliveryLocation = this.findOrCreateClientDeliveryLocation({
+      actorId: actor.id,
+      name: deliveryLocationName,
+      address: normalizedAddress,
+    });
+
+    return {
+      deliveryLocationId: deliveryLocation.id,
+      deliveryAddress: deliveryLocation.address || normalizedAddress,
+    };
+  }
+
+  findOrCreateClientDeliveryLocation({ actorId, name, address }) {
+    const normalizedAddress = normalizeRequiredText(address, "Delivery address is required for delivery entries.");
+    const existingByAddress = this.get(
+      `
+        select *
+        from locations
+        where location_type = 'client'
+          and lower(trim(address)) = lower(trim(?))
+        limit 1
+      `,
+      [normalizedAddress],
+    );
+
+    if (existingByAddress) {
+      return existingByAddress;
+    }
+
+    const baseLocationName = normalizeOptionalText(name) || normalizedAddress;
+    let locationName = baseLocationName;
+    let suffix = 2;
+    while (
+      this.get(
+        `
+          select id
+          from locations
+          where location_type = 'client'
+            and lower(trim(name)) = lower(trim(?))
+          limit 1
+        `,
+        [locationName],
+      )
+    ) {
+      locationName = `${baseLocationName} ${suffix}`;
+      suffix += 1;
+    }
+
+    const now = nowIso();
+    const locationId = randomId();
+    this.run(
+      `
+        insert into locations (
+          id,
+          supplier_id,
+          location_type,
+          name,
+          address,
+          lat,
+          lng,
+          contact_person,
+          contact_number,
+          notes,
+          created_by,
+          created_at,
+          updated_at
+        )
+        values (?, null, 'client', ?, ?, null, null, '', '', 'Saved from a delivery entry.', ?, ?, ?)
+      `,
+      [locationId, locationName, normalizedAddress, actorId, now, now],
+    );
+
+    return this.selectLocationById(locationId);
   }
 
   createStockItem(parameters = {}) {
@@ -2726,6 +2957,9 @@ class LocalDatabase {
       const branding = normalizeOptionalText(parameters?.p_branding);
       const stockDescription = normalizeRequiredText(parameters?.p_stock_description, "Stock description is required.");
       const deliveryAddress = normalizeOptionalText(parameters?.p_delivery_address);
+      let deliveryLocationId = normalizeOptionalText(parameters?.p_delivery_location_id);
+      const saveDeliveryLocation = Boolean(parameters?.p_save_delivery_location);
+      const deliveryLocationName = normalizeOptionalText(parameters?.p_delivery_location_name);
       const scheduledFor = normalizeOptionalDate(parameters?.p_scheduled_for) || todayLocal();
       const priority = normalizePriority(parameters?.p_priority);
       const allowDuplicate = actor.role === "admin" && Boolean(parameters?.p_allow_duplicate);
@@ -2736,9 +2970,6 @@ class LocalDatabase {
 
       if (!ORDER_ENTRY_TYPES.has(entryType)) {
         throw createHttpError(400, "Entry type must be collection or delivery.");
-      }
-      if (entryType === "delivery" && !deliveryAddress) {
-        throw createHttpError(400, "Delivery address is required for delivery entries.");
       }
       if (!ORDER_PRIORITIES.has(priority)) {
         throw createHttpError(400, "Choose a valid priority.");
@@ -2758,6 +2989,24 @@ class LocalDatabase {
       const location = this.selectLocationById(locationId);
       if (!location) {
         throw createHttpError(400, "Location not found.");
+      }
+      if (location.location_type === "client") {
+        throw createHttpError(400, "Pickup location must be a supplier, factory, or both location.");
+      }
+
+      let finalDeliveryAddress = "";
+      if (entryType === "delivery") {
+        const deliveryDestination = this.resolveDeliveryLocationForOrder({
+          actor,
+          deliveryLocationId,
+          deliveryAddress,
+          saveDeliveryLocation,
+          deliveryLocationName,
+        });
+        deliveryLocationId = deliveryDestination.deliveryLocationId;
+        finalDeliveryAddress = deliveryDestination.deliveryAddress;
+      } else {
+        deliveryLocationId = null;
       }
 
       if (moveToFactory && entryType !== "collection") {
@@ -2806,6 +3055,7 @@ class LocalDatabase {
             branding,
             stock_description,
             delivery_address,
+            delivery_location_id,
             priority,
             notes,
             move_to_factory,
@@ -2827,7 +3077,7 @@ class LocalDatabase {
             picked_up_at,
             picked_up_by_user_id
           )
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, null, null, null, null, '', null, null, null, null)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, null, null, null, null, '', null, null, null, null)
         `,
         [
           orderId,
@@ -2842,7 +3092,8 @@ class LocalDatabase {
           poNumber,
           branding,
           stockDescription,
-          entryType === "delivery" ? deliveryAddress : "",
+          finalDeliveryAddress,
+          deliveryLocationId,
           priority,
           notice,
           moveToFactory ? 1 : 0,
@@ -2919,6 +3170,9 @@ class LocalDatabase {
       const branding = normalizeOptionalText(parameters?.p_branding);
       const stockDescription = normalizeRequiredText(parameters?.p_stock_description, "Stock description is required.");
       const deliveryAddress = normalizeOptionalText(parameters?.p_delivery_address);
+      let deliveryLocationId = normalizeOptionalText(parameters?.p_delivery_location_id);
+      const saveDeliveryLocation = Boolean(parameters?.p_save_delivery_location);
+      const deliveryLocationName = normalizeOptionalText(parameters?.p_delivery_location_name);
       const scheduledFor = normalizeOptionalDate(parameters?.p_scheduled_for) || existing.scheduled_for || todayLocal();
       const priority = normalizePriority(parameters?.p_priority);
       const allowDuplicate = actor.role === "admin" && Boolean(parameters?.p_allow_duplicate);
@@ -2931,9 +3185,6 @@ class LocalDatabase {
       }
       if (existing.status === "active" && compareDateOnly(scheduledFor, todayLocal()) < 0) {
         throw createHttpError(400, "Schedule date cannot be in the past.");
-      }
-      if (entryType === "delivery" && !deliveryAddress) {
-        throw createHttpError(400, "Delivery address is required for delivery entries.");
       }
       if (!ORDER_PRIORITIES.has(priority)) {
         throw createHttpError(400, "Choose a valid priority.");
@@ -2950,6 +3201,24 @@ class LocalDatabase {
       const location = this.selectLocationById(locationId);
       if (!location) {
         throw createHttpError(400, "Location not found.");
+      }
+      if (location.location_type === "client") {
+        throw createHttpError(400, "Pickup location must be a supplier, factory, or both location.");
+      }
+
+      let finalDeliveryAddress = "";
+      if (entryType === "delivery") {
+        const deliveryDestination = this.resolveDeliveryLocationForOrder({
+          actor,
+          deliveryLocationId,
+          deliveryAddress,
+          saveDeliveryLocation,
+          deliveryLocationName,
+        });
+        deliveryLocationId = deliveryDestination.deliveryLocationId;
+        finalDeliveryAddress = deliveryDestination.deliveryAddress;
+      } else {
+        deliveryLocationId = null;
       }
 
       if (moveToFactory && entryType !== "collection") {
@@ -3004,6 +3273,7 @@ class LocalDatabase {
               branding = ?,
               stock_description = ?,
               delivery_address = ?,
+              delivery_location_id = ?,
               priority = ?,
               notes = ?,
               move_to_factory = ?,
@@ -3025,7 +3295,8 @@ class LocalDatabase {
           poNumber,
           branding,
           stockDescription,
-          entryType === "delivery" ? deliveryAddress : "",
+          finalDeliveryAddress,
+          deliveryLocationId,
           nextPriority,
           notice,
           moveToFactory ? 1 : 0,
@@ -3299,6 +3570,9 @@ class LocalDatabase {
             entry_type,
             priority,
             delivery_address,
+            delivery_location_id,
+            delivery_location_name,
+            delivery_location_address,
             branding,
             stock_description,
             notes,
@@ -3326,7 +3600,7 @@ class LocalDatabase {
             last_notification_error,
             notification_sent_at
           )
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', null)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', null)
         `,
         [
           randomId(),
@@ -3340,6 +3614,9 @@ class LocalDatabase {
           order.entryType,
           order.priority,
           order.deliveryAddress,
+          order.deliveryLocationId,
+          order.deliveryLocationName,
+          order.deliveryLocationAddress,
           order.branding,
           order.stockDescription,
           order.notes,
@@ -3552,6 +3829,11 @@ class LocalDatabase {
           o.invoice_number as invoiceNumber,
           o.po_number as poNumber,
           o.delivery_address as deliveryAddress,
+          o.delivery_location_id as deliveryLocationId,
+          coalesce(dl.name, '') as deliveryLocationName,
+          coalesce(dl.address, '') as deliveryLocationAddress,
+          dl.lat as deliveryLocationLat,
+          dl.lng as deliveryLocationLng,
           o.branding,
           o.stock_description as stockDescription,
           o.customer_name as customerName,
@@ -3589,6 +3871,7 @@ class LocalDatabase {
         left join app_users d on d.id = o.driver_user_id
         join locations l on l.id = o.location_id
         left join locations f on f.id = o.factory_destination_location_id
+        left join locations dl on dl.id = o.delivery_location_id
         left join app_users g on g.id = o.driver_flagged_by_user_id
         left join app_users h on h.id = o.completed_by_user_id
         left join app_users i on i.id = o.picked_up_by_user_id
@@ -3670,6 +3953,11 @@ class LocalDatabase {
       invoiceNumber: row.invoiceNumber || "",
       poNumber: row.poNumber || "",
       deliveryAddress: row.deliveryAddress || "",
+      deliveryLocationId: row.deliveryLocationId || "",
+      deliveryLocationName: row.deliveryLocationName || "",
+      deliveryLocationAddress: row.deliveryLocationAddress || "",
+      deliveryLocationLat: row.deliveryLocationLat ?? null,
+      deliveryLocationLng: row.deliveryLocationLng ?? null,
       branding: row.branding || "",
       stockDescription: row.stockDescription || "",
       customerName: row.customerName || "",
@@ -3719,6 +4007,9 @@ class LocalDatabase {
       entryType: row.entryType || "delivery",
       priority: row.priority || "medium",
       deliveryAddress: row.deliveryAddress || "",
+      deliveryLocationId: row.deliveryLocationId || "",
+      deliveryLocationName: row.deliveryLocationName || "",
+      deliveryLocationAddress: row.deliveryLocationAddress || "",
       branding: row.branding || "",
       stockDescription: row.stockDescription || "",
       notes: row.notes || "",

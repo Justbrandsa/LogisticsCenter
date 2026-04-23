@@ -51,7 +51,7 @@ const ROLE_GUIDES = Object.freeze({
   admin: {
     title: "How to use the admin workspace",
     subtitle: "Admins oversee the whole live system, from creating work and dispatching routes to maintaining master data and correcting mistakes.",
-    overview: "Use the admin workspace when you need full control of the operation. Admins can create and assign work, maintain suppliers and pickup locations, manage users, correct stock activity, clear rollover markers, and use higher-impact actions such as duplicate override or delete when something in the live list needs careful intervention.",
+    overview: "Use the admin workspace when you need full control of the operation. Admins can create and assign work, maintain suppliers and reusable locations, manage users, correct stock activity, clear rollover markers, and use higher-impact actions such as duplicate override or delete when something in the live list needs careful intervention.",
     roleFocus: [
       { label: "When to use this role", text: "Choose the admin workspace for cross-team tasks, data corrections, dispatch decisions, and setup work that affects the whole system." },
       { label: "What you can control", text: "Admins can manage users, locations, assignments, priorities, stock records, route visibility, CSV and email actions, and system cleanup tasks." },
@@ -67,7 +67,7 @@ const ROLE_GUIDES = Object.freeze({
       entries: "Use Global List to create new work, search the live register, review grouped stops, and send or export the shared CSV that office staff use as a working list.",
       assignments: "Use Assignments when dispatch is ready to move jobs onto drivers, rebalance active work between drivers, or return a job to the unassigned queue.",
       stock: "Use Stock to manage stock items, correct movement history, work with QR labels or scanning, and send artwork requests when a production handoff is needed.",
-      network: "Use Network to keep suppliers, pickup locations, addresses, and coordinates accurate so the route and assignment pages work from clean location data.",
+      network: "Use Network to keep suppliers, pickup, factory, and client delivery locations accurate so the route and assignment pages work from clean location data.",
       users: "Use Users to create, edit, disable, or delete admin, sales, driver, and logistics accounts, including driver phone numbers and password resets.",
       drivers: "Use Driver Lists to understand what each driver is carrying, which stops are priority, and where the most recently shared driver position was recorded.",
     },
@@ -273,6 +273,7 @@ const state = {
   maintenanceMailSettings: null,
   maintenanceMailSettingsLoading: false,
   currentPage: "",
+  mobileNavOpen: false,
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
@@ -293,6 +294,7 @@ const state = {
   globalListSearchQuery: "",
   globalListScheduledDate: "",
   networkSearchQuery: "",
+  networkSearchDraft: null,
   entryFormOpen: false,
   stockMovementsSectionOpen: false,
   stockArtworkPanelOpen: false,
@@ -1161,6 +1163,18 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "toggle-mobile-nav") {
+    state.mobileNavOpen = !state.mobileNavOpen;
+    render();
+    return;
+  }
+
+  if (action === "close-mobile-nav") {
+    state.mobileNavOpen = false;
+    render();
+    return;
+  }
+
   if (action === "navigate-page") {
     setCurrentPage(button.dataset.pageId || "");
     return;
@@ -1453,6 +1467,13 @@ async function handleClick(event) {
 
   if (action === "clear-network-search" && currentUser.role === "admin") {
     state.networkSearchQuery = "";
+    state.networkSearchDraft = "";
+    render();
+    return;
+  }
+
+  if (action === "apply-network-search" && currentUser.role === "admin") {
+    applyNetworkSearchFromControl(button);
     render();
     return;
   }
@@ -1534,6 +1555,20 @@ async function handleClick(event) {
   if (action === "clear-stock-selection" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
     state.stockMovementSelectedItemId = "";
     render();
+    return;
+  }
+
+  if (action === "select-stock-movement-item" && (currentUser.role === "admin" || currentUser.role === "logistics")) {
+    const stockItemId = String(button.dataset.stockItemId || "").trim();
+    if (!getStockItemById(stockItemId)) {
+      showFlash("That stock item could not be found.", "error");
+      render();
+      return;
+    }
+
+    state.stockMovementSelectedItemId = stockItemId;
+    render();
+    focusStockMovementForm();
     return;
   }
 
@@ -1710,7 +1745,14 @@ function handleChange(event) {
   const orderForm = target.closest('form[data-form="add-order"], form[data-form="edit-order"]');
   if (
     orderForm instanceof HTMLFormElement
-    && (target.matches('[name="entryType"]') || target.matches('[name="locationId"]') || target.matches('[name="moveToFactory"]'))
+    && (
+      target.matches('[name="entryType"]')
+      || target.matches('[name="locationId"]')
+      || target.matches('[name="locationTypeFilter"]')
+      || target.matches('[name="moveToFactory"]')
+      || target.matches('[name="deliveryLocationId"]')
+      || target.matches('[name="saveDeliveryLocation"]')
+    )
   ) {
     syncMoveToFactoryField(orderForm);
   }
@@ -1777,8 +1819,7 @@ function handleInput(event) {
   }
 
   if (target.matches("[data-network-search]") && target instanceof HTMLInputElement) {
-    state.networkSearchQuery = target.value;
-    render();
+    state.networkSearchDraft = target.value;
     return;
   }
 
@@ -1791,7 +1832,22 @@ function handleInput(event) {
 }
 
 function handleKeyDown(event) {
+  const target = event.target;
+  if (event.key === "Enter" && target instanceof HTMLInputElement && target.matches("[data-network-search]")) {
+    event.preventDefault();
+    applyNetworkSearchFromControl(target);
+    render();
+    return;
+  }
+
   if (event.key !== "Escape" || state.busy) {
+    return;
+  }
+
+  if (state.mobileNavOpen) {
+    event.preventDefault();
+    state.mobileNavOpen = false;
+    render();
     return;
   }
 
@@ -1816,6 +1872,18 @@ function handleKeyDown(event) {
     event.preventDefault();
     cancelStockItemEdit();
   }
+}
+
+function applyNetworkSearchFromControl(control) {
+  const searchInput = control instanceof HTMLElement
+    ? control.closest(".stock-search-controls")?.querySelector("[data-network-search]")
+    : null;
+  const query = searchInput instanceof HTMLInputElement
+    ? searchInput.value.trim()
+    : String(state.networkSearchDraft || "").trim();
+
+  state.networkSearchDraft = query;
+  state.networkSearchQuery = query;
 }
 
 async function handleBootstrap(formData) {
@@ -2150,6 +2218,9 @@ async function createOrder(formData, currentUser) {
   const stockDescription = String(formData.get("stockDescription") || "").trim();
   const stockItemNames = getStockItemDisplayLines(stockDescription);
   const deliveryAddress = String(formData.get("deliveryAddress") || "").trim();
+  const deliveryLocationId = String(formData.get("deliveryLocationId") || "").trim();
+  const saveDeliveryLocation = formData.get("saveDeliveryLocation") === "on";
+  const deliveryLocationName = String(formData.get("deliveryLocationName") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
   const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
@@ -2173,8 +2244,14 @@ async function createOrder(formData, currentUser) {
     return;
   }
 
-  if (entryType === "delivery" && !deliveryAddress) {
+  if (entryType === "delivery" && !deliveryLocationId && !deliveryAddress) {
     showFlash("Delivery address is required for delivery entries.", "error");
+    render();
+    return;
+  }
+
+  if (entryType === "delivery" && !deliveryLocationId && saveDeliveryLocation && !deliveryLocationName) {
+    showFlash("Add a saved location name before saving this delivery address for reuse.", "error");
     render();
     return;
   }
@@ -2199,7 +2276,10 @@ async function createOrder(formData, currentUser) {
       p_branding: branding,
       p_stock_description: stockDescription,
       p_stock_item_names: stockItemNames.length ? stockItemNames : null,
-      p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
+      p_delivery_address: entryType === "delivery" && !deliveryLocationId ? deliveryAddress : null,
+      p_delivery_location_id: entryType === "delivery" ? deliveryLocationId || null : null,
+      p_save_delivery_location: entryType === "delivery" && !deliveryLocationId ? saveDeliveryLocation : false,
+      p_delivery_location_name: entryType === "delivery" && !deliveryLocationId ? deliveryLocationName : null,
       p_scheduled_for: scheduledFor,
       p_priority: priority,
       p_notice: notice,
@@ -2232,6 +2312,9 @@ async function updateOrder(formData, currentUser) {
   const branding = String(formData.get("branding") || "").trim();
   const stockDescription = String(formData.get("stockDescription") || "").trim();
   const deliveryAddress = String(formData.get("deliveryAddress") || "").trim();
+  const deliveryLocationId = String(formData.get("deliveryLocationId") || "").trim();
+  const saveDeliveryLocation = formData.get("saveDeliveryLocation") === "on";
+  const deliveryLocationName = String(formData.get("deliveryLocationName") || "").trim();
   const notice = String(formData.get("notice") || "").trim();
   const moveToFactory = formData.get("moveToFactory") === "on";
   const factoryDestinationLocationId = String(formData.get("factoryDestinationLocationId") || "").trim();
@@ -2261,8 +2344,14 @@ async function updateOrder(formData, currentUser) {
     return;
   }
 
-  if (entryType === "delivery" && !deliveryAddress) {
+  if (entryType === "delivery" && !deliveryLocationId && !deliveryAddress) {
     showFlash("Delivery address is required for delivery entries.", "error");
+    render();
+    return;
+  }
+
+  if (entryType === "delivery" && !deliveryLocationId && saveDeliveryLocation && !deliveryLocationName) {
+    showFlash("Add a saved location name before saving this delivery address for reuse.", "error");
     render();
     return;
   }
@@ -2287,7 +2376,10 @@ async function updateOrder(formData, currentUser) {
       p_po_number: poNumber,
       p_branding: branding,
       p_stock_description: stockDescription,
-      p_delivery_address: entryType === "delivery" ? deliveryAddress : null,
+      p_delivery_address: entryType === "delivery" && !deliveryLocationId ? deliveryAddress : null,
+      p_delivery_location_id: entryType === "delivery" ? deliveryLocationId || null : null,
+      p_save_delivery_location: entryType === "delivery" && !deliveryLocationId ? saveDeliveryLocation : false,
+      p_delivery_location_name: entryType === "delivery" && !deliveryLocationId ? deliveryLocationName : null,
       p_scheduled_for: scheduledFor,
       p_priority: priority,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
@@ -3241,6 +3333,8 @@ function matchesGlobalOrderSearch(order, query = state.globalListSearchQuery) {
     order?.locationName,
     order?.locationAddress,
     order?.deliveryAddress,
+    order?.deliveryLocationName,
+    order?.deliveryLocationAddress,
     getDriverDisplayName(order),
     order?.createdByName,
     order?.entryType,
@@ -3459,7 +3553,7 @@ function getFilteredNetworkLocations() {
 function getNetworkSearchSummary(filteredCount, totalCount) {
   const query = String(state.networkSearchQuery || "").trim();
   if (!query) {
-    return `${totalCount} pickup location${totalCount === 1 ? "" : "s"} in the network.`;
+    return `${totalCount} reusable location${totalCount === 1 ? "" : "s"} in the network.`;
   }
 
   if (!filteredCount) {
@@ -4497,6 +4591,8 @@ function renderPageNavigation() {
     pageNavEl.innerHTML = "";
     pageNavEl.removeAttribute("data-role");
     pageNavEl.classList.remove("page-nav-active");
+    pageNavEl.classList.remove("page-nav-open");
+    state.mobileNavOpen = false;
     return;
   }
 
@@ -4507,8 +4603,28 @@ function renderPageNavigation() {
   syncCurrentPage();
   pageNavEl.dataset.role = currentUser.role;
   pageNavEl.classList.add("page-nav-active");
+  pageNavEl.classList.toggle("page-nav-open", state.mobileNavOpen);
+  const currentItem = items.find((item) => item.id === state.currentPage);
   pageNavEl.innerHTML = `
-    <div class="page-nav-panel">
+    <button
+      type="button"
+      class="mobile-nav-toggle"
+      data-action="toggle-mobile-nav"
+      aria-expanded="${state.mobileNavOpen ? "true" : "false"}"
+      aria-controls="page-nav-panel"
+    >
+      <span class="mobile-nav-toggle-icon" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </span>
+      <span class="mobile-nav-toggle-copy">
+        <span>Menu</span>
+        <strong>${escapeHtml(currentItem?.label || "Workspace")}</strong>
+      </span>
+    </button>
+    <button type="button" class="mobile-nav-backdrop" data-action="close-mobile-nav" aria-label="Close navigation"></button>
+    <div id="page-nav-panel" class="page-nav-panel">
       <div class="page-nav-header">
         <span class="page-nav-logo">RL</span>
         <span class="page-nav-header-copy">
@@ -4619,6 +4735,7 @@ function syncCurrentPage() {
   const currentUser = state.snapshot.user;
   if (!currentUser) {
     state.currentPage = "";
+    state.mobileNavOpen = false;
     syncEntryFormVisibility("");
     return;
   }
@@ -4652,6 +4769,7 @@ function setCurrentPage(pageId) {
   }
 
   state.currentPage = pageId;
+  state.mobileNavOpen = false;
   syncEntryFormVisibility(pageId);
   window.history.replaceState(null, "", `${window.location.pathname}#${pageId}`);
   render();
@@ -4670,6 +4788,7 @@ function handleHashChange() {
   }
 
   state.currentPage = hashPage;
+  state.mobileNavOpen = false;
   syncEntryFormVisibility(hashPage);
   render();
 }
@@ -5040,8 +5159,8 @@ function renderAdminPageContent() {
     return `
       <section class="hero-card">
         <p class="eyebrow">Network</p>
-        <h2>Pickup locations</h2>
-        <p>Maintain the physical pickup points used by the route lists.</p>
+        <h2>Reusable locations</h2>
+        <p>Maintain pickup, factory, and client delivery locations used by the route lists.</p>
       </section>
       ${renderFlash()}
       ${renderSupplierNetworkSection()}
@@ -5096,7 +5215,7 @@ function renderAdminPageContent() {
       ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
       ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
       ${renderPageSummaryCard("Stock", "Track stock, send artwork requests, and remove unused items before history exists.", "stock")}
-      ${renderPageSummaryCard("Network", "Maintain pickup locations with optional contact details.", "network")}
+      ${renderPageSummaryCard("Network", "Maintain pickup, factory, and client delivery locations.", "network")}
       ${renderPageSummaryCard("Users", "Manage admin, sales, driver, logistics, and maintenance accounts.", "users")}
       ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
@@ -5611,6 +5730,7 @@ function renderStockMovementPanel() {
   const movementType = editingMovement?.movementType === "out" ? "out" : "in";
   const isInbound = movementType === "in";
   const selectedStockItemId = state.stockMovementSelectedItemId || editingMovement?.stockItemId || "";
+  const selectedStockItem = selectedStockItemId ? getStockItemById(selectedStockItemId) : null;
 
   return `
     <article class="panel">
@@ -5653,6 +5773,16 @@ function renderStockMovementPanel() {
             `
     }
       </div>
+      ${selectedStockItem && !isEditing
+      ? `
+            <div class="stock-selection-banner">
+              <span class="chip chip-success">Selected item</span>
+              <strong>${escapeHtml(selectedStockItem.name || "Stock item")}</strong>
+              <span>${escapeHtml(getReferenceLines(selectedStockItem).join(" | ") || selectedStockItem.sku || "No references set")}</span>
+            </div>
+          `
+      : ""
+    }
       ${renderStockScannerPanel()}
       <form data-form="add-stock-movement">
         <input name="stockMovementId" type="hidden" value="${escapeHtml(editingMovement?.id || "")}">
@@ -5791,7 +5921,7 @@ function renderStockItemsSection(viewerRole) {
               <th>Item</th>
               <th>References</th>
               <th>Stock code</th>
-              <th>Unit</th>
+              <th>On hand</th>
               <th>Notes</th>
               <th>Updated</th>
               <th>Actions</th>
@@ -6193,7 +6323,7 @@ function renderDriverPageContent() {
 
 function renderPageSummaryCard(title, description, pageId) {
   return `
-    <article class="panel summary-panel">
+    <article class="panel summary-panel dashboard-summary-card">
       <p class="eyebrow">${escapeHtml(title)}</p>
       <h3 class="panel-title">${escapeHtml(title)}</h3>
       <p class="panel-subtitle">${escapeHtml(description)}</p>
@@ -6283,8 +6413,8 @@ function renderSupplierNetworkSection() {
   return `
     <section class="table-card">
       <p class="eyebrow">Location network</p>
-      <h3 class="panel-title">Pickup locations</h3>
-      <p class="panel-subtitle">Each location stores its own type, address, optional coordinates, and optional contact details.</p>
+      <h3 class="panel-title">Location network</h3>
+      <p class="panel-subtitle">Each location stores its own type, address, optional coordinates, and optional contact details. Client locations are reusable delivery destinations.</p>
       <article class="panel">
         <p class="eyebrow">Locations</p>
         <h3 class="panel-title">${isEditingLocation ? "Edit location" : "Add location"}</h3>
@@ -6307,6 +6437,7 @@ function renderSupplierNetworkSection() {
                 <option value="supplier"${editingLocation?.locationType === "supplier" ? " selected" : ""}>Supplier</option>
                 <option value="factory"${editingLocation?.locationType === "factory" ? " selected" : ""}>Factory</option>
                 <option value="both"${editingLocation?.locationType === "both" ? " selected" : ""}>Both</option>
+                <option value="client"${editingLocation?.locationType === "client" ? " selected" : ""}>Client delivery</option>
               </select>
             </label>
           </div>
@@ -6364,13 +6495,14 @@ function renderSupplierNetworkSection() {
             <div class="stock-search-controls">
               <input
                 type="search"
-                value="${escapeHtml(state.networkSearchQuery)}"
+                value="${escapeHtml(state.networkSearchDraft !== null ? state.networkSearchDraft : state.networkSearchQuery)}"
                 placeholder="Try: factory sandton or giftwrap office"
                 autocomplete="off"
                 spellcheck="false"
                 data-network-search
               >
-              ${state.networkSearchQuery
+              <button type="button" class="button button-secondary" data-action="apply-network-search"${state.busy ? " disabled" : ""}>Search</button>
+              ${state.networkSearchQuery || state.networkSearchDraft
       ? `<button type="button" class="button button-ghost" data-action="clear-network-search"${state.busy ? " disabled" : ""}>Clear</button>`
       : ""
     }
@@ -6499,6 +6631,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
   const scheduledFor = String(editingOrder?.scheduledFor || getDefaultScheduledDateValue()).trim();
   const createdByName = String(editingOrder?.createdByName || currentUser.name || "").trim();
   const deliveryAddress = String(editingOrder?.deliveryAddress || "").trim();
+  const selectedDeliveryLocationId = String(editingOrder?.deliveryLocationId || "").trim();
   const quoteNumber = String(editingOrder?.quoteNumber || "").trim();
   const salesOrderNumber = String(editingOrder?.salesOrderNumber || "").trim();
   const invoiceNumber = String(editingOrder?.invoiceNumber || "").trim();
@@ -6513,11 +6646,17 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
   return `
     <form data-form="${formId}">
       ${isEditing ? `<input type="hidden" name="orderId" value="${escapeHtml(editingOrder?.id || "")}">` : ""}
-      <div class="form-grid">
+      <div class="form-grid-3">
         <label>
           Driver
           <select name="driverUserId">
             ${renderDriverOptions(selectedDriverId, true)}
+          </select>
+        </label>
+        <label>
+          Pickup type
+          <select name="locationTypeFilter" data-location-type-filter>
+            ${renderLocationTypeFilterOptions()}
           </select>
         </label>
         <label>
@@ -6528,7 +6667,10 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
         </label>
       </div>
       <p class="field-note">
-        Leave the driver as Unassigned if dispatch will allocate it later.
+        Leave the driver as Unassigned if dispatch will allocate it later. Use Pickup type to narrow the location list.
+      </p>
+      <p class="field-note" data-pickup-location-filter-note>
+        Showing all reusable pickup locations.
       </p>
       <div class="form-grid-3">
         <label>
@@ -6550,16 +6692,32 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
       <p class="field-note">
         Use a future date to plan work ahead of time. The daily CSV and email export only include entries scheduled for the live date.
       </p>
+      <div class="hidden" data-delivery-destination-field>
+        <label>
+          Delivery destination
+          <select name="deliveryLocationId">
+            ${renderDeliveryLocationOptions(selectedDeliveryLocationId)}
+          </select>
+        </label>
+      </div>
       <label class="hidden" data-delivery-address-field>
-        Delivery address
+        One-off delivery address
         <textarea
           name="deliveryAddress"
           placeholder="Required for delivery entries"
           data-delivery-address-input
         >${escapeHtml(deliveryAddress)}</textarea>
       </label>
+      <label class="inline-check hidden" data-save-delivery-location-field>
+        <input type="checkbox" name="saveDeliveryLocation">
+        Save this delivery address as a reusable client location
+      </label>
+      <label class="hidden" data-delivery-location-name-field>
+        Saved location name
+        <input name="deliveryLocationName" type="text" placeholder="Customer or client site name">
+      </label>
       <p class="field-note hidden" data-delivery-address-note>
-        Add the address the driver must deliver this order to.
+        Add the address the driver must deliver this order to, or choose a saved delivery location.
       </p>
       <label class="inline-check">
         <input type="checkbox" name="priority"${isPriority ? " checked" : ""}>
@@ -7307,7 +7465,8 @@ function renderAssignmentLocationGroup(group, viewerRole) {
 
 function renderMetric(label, value) {
   return `
-    <article class="metric-card">
+    <article class="metric-card maintenance-metric-card dashboard-metric-card">
+      <span class="maintenance-metric-glow" aria-hidden="true"></span>
       <p class="metric-label">${escapeHtml(label)}</p>
       <p class="metric-value">${escapeHtml(String(value))}</p>
     </article>
@@ -7553,9 +7712,18 @@ function renderRecentStockItemBadge(movement) {
 function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
   const allowQr = viewerRole === "admin" || viewerRole === "logistics";
+  const canUseInMovement = viewerRole === "admin" || viewerRole === "logistics";
   const isEditing = state.editingStockItemId === item.id;
+  const isSelectedForMovement = state.stockMovementSelectedItemId === item.id;
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
+  const unitLabel = getStockUnitLabel(item);
   const actions = [];
+
+  if (canUseInMovement) {
+    actions.push(
+      `<button class="button button-primary" data-action="select-stock-movement-item" data-stock-item-id="${item.id}"${state.busy || isSelectedForMovement ? " disabled" : ""}>${isSelectedForMovement ? "Selected" : "Use in movement"}</button>`,
+    );
+  }
 
   if (allowDelete) {
     actions.push(
@@ -7576,20 +7744,20 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
   }
 
   return `
-    <tr>
+    <tr class="${isSelectedForMovement ? "stock-row-selected" : ""}">
       <td data-label="Item">
         ${renderStockItemDisplayName(item.name)}
         ${activityBadge}
       </td>
       <td data-label="References">${renderReferenceSummary(item)}</td>
       <td data-label="Stock code">${escapeHtml(item.sku || "Not set")}</td>
-      <td data-label="Unit">${escapeHtml(String(item.onHandQuantity || 0))}</td>
+      <td data-label="On hand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(unitLabel)}</td>
       <td data-label="Notes">${escapeHtml(item.notes || "None")}</td>
       <td data-label="Updated">${escapeHtml(formatDateTime(item.updatedAt || item.createdAt) || "Not updated")}</td>
       <td data-label="Actions">
         ${actions.length
       ? `
-              <div class="action-row">
+              <div class="action-row stock-row-actions">
                 ${actions.join("")}
               </div>
             `
@@ -7603,8 +7771,10 @@ function renderStockItemRow(item, viewerRole, latestMovementByItemId = getLatest
 function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLatestStockMovementByItemId()) {
   const allowDelete = viewerRole === "admin";
   const allowQr = viewerRole === "admin" || viewerRole === "logistics";
+  const canUseInMovement = viewerRole === "admin" || viewerRole === "logistics";
   const isOpen = Boolean(state.stockOpenItemCards[item.id]);
   const isEditing = state.editingStockItemId === item.id;
+  const isSelectedForMovement = state.stockMovementSelectedItemId === item.id;
   const referenceSummary = getReferenceLines(item).join(" | ") || "No order references set.";
   const activityBadge = renderRecentStockItemBadge(latestMovementByItemId.get(item.id));
   const unitLabel = getStockUnitLabel(item);
@@ -7629,7 +7799,7 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
   }
 
   return `
-    <article class="stock-item-mobile-card${isOpen ? " is-open" : ""}">
+    <article class="stock-item-mobile-card${isOpen ? " is-open" : ""}${isSelectedForMovement ? " is-selected" : ""}">
       <div class="stock-item-mobile-head">
         <div class="stock-item-mobile-copy">
           ${renderStockItemDisplayName(item.name, {
@@ -7642,6 +7812,20 @@ function renderStockItemCard(item, viewerRole, latestMovementByItemId = getLates
         </div>
         <div class="stock-item-mobile-side">
           <span class="stock-item-mobile-onhand">${escapeHtml(String(item.onHandQuantity || 0))} ${escapeHtml(unitLabel)}</span>
+          ${canUseInMovement
+      ? `
+              <button
+                type="button"
+                class="button button-primary stock-item-use-button"
+                data-action="select-stock-movement-item"
+                data-stock-item-id="${item.id}"
+                ${state.busy || isSelectedForMovement ? " disabled" : ""}
+              >
+                ${isSelectedForMovement ? "Selected for movement" : "Use in movement"}
+              </button>
+            `
+      : ""
+    }
           <button
             type="button"
             class="button button-ghost stock-item-mobile-toggle"
@@ -7706,7 +7890,7 @@ function renderStockMovementRow(movement, viewerRole) {
       <td data-label="Actions">
         ${canEdit
       ? `
-              <div class="action-row">
+              <div class="action-row stock-row-actions">
                 <button
                   class="button button-secondary"
                   data-action="edit-stock-movement"
@@ -8327,6 +8511,10 @@ function getFactoryLocations() {
   return state.snapshot.locations.filter((location) => ["factory", "both"].includes(location.locationType));
 }
 
+function getDeliveryLocations() {
+  return state.snapshot.locations.filter((location) => location.locationType === "client");
+}
+
 function renderDriverOptions(selectedDriverId = "", includeUnassigned = false) {
   const drivers = getActiveDriverUsers();
   const selectedDriver = selectedDriverId ? getUser(selectedDriverId) : null;
@@ -8447,6 +8635,31 @@ function renderFactoryLocationOptions(selectedLocationId = "") {
   ].join("");
 }
 
+function renderDeliveryLocationOptions(selectedLocationId = "") {
+  const deliveryLocations = getDeliveryLocations()
+    .slice()
+    .sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+      sensitivity: "base",
+    }));
+
+  const options = [
+    `<option value=""${selectedLocationId ? "" : " selected"}>One-off delivery address</option>`,
+  ];
+
+  if (!deliveryLocations.length) {
+    options.push('<option value="" disabled>No saved delivery locations yet</option>');
+    return options.join("");
+  }
+
+  return options
+    .concat(deliveryLocations.map((location) => {
+      const address = String(location.address || "").trim();
+      const label = [location.name, address].filter(Boolean).join(" - ");
+      return `<option value="${location.id}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(label)}</option>`;
+    }))
+    .join("");
+}
+
 function renderStockItemOptions(selectedStockItemId = "") {
   if (!state.snapshot.stockItems.length) {
     return '<option value="">Create a stock item first</option>';
@@ -8473,12 +8686,26 @@ function getOfficeLocation() {
   return state.snapshot.locations.find((location) => isSystemOfficeLocation(location)) || null;
 }
 
+function renderLocationTypeFilterOptions(selectedType = "") {
+  const options = [
+    ["", "All pickup types"],
+    ["supplier", "Supplier only"],
+    ["factory", "Factory only"],
+    ["both", "Both"],
+  ];
+
+  return options
+    .map(([value, label]) => `<option value="${value}"${value === selectedType ? " selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
 function renderLocationOptions(selectedLocationId = "") {
-  if (!state.snapshot.locations.length) {
-    return '<option value="">Create a location first</option>';
+  const pickupLocations = state.snapshot.locations.filter((location) => location.locationType !== "client");
+  if (!pickupLocations.length) {
+    return '<option value="">Create a pickup location first</option>';
   }
 
-  const sortedLocations = [...state.snapshot.locations].sort((left, right) => {
+  const sortedLocations = [...pickupLocations].sort((left, right) => {
     const leftOfficeRank = isSystemOfficeLocation(left) ? 0 : 1;
     const rightOfficeRank = isSystemOfficeLocation(right) ? 0 : 1;
     if (leftOfficeRank !== rightOfficeRank) {
@@ -8496,7 +8723,7 @@ function renderLocationOptions(selectedLocationId = "") {
       const typeLabel = !isSystemOfficeLocation(location) && location.locationType
         ? ` - ${escapeHtml(capitalize(location.locationType))}`
         : "";
-      return `<option value="${location.id}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(location.name)}${typeLabel}</option>`;
+      return `<option value="${location.id}" data-location-type="${escapeHtml(location.locationType || "")}"${location.id === selectedLocationId ? " selected" : ""}>${escapeHtml(location.name)}${typeLabel}</option>`;
     }),
   ].join("");
 }
@@ -8967,16 +9194,25 @@ function getDropOffDestination(order) {
   if (isDeliveryOrder(order)) {
     const customerName = String(order?.customerName || "").trim();
     const deliveryAddress = String(order?.deliveryAddress || "").trim();
+    const deliveryLocationId = String(order?.deliveryLocationId || "").trim();
+    const deliveryLocationName = String(order?.deliveryLocationName || "").trim();
+    const deliveryLocationAddress = String(order?.deliveryLocationAddress || "").trim();
+    const destinationName = deliveryLocationName || customerName || "Client";
+    const destinationAddress = deliveryLocationAddress || deliveryAddress;
     return {
-      key: [
-        "delivery",
-        customerName.toLowerCase(),
-        deliveryAddress.toLowerCase(),
-      ].filter(Boolean).join("|") || `delivery:${order.id}`,
-      title: customerName ? `Deliver to ${customerName}` : "Deliver to client",
+      key: deliveryLocationId
+        ? `delivery-location:${deliveryLocationId}`
+        : [
+          "delivery",
+          customerName.toLowerCase(),
+          deliveryAddress.toLowerCase(),
+        ].filter(Boolean).join("|") || `delivery:${order.id}`,
+      title: destinationName ? `Deliver to ${destinationName}` : "Deliver to client",
       location: {
-        name: customerName || "Client",
-        address: deliveryAddress,
+        name: destinationName,
+        address: destinationAddress,
+        lat: order?.deliveryLocationLat ?? null,
+        lng: order?.deliveryLocationLng ?? null,
       },
       sortRank: 1,
     };
@@ -10048,6 +10284,7 @@ function getOrderStockDetailItems(order) {
   const stockDescription = String(order?.stockDescription || "").trim();
   const branding = String(order?.branding || "").trim();
   const deliveryAddress = String(order?.deliveryAddress || "").trim();
+  const deliveryLocationName = String(order?.deliveryLocationName || "").trim();
   const collectionDestination = getCollectionDestinationLabel(order);
 
   if (stockDescription) {
@@ -10056,6 +10293,10 @@ function getOrderStockDetailItems(order) {
 
   if (branding) {
     items.push({ label: "Branding", value: branding });
+  }
+
+  if (deliveryLocationName) {
+    items.push({ label: "Delivery location", value: deliveryLocationName });
   }
 
   if (deliveryAddress) {
@@ -10232,10 +10473,61 @@ function getRolloverNoticeText(order) {
   return `Rolled to the next day (${carryOverCount} ${dayLabel}).`;
 }
 
+function syncPickupLocationTypeFilter(form) {
+  const filterSelect = form.querySelector('[name="locationTypeFilter"]');
+  const locationSelect = form.querySelector('[name="locationId"]');
+  const noteEl = form.querySelector("[data-pickup-location-filter-note]");
+
+  if (!(filterSelect instanceof HTMLSelectElement) || !(locationSelect instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const selectedType = String(filterSelect.value || "").trim();
+  const options = Array.from(locationSelect.options);
+  let visibleCount = 0;
+
+  options.forEach((option) => {
+    if (!option.value) {
+      option.hidden = false;
+      option.disabled = false;
+      return;
+    }
+
+    const optionType = String(option.dataset.locationType || "").trim();
+    const shouldShow = !selectedType || optionType === selectedType;
+    option.hidden = !shouldShow;
+    option.disabled = !shouldShow;
+    if (shouldShow) {
+      visibleCount += 1;
+    }
+  });
+
+  const selectedOption = locationSelect.selectedOptions[0];
+  if (selectedOption?.disabled) {
+    const firstVisibleLocation = options.find((option) => option.value && !option.disabled);
+    locationSelect.value = firstVisibleLocation?.value || "";
+  }
+
+  if (noteEl instanceof HTMLElement) {
+    const typeLabel = selectedType ? capitalize(selectedType).toLowerCase() : "reusable pickup";
+    noteEl.textContent = visibleCount
+      ? `Showing ${visibleCount} ${typeLabel} location${visibleCount === 1 ? "" : "s"}.`
+      : `No ${typeLabel} locations are available yet. Add one from Network first.`;
+  }
+}
+
 function syncMoveToFactoryField(form) {
+  syncPickupLocationTypeFilter(form);
+
   const entryTypeField = form.querySelector('[name="entryType"]');
+  const deliveryDestinationField = form.querySelector("[data-delivery-destination-field]");
+  const deliveryLocationSelect = form.querySelector('[name="deliveryLocationId"]');
   const deliveryAddressField = form.querySelector("[data-delivery-address-field]");
   const deliveryAddressInput = form.querySelector('[name="deliveryAddress"]');
+  const saveDeliveryLocationField = form.querySelector("[data-save-delivery-location-field]");
+  const saveDeliveryLocationInput = form.querySelector('[name="saveDeliveryLocation"]');
+  const deliveryLocationNameField = form.querySelector("[data-delivery-location-name-field]");
+  const deliveryLocationNameInput = form.querySelector('[name="deliveryLocationName"]');
   const deliveryAddressNote = form.querySelector("[data-delivery-address-note]");
   const moveToFactoryField = form.querySelector('[name="moveToFactory"]');
   const destinationField = form.querySelector("[data-move-to-factory-destination]");
@@ -10254,21 +10546,64 @@ function syncMoveToFactoryField(form) {
 
   const isCollection = entryTypeField.value === "collection";
   const isDelivery = entryTypeField.value === "delivery";
+  const usesSavedDeliveryLocation = (
+    deliveryLocationSelect instanceof HTMLSelectElement
+    && Boolean(String(deliveryLocationSelect.value || "").trim())
+  );
+  const savesDeliveryLocation = (
+    saveDeliveryLocationInput instanceof HTMLInputElement
+    && saveDeliveryLocationInput.checked
+  );
   const hasFactoryOptions = Array.from(destinationSelect.options).some((option) => option.value);
 
+  if (deliveryDestinationField instanceof HTMLElement) {
+    deliveryDestinationField.classList.toggle("hidden", !isDelivery);
+  }
+
+  if (deliveryLocationSelect instanceof HTMLSelectElement) {
+    deliveryLocationSelect.disabled = !isDelivery;
+    if (!isDelivery) {
+      deliveryLocationSelect.value = "";
+    }
+  }
+
   if (deliveryAddressField instanceof HTMLElement) {
-    deliveryAddressField.classList.toggle("hidden", !isDelivery);
+    deliveryAddressField.classList.toggle("hidden", !isDelivery || usesSavedDeliveryLocation);
   }
 
   if (deliveryAddressInput instanceof HTMLTextAreaElement || deliveryAddressInput instanceof HTMLInputElement) {
-    deliveryAddressInput.required = isDelivery;
+    deliveryAddressInput.required = isDelivery && !usesSavedDeliveryLocation;
+  }
+
+  if (saveDeliveryLocationField instanceof HTMLElement) {
+    saveDeliveryLocationField.classList.toggle("hidden", !isDelivery || usesSavedDeliveryLocation);
+  }
+
+  if (saveDeliveryLocationInput instanceof HTMLInputElement) {
+    saveDeliveryLocationInput.disabled = !isDelivery || usesSavedDeliveryLocation;
+    if (!isDelivery || usesSavedDeliveryLocation) {
+      saveDeliveryLocationInput.checked = false;
+    }
+  }
+
+  if (deliveryLocationNameField instanceof HTMLElement) {
+    deliveryLocationNameField.classList.toggle("hidden", !isDelivery || usesSavedDeliveryLocation || !savesDeliveryLocation);
+  }
+
+  if (deliveryLocationNameInput instanceof HTMLInputElement) {
+    deliveryLocationNameInput.required = isDelivery && !usesSavedDeliveryLocation && savesDeliveryLocation;
+    deliveryLocationNameInput.disabled = !isDelivery || usesSavedDeliveryLocation || !savesDeliveryLocation;
   }
 
   if (deliveryAddressNote instanceof HTMLElement) {
     deliveryAddressNote.classList.toggle("hidden", !isDelivery);
-    deliveryAddressNote.textContent = isDelivery
-      ? "Add the address the driver must deliver this order to."
-      : "Switch the entry type to Delivery to add a destination address.";
+    deliveryAddressNote.textContent = !isDelivery
+      ? "Switch the entry type to Delivery to add a destination address."
+      : usesSavedDeliveryLocation
+        ? "This delivery will use the saved client location address."
+        : savesDeliveryLocation
+          ? "This address will be saved as a reusable client location when the entry is saved."
+          : "Add a one-off delivery address, or choose a saved delivery location.";
   }
 
   moveToFactoryField.disabled = !isCollection;
@@ -10385,6 +10720,17 @@ function parseOptionalNumber(value) {
 }
 
 function getCoordinates(value) {
+  if (
+    value?.lat === null
+    || value?.lat === undefined
+    || value?.lat === ""
+    || value?.lng === null
+    || value?.lng === undefined
+    || value?.lng === ""
+  ) {
+    return null;
+  }
+
   const lat = Number(value?.lat);
   const lng = Number(value?.lng);
 

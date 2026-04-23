@@ -222,6 +222,7 @@ function transformSnapshotToImportData(snapshot, options = {}) {
       po_number: String(order.poNumber || "").trim(),
       customer_name: String(order.customerName || "").trim(),
       delivery_address: String(order.deliveryAddress || "").trim(),
+      delivery_location_id: String(order.deliveryLocationId || "").trim() || null,
       priority: String(order.priority || "medium").trim() || "medium",
       notes: String(order.notes || "").trim(),
       driver_flag_type: String(order.driverFlagType || "").trim() || null,

@@ -33,7 +33,7 @@ The pages you see depend on your role.
 
 1. Check `Dashboard` for the live overview.
 2. Use `Users` to create or update accounts.
-3. Use `Network` to maintain pickup and factory locations.
+3. Use `Network` to maintain pickup, factory, and saved client delivery locations.
 4. Use `Global List` to create entries and send or download the CSV.
 5. Use `Assignments` to place unassigned work onto driver lists.
 6. Use `Driver Lists` to review each driver's live route and recorded position.
@@ -133,18 +133,18 @@ Use `Disable` when you want to remove someone from active use without deleting t
 
 ### Network
 
-Use `Network` to maintain the pickup and factory locations used in the app.
+Use `Network` to maintain the pickup, factory, and saved client delivery locations used in the app.
 
 Each location can include:
 
 - location name
-- location type: `Supplier`, `Factory`, or `Both`
+- location type: `Supplier`, `Factory`, `Both`, or `Client delivery`
 - physical address
 - optional latitude and longitude
 - optional contact person
 - optional contact number
 
-These locations feed the entry form and route planning.
+Supplier, factory, and both locations feed pickup planning. Client delivery locations can be reused when creating delivery entries.
 
 ### Global List
 
@@ -156,21 +156,22 @@ To create a new entry:
 2. Choose the pickup location.
 3. Choose `Collection` or `Delivery`.
 4. Choose the `Scheduled date` for when the item should appear on the driver list and daily export.
-5. Add the delivery address if it is a delivery.
-6. Tick `Mark this as a priority stop` if needed.
-7. Enter the quote number.
-8. Add any sales order number, invoice number, or PO number if available.
-9. Enter the stock description.
-10. Add optional branding or notice text.
-11. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
-12. If needed, tick `Admin override for duplicate or return stop`.
-13. Select `Create entry`.
+5. Choose a saved delivery location or add a one-off delivery address if it is a delivery.
+6. Tick `Save this delivery address as a reusable client location` when the destination should be available for future deliveries.
+7. Tick `Mark this as a priority stop` if needed.
+8. Enter the quote number.
+9. Add any sales order number, invoice number, or PO number if available.
+10. Enter the stock description.
+11. Add optional branding or notice text.
+12. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
+13. If needed, tick `Admin override for duplicate or return stop`.
+14. Select `Create entry`.
 
 Important notes:
 
 - saving an entry also creates matching stock items in the `Stock` page
 - the daily CSV and CSV email only include entries scheduled for the live date shown in the app
-- delivery entries require a delivery address
+- delivery entries require either a saved delivery location or a one-off delivery address
 - the admin override can be used for duplicate quote entries or for sending a driver back to a stop already completed that day
 
 The rest of the Global List page lets admins:
