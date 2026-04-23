@@ -51,6 +51,7 @@ Logictics Centre is a local-database browser app for managing driver-separated p
 - If the Turso state table is empty, the app seeds Turso from the bundled/local SQLite data on first startup.
 - To force-copy the current local SQLite data into Turso, set the Turso env vars and run `npm run migrate:turso`.
 - Use `npm run migrate:turso -- --dry-run` to preview the local counts without writing to Turso.
+- To append the reusable delivery-location fields to an existing Turso state without replacing live data, run `npm run migrate:turso:append-reusable-locations` first as a dry run, then rerun with `-- --apply` after reviewing the backup path printed by the script.
 - Use the built-in admin data export before switching database providers, then import that export after Turso is connected if you need to force a specific data snapshot.
 
 ## Durable hosting for SQLite
