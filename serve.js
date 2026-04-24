@@ -41,6 +41,10 @@ const DEFAULT_DROPPED_OFFICE_SB_EMAIL = "reception@giftwrap.co.za";
 const DEFAULT_DROPPED_OFFICE_MOR_MAR_EMAIL = "promo22@giftwrap.co.za";
 const DEFAULT_DROPPED_OFFICE_ORDER_EMAIL = "orders@giftwrapshop.co.za";
 const DEFAULT_DROPPED_OFFICE_FALLBACK_EMAIL = "order@giftwrapshop.co.za";
+const DROPPED_OFFICE_SS_PREFIXES = Object.freeze(["SS", "PSS"]);
+const DROPPED_OFFICE_SB_PREFIXES = Object.freeze(["SB", "PSB"]);
+const DROPPED_OFFICE_MOR_MAR_PREFIXES = Object.freeze(["MOR", "MAR", "PMOR", "PMAR"]);
+const DROPPED_OFFICE_ORDER_PREFIXES = Object.freeze(["ORDER", "SO", "BAR"]);
 const ROLLOVER_EMAIL_FUNCTIONS = new Set(["get_app_snapshot", "run_daily_rollover"]);
 const GEOCODE_SEARCH_URL = "https://nominatim.openstreetmap.org/search";
 const GEOCODE_CACHE_FILENAME = "geocode-cache.json";
@@ -1956,7 +1960,7 @@ function getOrderSalesOrderNumber(order) {
 function getOrderPrimaryDisplay(order) {
   const quoteNumber = getOrderQuoteNumber(order);
   if (quoteNumber) {
-    return `Quote ${quoteNumber}`;
+    return `Inhouse ${quoteNumber}`;
   }
 
   const orderNumber = String(order?.orderNumber || "").trim();
@@ -1991,11 +1995,16 @@ function getOrderReferenceSummary(order) {
 
 function getDroppedOfficeReferenceCandidates(order) {
   return [
-    { label: "Quote", value: getOrderQuoteNumber(order) },
+    { label: "Inhouse order", value: getOrderQuoteNumber(order) },
     { label: "Sales order", value: getOrderSalesOrderNumber(order) },
     { label: "Invoice", value: String(order?.invoiceNumber || "").trim() },
     { label: "PO", value: String(order?.poNumber || "").trim() },
   ].filter((entry) => entry.value);
+}
+
+function referenceStartsWithAny(value, prefixes) {
+  const normalizedValue = String(value || "").trim().toUpperCase();
+  return prefixes.some((prefix) => normalizedValue.startsWith(prefix));
 }
 
 function resolveDroppedOfficeEmailRoute(config, order) {
@@ -2010,39 +2019,38 @@ function resolveDroppedOfficeEmailRoute(config, order) {
   const references = getDroppedOfficeReferenceCandidates(order);
 
   for (const reference of references) {
-    const normalizedValue = String(reference.value || "").trim().toUpperCase();
-    if (normalizedValue.startsWith("SS")) {
+    if (referenceStartsWithAny(reference.value, DROPPED_OFFICE_SS_PREFIXES)) {
       return {
         to: recipients.ss,
         ruleKey: "ss",
-        ruleLabel: "SS reference",
+        ruleLabel: "SS/PSS reference",
         identifier: reference.value,
         identifierLabel: reference.label,
       };
     }
-    if (normalizedValue.startsWith("SB")) {
+    if (referenceStartsWithAny(reference.value, DROPPED_OFFICE_SB_PREFIXES)) {
       return {
         to: recipients.sb,
         ruleKey: "sb",
-        ruleLabel: "SB reference",
+        ruleLabel: "SB/PSB reference",
         identifier: reference.value,
         identifierLabel: reference.label,
       };
     }
-    if (normalizedValue.startsWith("MOR") || normalizedValue.startsWith("MAR")) {
+    if (referenceStartsWithAny(reference.value, DROPPED_OFFICE_MOR_MAR_PREFIXES)) {
       return {
         to: recipients.morMar,
         ruleKey: "mor-mar",
-        ruleLabel: "MAR/MOR reference",
+        ruleLabel: "MAR/MOR/PMAR/PMOR reference",
         identifier: reference.value,
         identifierLabel: reference.label,
       };
     }
-    if (normalizedValue.startsWith("ORDER")) {
+    if (referenceStartsWithAny(reference.value, DROPPED_OFFICE_ORDER_PREFIXES)) {
       return {
         to: recipients.order,
         ruleKey: "order",
-        ruleLabel: "Order reference",
+        ruleLabel: "Order/SO/BAR reference",
         identifier: reference.value,
         identifierLabel: reference.label,
       };
@@ -2252,7 +2260,7 @@ function buildOrdersCsv(orders) {
   const lineBreak = "\r\n";
   const rows = [
     [
-      "Quote",
+      "Inhouse order",
       "Assigned driver",
       "Picked up by",
       "Driver handoff",
@@ -2629,7 +2637,7 @@ function buildCarryOverEmailOrderDetails(order) {
   }
 
   if (quoteNumber) {
-    details.push({ label: "Quote", value: quoteNumber });
+    details.push({ label: "Inhouse order", value: quoteNumber });
   }
 
   if (salesOrderNumber) {

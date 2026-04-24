@@ -37,6 +37,20 @@ const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
 const ORDER_FLAG_TYPES = new Set(["not_collected", "not_ready"]);
 const ORDER_COMPLETION_TYPES = new Set(["office", "factory"]);
 const STOCK_MOVEMENT_TYPES = new Set(["in", "out"]);
+const INHOUSE_ORDER_PREFIXES = Object.freeze([
+  "SS",
+  "SB",
+  "MAR",
+  "MOR",
+  "ORDER",
+  "SO",
+  "PSS",
+  "PSB",
+  "PMAR",
+  "PMOR",
+  "BAR",
+]);
+const INHOUSE_ORDER_PREFIX_LABEL = INHOUSE_ORDER_PREFIXES.join(", ");
 const APP_SETTING_KEYS = Object.freeze({
   mailDisabled: "mail_disabled_override",
   mailSenderName: "mail_sender_name_override",
@@ -1623,9 +1637,6 @@ class LocalDatabase {
       create index if not exists orders_factory_destination_idx
         on orders(factory_destination_location_id);
 
-      create index if not exists orders_delivery_location_idx
-        on orders(delivery_location_id);
-
       create table if not exists order_delete_log (
         id text primary key,
         order_id text not null,
@@ -2950,7 +2961,7 @@ class LocalDatabase {
       const driverUserId = normalizeOptionalText(parameters?.p_driver_user_id);
       const locationId = normalizeId(parameters?.p_location_id, "Location not found.");
       const entryType = normalizeEntryType(parameters?.p_entry_type);
-      const quoteNumber = normalizeRequiredText(parameters?.p_quote_number, "Quote number is required.");
+      const quoteNumber = normalizeInhouseOrderNumber(parameters?.p_quote_number);
       const salesOrderNumber = normalizeOptionalText(parameters?.p_sales_order_number);
       const invoiceNumber = normalizeOptionalText(parameters?.p_invoice_number);
       const poNumber = normalizeOptionalText(parameters?.p_po_number);
@@ -3024,17 +3035,15 @@ class LocalDatabase {
         factoryDestinationLocationId = "";
       }
 
-      if (driver) {
-        this.assertOrderAssignmentAllowed({
-          actor,
-          orderId: "",
-          driverUserId: driver.id,
-          quoteNumber,
-          locationId,
-          scheduledFor,
-          allowDuplicate,
-        });
-      }
+      this.assertOrderAssignmentAllowed({
+        actor,
+        orderId: "",
+        driverUserId: driver?.id || "",
+        quoteNumber,
+        locationId,
+        scheduledFor,
+        allowDuplicate,
+      });
 
       const orderId = randomId();
       const orderNumber = this.nextOrderNumber();
@@ -3163,7 +3172,7 @@ class LocalDatabase {
       const driverUserId = normalizeOptionalText(parameters?.p_driver_user_id);
       const locationId = normalizeId(parameters?.p_location_id, "Location not found.");
       const entryType = normalizeEntryType(parameters?.p_entry_type);
-      const quoteNumber = normalizeRequiredText(parameters?.p_quote_number, "Quote number is required.");
+      const quoteNumber = normalizeInhouseOrderNumber(parameters?.p_quote_number);
       const salesOrderNumber = normalizeOptionalText(parameters?.p_sales_order_number);
       const invoiceNumber = normalizeOptionalText(parameters?.p_invoice_number);
       const poNumber = normalizeOptionalText(parameters?.p_po_number);
@@ -3236,11 +3245,11 @@ class LocalDatabase {
         factoryDestinationLocationId = "";
       }
 
-      if (existing.status === "active" && driver) {
+      if (existing.status === "active") {
         this.assertOrderAssignmentAllowed({
           actor,
           orderId,
-          driverUserId: driver.id,
+          driverUserId: driver?.id || "",
           quoteNumber,
           locationId,
           scheduledFor,
@@ -4181,23 +4190,24 @@ class LocalDatabase {
   }
 
   assertOrderAssignmentAllowed({ actor, orderId, driverUserId, quoteNumber, locationId, scheduledFor, allowDuplicate }) {
-    if (!driverUserId) {
-      return;
-    }
     const duplicate = this.get(
       `
         select id
         from orders
         where id <> ?
-          and driver_user_id = ?
-          and inhouse_order_number = ?
+          and lower(trim(inhouse_order_number)) = lower(trim(?))
+          and location_id = ?
           and status = 'active'
         limit 1
       `,
-      [orderId || "", driverUserId, quoteNumber],
+      [orderId || "", quoteNumber, locationId],
     );
-    if (duplicate && !(actor.role === "admin" && allowDuplicate)) {
-      throw createHttpError(400, "Duplicate blocked. This driver already has an active entry for that quote number.");
+    if (duplicate) {
+      throw createHttpError(400, "Duplicate blocked. This inhouse order number already has an active entry for that pickup location.");
+    }
+
+    if (!driverUserId) {
+      return;
     }
 
     const completedStop = this.get(
@@ -4554,6 +4564,15 @@ function normalizeRequiredText(value, message) {
   const normalized = normalizeOptionalText(value);
   if (!normalized) {
     throw createHttpError(400, message);
+  }
+  return normalized;
+}
+
+function normalizeInhouseOrderNumber(value) {
+  const normalized = normalizeRequiredText(value, "Inhouse order number is required.");
+  const upperValue = normalized.toUpperCase();
+  if (!INHOUSE_ORDER_PREFIXES.some((prefix) => upperValue.startsWith(prefix))) {
+    throw createHttpError(400, `Inhouse order number must start with one of: ${INHOUSE_ORDER_PREFIX_LABEL}.`);
   }
   return normalized;
 }

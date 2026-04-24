@@ -159,7 +159,7 @@ To create a new entry:
 5. Choose a saved delivery location or add a one-off delivery address if it is a delivery.
 6. Tick `Save this delivery address as a reusable client location` when the destination should be available for future deliveries.
 7. Tick `Mark this as a priority stop` if needed.
-8. Enter the quote number.
+8. Enter the inhouse order number.
 9. Add any sales order number, invoice number, or PO number if available.
 10. Enter the stock description.
 11. Add optional branding or notice text.
@@ -433,7 +433,7 @@ The Global List search can match:
 
 The stock search can match:
 
-- quote number
+- inhouse order number
 - sales order number
 - invoice number
 - PO number

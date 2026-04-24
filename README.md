@@ -79,7 +79,7 @@ Logictics Centre is a local-database browser app for managing driver-separated p
 - The default provider is `microsoft-graph`.
 - The app expects `MAIL_TENANT_ID`, `MAIL_CLIENT_ID`, and `MAIL_CLIENT_SECRET`, either in `mail-config.js` or environment variables.
 - Optional mail-routing settings include `MAIL_FROM_NAME`, `MAIL_ADMIN_ACTION_TO`, `MAIL_ROLLOVER_TEST_TO`, `MAIL_DROPPED_OFFICE_SS_TO`, `MAIL_DROPPED_OFFICE_SB_TO`, `MAIL_DROPPED_OFFICE_MOR_MAR_TO`, `MAIL_DROPPED_OFFICE_ORDER_TO`, and `MAIL_DROPPED_OFFICE_FALLBACK_TO`, and the `maintenance` role can now override the live inbox routing from inside the app.
-- When a collection entry is completed as dropped at the office, the server now routes the email by identifier: `SS`, `SB`, `MAR/MOR`, `Order`, then the fallback inbox for blank or unmatched references.
+- When a collection entry is completed as dropped at the office, the server now routes the email by identifier: `SS/PSS`, `SB/PSB`, `MAR/MOR/PMAR/PMOR`, `Order/SO/BAR`, then the fallback inbox for blank or unmatched references.
 - `MAIL_CLIENT_SECRET` must be the Azure client secret value, not the secret ID shown alongside it.
 - The Azure app needs Microsoft Graph application permission to send mail as `artwork3@giftwrap.co.za`.
 - The app can request a sender label such as `Logistics Centre`, but Microsoft Graph may still show the mailbox profile name that is configured in Microsoft 365.
@@ -93,7 +93,7 @@ Each new entry now captures:
 - Pickup location
 - Saved delivery location or one-off delivery address
 - Collection or delivery
-- Quote number
+- Inhouse order number
 - Sales order number
 - Invoice number
 - PO number

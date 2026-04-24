@@ -12,6 +12,20 @@ const STOCK_LABEL_SKU_MAX_LENGTH = 10;
 const STOCK_LABEL_CODE_LENGTH = 8;
 const STOCK_LABEL_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const STOCK_RECENT_ACTIVITY_HOURS = 24;
+const INHOUSE_ORDER_PREFIXES = Object.freeze([
+  "SS",
+  "SB",
+  "MAR",
+  "MOR",
+  "ORDER",
+  "SO",
+  "PSS",
+  "PSB",
+  "PMAR",
+  "PMOR",
+  "BAR",
+]);
+const INHOUSE_ORDER_PREFIX_LABEL = INHOUSE_ORDER_PREFIXES.join(", ");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ORDER_FLAG_LABELS = Object.freeze({
   not_collected: "Not collected",
@@ -1070,6 +1084,15 @@ function normalizeError(error) {
   }
 
   return message;
+}
+
+function hasAllowedInhouseOrderPrefix(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return Boolean(normalized) && INHOUSE_ORDER_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function getInhouseOrderPrefixError() {
+  return `Inhouse order number must start with one of: ${INHOUSE_ORDER_PREFIX_LABEL}.`;
 }
 
 async function handleSubmit(event) {
@@ -2227,7 +2250,13 @@ async function createOrder(formData, currentUser) {
   const allowDuplicate = formData.get("allowDuplicate") === "on";
 
   if (!locationId || !entryType || !quoteNumber) {
-    showFlash("Pickup location, entry type, and quote number are required.", "error");
+    showFlash("Pickup location, entry type, and inhouse order number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!hasAllowedInhouseOrderPrefix(quoteNumber)) {
+    showFlash(getInhouseOrderPrefixError(), "error");
     render();
     return;
   }
@@ -2327,7 +2356,13 @@ async function updateOrder(formData, currentUser) {
   }
 
   if (!locationId || !entryType || !quoteNumber) {
-    showFlash("Pickup location, entry type, and quote number are required.", "error");
+    showFlash("Pickup location, entry type, and inhouse order number are required.", "error");
+    render();
+    return;
+  }
+
+  if (!hasAllowedInhouseOrderPrefix(quoteNumber)) {
+    showFlash(getInhouseOrderPrefixError(), "error");
     render();
     return;
   }
@@ -5548,7 +5583,7 @@ function renderMaintenanceMailPanel() {
           </label>
         </div>
         <p class="field-note">Use commas or semicolons to separate multiple inboxes. Microsoft Graph may still show the mailbox profile name even when the app requests the sender label shown above.</p>
-        <p class="field-note">The dropped-at-office trigger uses these rules: SS, SB, MAR/MOR, Order, then the fallback inbox for anything with no matching identifier.</p>
+        <p class="field-note">The dropped-at-office trigger uses these rules: SS/PSS, SB/PSB, MAR/MOR/PMAR/PMOR, Order/SO/BAR, then the fallback inbox for anything with no matching identifier.</p>
         <div class="action-row">
           <button type="submit" class="button button-primary"${state.busy ? " disabled" : ""}>
             ${state.busy ? "Saving..." : "Save email settings"}
@@ -5657,7 +5692,7 @@ function renderStockItemPanel(viewerRole) {
         </label>
         <div class="form-grid">
           <label>
-            Quote number
+            Inhouse order number
             <input name="quoteNumber" type="text" value="${escapeHtml(editingItem?.quoteNumber || "")}" placeholder="Optional">
           </label>
           <label>
@@ -5901,7 +5936,7 @@ function renderStockItemsSection(viewerRole) {
             <input
               type="search"
               value="${escapeHtml(state.stockSearchQuery)}"
-              placeholder="Quote, sales order, invoice, PO, stock code"
+              placeholder="Inhouse, sales order, invoice, PO, stock code"
               autocapitalize="characters"
               autocomplete="off"
               spellcheck="false"
@@ -6725,8 +6760,8 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
       </label>
       <div class="form-grid">
         <label>
-          Quote number
-          <input name="quoteNumber" type="text" value="${escapeHtml(quoteNumber)}" required>
+          Inhouse order number
+          <input name="quoteNumber" type="text" value="${escapeHtml(quoteNumber)}" placeholder="SS, SB, MAR, MOR, Order, SO, PSS, PSB, PMAR, PMOR, BAR" required>
         </label>
         <label>
           Sales order number
@@ -6781,7 +6816,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
               Admin override for duplicate or return stop
             </label>
             <p class="field-note">
-              This only lets admins send a driver back to a stop they already completed today, or keep two active entries with the same quote number on that driver's list.
+              This only lets admins send a driver back to a stop they already completed today. Same-location duplicate inhouse order numbers are always blocked.
             </p>
           `
       : ""
@@ -7273,7 +7308,7 @@ function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.r
         <table class="responsive-stack">
           <thead>
             <tr>
-              <th>Quote</th>
+              <th>Inhouse order</th>
               <th>Other references</th>
               <th>Type</th>
               <th>Completed</th>
@@ -7286,7 +7321,7 @@ function renderCompletedOrders(driverUserId, viewerRole = state.snapshot.user?.r
         .map(
           (order) => `
                         <tr>
-                          <td data-label="Quote">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
+                          <td data-label="Inhouse order">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
                           <td data-label="Other references">${renderOrderListReferenceSummary(order)}</td>
                           <td data-label="Type">${renderTypeChip(order.entryType)}</td>
                           <td data-label="Completed">
@@ -7331,7 +7366,7 @@ function renderGlobalOrderRow(order, viewerRole) {
 
   return `
     <tr>
-      <td data-label="Quote">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
+      <td data-label="Inhouse order">${escapeHtml(getOrderPrimaryDisplay(order))}</td>
       <td data-label="Other references">${renderOrderListReferenceSummary(order)}</td>
       <td data-label="Type">
         <div class="chip-row">
@@ -7556,7 +7591,7 @@ function getReferenceLines(record) {
   const lines = [];
 
   if (quoteNumber) {
-    lines.push(`Quote ${quoteNumber}`);
+    lines.push(`Inhouse ${quoteNumber}`);
   }
 
   if (salesOrderNumber) {
@@ -7666,7 +7701,7 @@ function renderStockItemDisplayName(value, options = {}) {
 function getOrderPrimaryDisplay(order) {
   const quoteNumber = getOrderQuoteNumber(order);
   if (quoteNumber) {
-    return `Quote ${quoteNumber}`;
+    return `Inhouse ${quoteNumber}`;
   }
 
   const orderNumber = String(order?.orderNumber || "").trim();
@@ -10124,7 +10159,7 @@ function buildOrdersCsvContent(orders) {
   const lineBreak = "\r\n";
   const rows = [
     [
-      "Quote",
+      "Inhouse order",
       "Assigned driver",
       "Picked up by",
       "Driver handoff",

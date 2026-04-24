@@ -1,5 +1,8 @@
+
+> start
+> node serve.js
+
 Route Ledger available at http://127.0.0.1:4173
-Neon database connection is configured.
+Local database ready at C:\Users\PC\OneDrive - Giftwrap\Documents\Drivers List\LogisticsCenter\data\route-ledger.sqlite.
 CSV mail-out is configured via microsoft-graph for artwork3@giftwrap.co.za -> admin3@giftwrap.co.za, promo10@giftwrap.co.za.
-Route Ledger network URL: http://192.168.10.117:4173
-Route Ledger network URL: http://172.16.0.1:4173
+Route Ledger network URL: http://192.168.10.107:4173
