@@ -4122,6 +4122,10 @@ tr:last-child td {
     gap: 1rem;
   }
 
+  .screen-grid-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .content {
     gap: 1rem;
   }
