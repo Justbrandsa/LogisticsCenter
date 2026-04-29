@@ -42,6 +42,12 @@ const ORDER_PRIORITY_LEVELS = Object.freeze({
   medium: 1,
   low: 2,
 });
+const DEFAULT_ORDER_ROUTE_TIMING = "normal";
+const LATER_ORDER_ROUTE_TIMING = "later";
+const ORDER_ROUTE_TIMING_LEVELS = Object.freeze({
+  normal: 0,
+  later: 1,
+});
 const AUTO_REFRESH_INTERVAL_MS = 60000;
 const PAGE_SIZES = {
   globalEntries: 12,
@@ -2233,6 +2239,7 @@ async function createOrder(formData, currentUser) {
   const entryType = String(formData.get("entryType") || "delivery").trim();
   const scheduledFor = String(formData.get("scheduledFor") || getDefaultScheduledDateValue()).trim();
   const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
+  const routeTiming = formData.get("routeTimingLater") === "on" ? LATER_ORDER_ROUTE_TIMING : DEFAULT_ORDER_ROUTE_TIMING;
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
   const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
@@ -2311,6 +2318,7 @@ async function createOrder(formData, currentUser) {
       p_delivery_location_name: entryType === "delivery" && !deliveryLocationId ? deliveryLocationName : null,
       p_scheduled_for: scheduledFor,
       p_priority: priority,
+      p_route_timing: routeTiming,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
       p_factory_destination_location_id: moveToFactory ? factoryDestinationLocationId : null,
@@ -2334,6 +2342,7 @@ async function updateOrder(formData, currentUser) {
   const entryType = String(formData.get("entryType") || "delivery").trim();
   const scheduledFor = String(formData.get("scheduledFor") || getDefaultScheduledDateValue()).trim();
   const priority = formData.get("priority") === "on" ? PRIORITY_STOP_VALUE : DEFAULT_ORDER_PRIORITY;
+  const routeTiming = formData.get("routeTimingLater") === "on" ? LATER_ORDER_ROUTE_TIMING : DEFAULT_ORDER_ROUTE_TIMING;
   const quoteNumber = String(formData.get("quoteNumber") || "").trim();
   const salesOrderNumber = String(formData.get("salesOrderNumber") || "").trim();
   const invoiceNumber = String(formData.get("invoiceNumber") || "").trim();
@@ -2417,6 +2426,7 @@ async function updateOrder(formData, currentUser) {
       p_delivery_location_name: entryType === "delivery" && !deliveryLocationId ? deliveryLocationName : null,
       p_scheduled_for: scheduledFor,
       p_priority: priority,
+      p_route_timing: routeTiming,
       p_allow_duplicate: currentUser.role === "admin" ? allowDuplicate : false,
       p_notice: notice,
       p_move_to_factory: moveToFactory,
@@ -6326,6 +6336,7 @@ function renderDriverPageContent() {
     <section class="metrics">
       ${renderMetric("Active stops", plan.stops.length)}
       ${renderMetric("Priority stops", plan.priorityStopCount)}
+      ${renderMetric("Later stops", plan.laterStopCount)}
       ${renderMetric("Pending drop-offs", plan.dropOffCount)}
       ${renderMetric("Estimated km", plan.totalKm.toFixed(1))}
       ${renderMetric("Completed entries", completedOrders.length)}
@@ -6677,6 +6688,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
   const factoryDestinationLocationId = String(editingOrder?.factoryDestinationLocationId || "").trim();
   const notice = String(editingOrder?.notes || "").trim();
   const isPriority = getOrderPriority(editingOrder) === PRIORITY_STOP_VALUE;
+  const isLaterRouteStop = getOrderRouteTiming(editingOrder) === LATER_ORDER_ROUTE_TIMING;
 
   return `
     <form data-form="${formId}">
@@ -6758,6 +6770,13 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
         <input type="checkbox" name="priority"${isPriority ? " checked" : ""}>
         Mark this as a priority stop
       </label>
+      <label class="inline-check">
+        <input type="checkbox" name="routeTimingLater"${isLaterRouteStop ? " checked" : ""}>
+        Keep this stop for later in the route
+      </label>
+      <p class="field-note">
+        Later stops stay on the same driver list, but the route planner places them after normal stops even when they are closer.
+      </p>
       <div class="form-grid">
         <label>
           Inhouse order number
@@ -7037,6 +7056,7 @@ function getGlobalLocationGroups(sortedOrders = [...state.snapshot.orders].sort(
         activeCount: 0,
         completedCount: 0,
         priorityCount: 0,
+        laterCount: 0,
       });
     }
 
@@ -7050,6 +7070,9 @@ function getGlobalLocationGroups(sortedOrders = [...state.snapshot.orders].sort(
     }
     if (isPriorityOrder(order)) {
       group.priorityCount += 1;
+    }
+    if (isLaterRouteOrder(order)) {
+      group.laterCount += 1;
     }
   });
 
@@ -7100,6 +7123,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
           ${group.activeCount ? `<span class="chip chip-success">${group.activeCount} active</span>` : ""}
           ${group.completedCount ? `<span class="chip">${group.completedCount} completed</span>` : ""}
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+          ${group.laterCount ? `<span class="chip chip-route-later">${group.laterCount} later</span>` : ""}
         </div>
       </div>
       <div class="action-row stop-actions">
@@ -7161,6 +7185,7 @@ function renderGlobalOrderCard(order, viewerRole) {
           ${renderTypeChip(order.entryType)}
           ${renderOrderScheduledChip(order)}
           ${renderOrderPriorityChip(order)}
+          ${renderOrderRouteTimingChip(order)}
           ${renderOrderPickupChip(order)}
           ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
           ${renderOrderFlagChip(order)}
@@ -7232,6 +7257,10 @@ function renderDriverListOverview(viewerRole) {
         }
               ${plan.priorityStopCount
           ? `<span class="chip chip-priority-high">${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? "" : "s"}</span>`
+          : ""
+        }
+              ${plan.laterStopCount
+          ? `<span class="chip chip-route-later">${plan.laterStopCount} later stop${plan.laterStopCount === 1 ? "" : "s"}</span>`
           : ""
         }
               ${duplicateCount
@@ -7372,6 +7401,7 @@ function renderGlobalOrderRow(order, viewerRole) {
         <div class="chip-row">
           ${renderTypeChip(order.entryType)}
           ${renderOrderPriorityChip(order)}
+          ${renderOrderRouteTimingChip(order)}
           ${renderOrderPickupChip(order)}
         </div>
       </td>
@@ -7430,6 +7460,7 @@ function renderAssignmentLocationGroup(group, viewerRole) {
           ${group.unassignedCount ? `<span class="chip chip-warning">${group.unassignedCount} unassigned</span>` : ""}
           ${group.assignedCount ? `<span class="chip chip-success">${group.assignedCount} assigned</span>` : ""}
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+          ${group.laterCount ? `<span class="chip chip-route-later">${group.laterCount} later</span>` : ""}
         </div>
       </div>
       <div class="action-row stop-actions assignment-location-actions">
@@ -8039,6 +8070,7 @@ function renderDriverOrderCard(order, viewerRole, options = {}) {
         ${renderTypeChip(order.entryType)}
         ${renderOrderScheduledChip(order)}
         ${renderOrderPriorityChip(order)}
+        ${renderOrderRouteTimingChip(order)}
         ${renderOrderPickupChip(order)}
         ${order.moveToFactory ? '<span class="chip chip-warning">Factory move</span>' : ""}
         ${renderOrderFlagChip(order)}
@@ -8233,7 +8265,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
     : "Coordinates pending";
 
   return `
-    <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
+    <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}${stop.isLaterRouteStop ? " stop-card-later" : ""}${isOpen ? " is-open" : " is-collapsed"}">
       <div class="stop-header">
         <div>
           <p class="eyebrow">Stop ${index + 1}</p>
@@ -8242,6 +8274,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
         </div>
         <div class="chip-row">
           ${stop.isPriority ? '<span class="chip chip-priority-high">Priority stop</span>' : ""}
+          ${stop.isLaterRouteStop ? '<span class="chip chip-route-later">Later stop</span>' : ""}
           <span class="chip">${legLabel}</span>
           <span class="chip">${stop.orders.length} order${stop.orders.length === 1 ? "" : "s"}</span>
         </div>
@@ -8333,9 +8366,23 @@ function getOrderPriorityRank(order) {
   return ORDER_PRIORITY_LEVELS[getOrderPriority(order)] ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY];
 }
 
+function getOrderRouteTiming(order) {
+  const routeTiming = String(order?.routeTiming || DEFAULT_ORDER_ROUTE_TIMING).trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(ORDER_ROUTE_TIMING_LEVELS, routeTiming) ? routeTiming : DEFAULT_ORDER_ROUTE_TIMING;
+}
+
+function getOrderRouteTimingRank(order) {
+  return ORDER_ROUTE_TIMING_LEVELS[getOrderRouteTiming(order)] ?? ORDER_ROUTE_TIMING_LEVELS[DEFAULT_ORDER_ROUTE_TIMING];
+}
+
 function isPriorityOrder(order) {
   return String(order?.status || "").trim().toLowerCase() === "active"
     && getOrderPriority(order) === PRIORITY_STOP_VALUE;
+}
+
+function isLaterRouteOrder(order) {
+  return String(order?.status || "").trim().toLowerCase() === "active"
+    && getOrderRouteTiming(order) === LATER_ORDER_ROUTE_TIMING;
 }
 
 function hasCarryOver(order) {
@@ -8352,6 +8399,10 @@ function getActiveCarryOverOrders() {
 
 function renderOrderPriorityChip(order) {
   return isPriorityOrder(order) ? '<span class="chip chip-priority-high">Priority stop</span>' : "";
+}
+
+function renderOrderRouteTimingChip(order) {
+  return isLaterRouteOrder(order) ? '<span class="chip chip-route-later">Later stop</span>' : "";
 }
 
 function isOrderPickedUp(order) {
@@ -8929,6 +8980,7 @@ function getFilteredAssignmentLocationGroups(orders = getFilteredAssignmentOrder
         unassignedCount: 0,
         assignedCount: 0,
         priorityCount: 0,
+        laterCount: 0,
         driverCounts: new Map(),
       });
     }
@@ -8945,6 +8997,9 @@ function getFilteredAssignmentLocationGroups(orders = getFilteredAssignmentOrder
 
     if (isPriorityOrder(order)) {
       group.priorityCount += 1;
+    }
+    if (isLaterRouteOrder(order)) {
+      group.laterCount += 1;
     }
   });
 
@@ -9318,22 +9373,30 @@ function getRoutePlan(driverUserId, options = {}) {
     }
 
     const coordinates = getCoordinates(location);
+    const routeTiming = getOrderRouteTiming(order);
+    const stopGroupKey = `${location.id}:${routeTiming}`;
 
-    if (!grouped.has(location.id)) {
-      grouped.set(location.id, {
-        id: location.id,
+    if (!grouped.has(stopGroupKey)) {
+      grouped.set(stopGroupKey, {
+        id: stopGroupKey,
+        locationId: location.id,
         location,
         orders: [],
         lat: coordinates?.lat ?? null,
         lng: coordinates?.lng ?? null,
         hasCoordinates: Boolean(coordinates),
+        routeTiming,
+        routeTimingRank: getOrderRouteTimingRank(order),
+        isLaterRouteStop: routeTiming === LATER_ORDER_ROUTE_TIMING,
         priorityRank: getOrderPriorityRank(order),
         isPriority: isPriorityOrder(order),
       });
     }
 
-    const stop = grouped.get(location.id);
+    const stop = grouped.get(stopGroupKey);
     stop.orders.push(order);
+    stop.routeTimingRank = Math.max(stop.routeTimingRank, getOrderRouteTimingRank(order));
+    stop.isLaterRouteStop = stop.isLaterRouteStop || isLaterRouteOrder(order);
     stop.priorityRank = Math.min(stop.priorityRank, getOrderPriorityRank(order));
     stop.isPriority = stop.isPriority || isPriorityOrder(order);
   });
@@ -9342,14 +9405,21 @@ function getRoutePlan(driverUserId, options = {}) {
     ...stop,
     orders: [...stop.orders].sort(orderRouteSort),
   }));
-  const priorityRouteableStops = stops.filter((stop) => stop.hasCoordinates && stop.isPriority);
-  const standardRouteableStops = stops.filter((stop) => stop.hasCoordinates && !stop.isPriority);
-  const priorityOrderedStops = optimizeRoute(priorityRouteableStops, routeOrigin);
-  const standardRouteStart = priorityOrderedStops.length
-    ? priorityOrderedStops[priorityOrderedStops.length - 1]
-    : routeOrigin;
-  const standardOrderedStops = optimizeRoute(standardRouteableStops, standardRouteStart);
-  const routeableStops = priorityOrderedStops.concat(standardOrderedStops);
+  const routeableStopBuckets = [
+    stops.filter((stop) => stop.hasCoordinates && !stop.isLaterRouteStop && stop.isPriority),
+    stops.filter((stop) => stop.hasCoordinates && !stop.isLaterRouteStop && !stop.isPriority),
+    stops.filter((stop) => stop.hasCoordinates && stop.isLaterRouteStop && stop.isPriority),
+    stops.filter((stop) => stop.hasCoordinates && stop.isLaterRouteStop && !stop.isPriority),
+  ];
+  const routeableStops = [];
+  let routeStart = routeOrigin;
+  routeableStopBuckets.forEach((bucket) => {
+    const orderedBucket = optimizeRoute(bucket, routeStart);
+    routeableStops.push(...orderedBucket);
+    if (orderedBucket.length) {
+      routeStart = orderedBucket[orderedBucket.length - 1];
+    }
+  });
   const unroutedStops = stops
     .filter((stop) => !stop.hasCoordinates)
     .sort(stopDisplaySort);
@@ -9377,6 +9447,7 @@ function getRoutePlan(driverUserId, options = {}) {
     dropOffCount: dropOffOrders.length,
     totalKm: totalRouteDistance(routeableStops, routeOrigin),
     priorityStopCount: stops.filter((stop) => stop.isPriority).length,
+    laterStopCount: stops.filter((stop) => stop.isLaterRouteStop).length,
     stops: enrichedStops,
     dropOffGroups: buildDropOffGroups(dropOffOrders),
   };
@@ -9828,10 +9899,14 @@ function getDriverRouteStatus(plan, routeableStops) {
   const priorityMessage = plan.priorityStopCount
     ? `${plan.priorityStopCount} priority stop${plan.priorityStopCount === 1 ? " is" : "s are"} highlighted first when coordinates are available.`
     : "";
+  const laterMessage = plan.laterStopCount
+    ? `${plan.laterStopCount} later stop${plan.laterStopCount === 1 ? " is" : "s are"} routed after normal stops.`
+    : "";
   if (!plan.stops.length) {
     return [
       originMessage,
       priorityMessage,
+      laterMessage,
       plan.dropOffCount
         ? `${plan.dropOffCount} picked-up entr${plan.dropOffCount === 1 ? "y is" : "ies are"} waiting in the drop-off queue below.`
         : "No active entries are assigned to you right now.",
@@ -9840,13 +9915,14 @@ function getDriverRouteStatus(plan, routeableStops) {
 
   const missingCoordinatesCount = plan.stops.length - routeableStops.length;
   if (!routeableStops.length) {
-    return [originMessage, priorityMessage, "These stops still need coordinates before they can appear on the live map."].filter(Boolean).join(" ");
+    return [originMessage, priorityMessage, laterMessage, "These stops still need coordinates before they can appear on the live map."].filter(Boolean).join(" ");
   }
 
   if (missingCoordinatesCount) {
     return [
       originMessage,
       priorityMessage,
+      laterMessage,
       `${missingCoordinatesCount} stop${missingCoordinatesCount === 1 ? "" : "s"} without coordinates ${missingCoordinatesCount === 1 ? "is" : "are"} excluded from the mapped route.`,
     ].filter(Boolean).join(" ");
   }
@@ -9854,6 +9930,7 @@ function getDriverRouteStatus(plan, routeableStops) {
   return [
     originMessage,
     priorityMessage,
+    laterMessage,
     `Numbered markers follow the optimized stop order from the ${plan.origin?.source === "driver" ? "driver location" : "dispatch hub"}.`,
   ].filter(Boolean).join(" ");
 }
@@ -9908,6 +9985,7 @@ function buildDriverRouteStopPopup(stop, index) {
       <p>${escapeHtml(stop.location.address || "Address not set")}</p>
       <p>${escapeHtml(entryLabel)}</p>
       ${references ? `<p class="muted">Refs: ${escapeHtml(references)}${escapeHtml(extraReferences)}</p>` : ""}
+      ${stop.isLaterRouteStop ? '<p class="muted">Later in route</p>' : ""}
       <p class="muted">${escapeHtml(legLabel)}</p>
     </div>
   `;
@@ -9947,6 +10025,12 @@ function orderAssignmentSort(left, right) {
 }
 
 function stopDisplaySort(left, right) {
+  const timingCompare = (left.routeTimingRank ?? ORDER_ROUTE_TIMING_LEVELS[DEFAULT_ORDER_ROUTE_TIMING])
+    - (right.routeTimingRank ?? ORDER_ROUTE_TIMING_LEVELS[DEFAULT_ORDER_ROUTE_TIMING]);
+  if (timingCompare) {
+    return timingCompare;
+  }
+
   const priorityCompare = (left.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY])
     - (right.priorityRank ?? ORDER_PRIORITY_LEVELS[DEFAULT_ORDER_PRIORITY]);
   if (priorityCompare) {
@@ -10128,6 +10212,10 @@ function getOrderCsvScheduleSummary(order) {
   return scheduledFor;
 }
 
+function getOrderRouteTimingLabel(order) {
+  return getOrderRouteTiming(order) === LATER_ORDER_ROUTE_TIMING ? "Later in route" : "Normal route";
+}
+
 function buildOrderCsvRow(order) {
   return [
     getOrderQuoteNumber(order),
@@ -10139,6 +10227,7 @@ function buildOrderCsvRow(order) {
     order.deliveryAddress || "",
     capitalize(order.entryType || ""),
     capitalize(getOrderPriority(order)),
+    getOrderRouteTimingLabel(order),
     getOrderCsvReferenceSummary(order),
     order.stockDescription || "",
     order.branding || "",
@@ -10168,6 +10257,7 @@ function buildOrdersCsvContent(orders) {
       "Delivery address",
       "Entry type",
       "Priority",
+      "Route timing",
       "Other references",
       "Stock required",
       "Branding",

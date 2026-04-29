@@ -930,6 +930,11 @@ button:disabled,
   color: var(--warning);
 }
 
+.chip-route-later {
+  background: rgba(110, 145, 255, 0.14);
+  color: #c4d2ff;
+}
+
 .content {
   background: transparent;
   box-shadow: none;
@@ -4057,12 +4062,27 @@ textarea:focus,
   color: var(--warning);
 }
 
+.chip-route-later {
+  background: color-mix(in srgb, #6e91ff 14%, transparent);
+  color: #9db4ff;
+}
+
+:root[data-theme="light"] .chip-route-later {
+  background: color-mix(in srgb, #4263c7 13%, transparent);
+  color: #3752a8;
+}
+
 .stop-card-priority,
 .order-card-priority,
 :root[data-theme="light"] .stop-card-priority,
 :root[data-theme="light"] .order-card-priority {
   border-color: color-mix(in srgb, var(--danger) 34%, var(--line)) !important;
   background: color-mix(in srgb, var(--danger) 8%, var(--surface-card)) !important;
+}
+
+.stop-card-later,
+:root[data-theme="light"] .stop-card-later {
+  border-color: color-mix(in srgb, #6e91ff 34%, var(--line)) !important;
 }
 
 table {

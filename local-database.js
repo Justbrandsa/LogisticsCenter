@@ -32,6 +32,7 @@ const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const USER_ROLES = new Set(["admin", "sales", "driver", "logistics", "maintenance"]);
 const LOCATION_TYPES = new Set(["supplier", "factory", "both", "client"]);
 const ORDER_PRIORITIES = new Set(["high", "medium", "low"]);
+const ORDER_ROUTE_TIMINGS = new Set(["normal", "later"]);
 const ORDER_STATUSES = new Set(["active", "completed"]);
 const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
 const ORDER_FLAG_TYPES = new Set(["not_collected", "not_ready"]);
@@ -805,6 +806,7 @@ class LocalDatabase {
           po_number as poNumber,
           entry_type as entryType,
           priority,
+          route_timing as routeTiming,
           delivery_address as deliveryAddress,
           delivery_location_id as deliveryLocationId,
           delivery_location_name as deliveryLocationName,
@@ -1228,6 +1230,7 @@ class LocalDatabase {
               delivery_address,
               delivery_location_id,
               priority,
+              route_timing,
               notes,
               driver_flag_type,
               driver_flag_note,
@@ -1250,7 +1253,7 @@ class LocalDatabase {
               branding,
               stock_description
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             requireImportedText(row.id, "Imported order id is required."),
@@ -1266,6 +1269,7 @@ class LocalDatabase {
             importedText(row.delivery_address),
             importedNullableText(row.delivery_location_id),
             importedText(row.priority) || "medium",
+            importedRouteTiming(row.route_timing ?? row.routeTiming),
             importedText(row.notes),
             importedNullableText(row.driver_flag_type),
             importedText(row.driver_flag_note),
@@ -1305,6 +1309,7 @@ class LocalDatabase {
               po_number,
               entry_type,
               priority,
+              route_timing,
               delivery_address,
               delivery_location_id,
               delivery_location_name,
@@ -1336,7 +1341,7 @@ class LocalDatabase {
               last_notification_error,
               notification_sent_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             requireImportedText(row.id, "Imported delete-log id is required."),
@@ -1349,6 +1354,7 @@ class LocalDatabase {
             importedText(row.po_number),
             importedText(row.entry_type) || "delivery",
             importedText(row.priority) || "medium",
+            importedRouteTiming(row.route_timing ?? row.routeTiming),
             importedText(row.delivery_address),
             importedNullableText(row.delivery_location_id),
             importedText(row.delivery_location_name),
@@ -1598,6 +1604,7 @@ class LocalDatabase {
         delivery_address text not null default '',
         delivery_location_id text references locations(id) on delete restrict,
         priority text not null default 'medium',
+        route_timing text not null default 'normal',
         notes text not null default '',
         driver_flag_type text,
         driver_flag_note text not null default '',
@@ -1621,6 +1628,7 @@ class LocalDatabase {
         stock_description text not null default '',
         check (entry_type in ('collection', 'delivery')),
         check (priority in ('high', 'medium', 'low')),
+        check (route_timing in ('normal', 'later')),
         check (status in ('active', 'completed')),
         check (driver_flag_type in ('not_collected', 'not_ready') or driver_flag_type is null),
         check (completion_type in ('office', 'factory') or completion_type is null),
@@ -1648,6 +1656,7 @@ class LocalDatabase {
         po_number text not null default '',
         entry_type text not null default 'delivery',
         priority text not null default 'medium',
+        route_timing text not null default 'normal',
         delivery_address text not null default '',
         delivery_location_id text,
         delivery_location_name text not null default '',
@@ -1771,6 +1780,7 @@ class LocalDatabase {
   ensureSchemaMigrations() {
     this.ensureAppUsersRoleSchema();
     this.ensureReusableDeliveryLocationSchema();
+    this.ensureOrderRouteTimingSchema();
   }
 
   getTableSql(tableName) {
@@ -1822,6 +1832,16 @@ class LocalDatabase {
     }
     if (!this.hasTableColumn("order_delete_log", "delivery_location_address")) {
       this.db.exec("alter table order_delete_log add column delivery_location_address text not null default '';");
+    }
+  }
+
+  ensureOrderRouteTimingSchema() {
+    if (!this.hasTableColumn("orders", "route_timing")) {
+      this.db.exec("alter table orders add column route_timing text not null default 'normal';");
+    }
+
+    if (!this.hasTableColumn("order_delete_log", "route_timing")) {
+      this.db.exec("alter table order_delete_log add column route_timing text not null default 'normal';");
     }
   }
 
@@ -2973,6 +2993,7 @@ class LocalDatabase {
       const deliveryLocationName = normalizeOptionalText(parameters?.p_delivery_location_name);
       const scheduledFor = normalizeOptionalDate(parameters?.p_scheduled_for) || todayLocal();
       const priority = normalizePriority(parameters?.p_priority);
+      const routeTiming = normalizeRouteTiming(parameters?.p_route_timing);
       const allowDuplicate = actor.role === "admin" && Boolean(parameters?.p_allow_duplicate);
       const notice = normalizeOptionalText(parameters?.p_notice);
       const moveToFactory = Boolean(parameters?.p_move_to_factory);
@@ -2984,6 +3005,9 @@ class LocalDatabase {
       }
       if (!ORDER_PRIORITIES.has(priority)) {
         throw createHttpError(400, "Choose a valid priority.");
+      }
+      if (!ORDER_ROUTE_TIMINGS.has(routeTiming)) {
+        throw createHttpError(400, "Choose a valid route timing.");
       }
       if (compareDateOnly(scheduledFor, todayLocal()) < 0) {
         throw createHttpError(400, "Schedule date cannot be in the past.");
@@ -3066,6 +3090,7 @@ class LocalDatabase {
             delivery_address,
             delivery_location_id,
             priority,
+            route_timing,
             notes,
             move_to_factory,
             factory_destination_location_id,
@@ -3086,7 +3111,7 @@ class LocalDatabase {
             picked_up_at,
             picked_up_by_user_id
           )
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, null, null, null, null, '', null, null, null, null)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?, ?, ?, null, null, null, null, '', null, null, null, null)
         `,
         [
           orderId,
@@ -3104,6 +3129,7 @@ class LocalDatabase {
           finalDeliveryAddress,
           deliveryLocationId,
           priority,
+          routeTiming,
           notice,
           moveToFactory ? 1 : 0,
           moveToFactory ? factoryDestinationLocationId : null,
@@ -3184,6 +3210,7 @@ class LocalDatabase {
       const deliveryLocationName = normalizeOptionalText(parameters?.p_delivery_location_name);
       const scheduledFor = normalizeOptionalDate(parameters?.p_scheduled_for) || existing.scheduled_for || todayLocal();
       const priority = normalizePriority(parameters?.p_priority);
+      const routeTiming = normalizeRouteTiming(parameters?.p_route_timing ?? existing.route_timing);
       const allowDuplicate = actor.role === "admin" && Boolean(parameters?.p_allow_duplicate);
       const notice = normalizeOptionalText(parameters?.p_notice);
       const moveToFactory = Boolean(parameters?.p_move_to_factory);
@@ -3197,6 +3224,9 @@ class LocalDatabase {
       }
       if (!ORDER_PRIORITIES.has(priority)) {
         throw createHttpError(400, "Choose a valid priority.");
+      }
+      if (!ORDER_ROUTE_TIMINGS.has(routeTiming)) {
+        throw createHttpError(400, "Choose a valid route timing.");
       }
 
       let driver = null;
@@ -3284,6 +3314,7 @@ class LocalDatabase {
               delivery_address = ?,
               delivery_location_id = ?,
               priority = ?,
+              route_timing = ?,
               notes = ?,
               move_to_factory = ?,
               factory_destination_location_id = ?,
@@ -3307,6 +3338,7 @@ class LocalDatabase {
           finalDeliveryAddress,
           deliveryLocationId,
           nextPriority,
+          routeTiming,
           notice,
           moveToFactory ? 1 : 0,
           moveToFactory ? factoryDestinationLocationId : null,
@@ -3578,6 +3610,7 @@ class LocalDatabase {
             po_number,
             entry_type,
             priority,
+            route_timing,
             delivery_address,
             delivery_location_id,
             delivery_location_name,
@@ -3609,7 +3642,7 @@ class LocalDatabase {
             last_notification_error,
             notification_sent_at
           )
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', null)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', null)
         `,
         [
           randomId(),
@@ -3622,6 +3655,7 @@ class LocalDatabase {
           order.poNumber,
           order.entryType,
           order.priority,
+          order.routeTiming,
           order.deliveryAddress,
           order.deliveryLocationId,
           order.deliveryLocationName,
@@ -3855,6 +3889,7 @@ class LocalDatabase {
           l.contact_person as locationContactPerson,
           l.contact_number as locationContactNumber,
           o.priority,
+          o.route_timing as routeTiming,
           o.notes,
           o.driver_flag_type as driverFlagType,
           o.driver_flag_note as driverFlagNote,
@@ -3979,6 +4014,7 @@ class LocalDatabase {
       locationContactPerson: row.locationContactPerson || "",
       locationContactNumber: row.locationContactNumber || "",
       priority: row.priority || "medium",
+      routeTiming: row.routeTiming || "normal",
       notes: row.notes || "",
       driverFlagType: row.driverFlagType || "",
       driverFlagNote: row.driverFlagNote || "",
@@ -4015,6 +4051,7 @@ class LocalDatabase {
       poNumber: row.poNumber || "",
       entryType: row.entryType || "delivery",
       priority: row.priority || "medium",
+      routeTiming: row.routeTiming || "normal",
       deliveryAddress: row.deliveryAddress || "",
       deliveryLocationId: row.deliveryLocationId || "",
       deliveryLocationName: row.deliveryLocationName || "",
@@ -4664,6 +4701,15 @@ function normalizeEntryType(value) {
 
 function normalizePriority(value) {
   return normalizeOptionalText(value).toLowerCase() || "medium";
+}
+
+function normalizeRouteTiming(value) {
+  return normalizeOptionalText(value).toLowerCase() || "normal";
+}
+
+function importedRouteTiming(value) {
+  const normalized = normalizeRouteTiming(value);
+  return ORDER_ROUTE_TIMINGS.has(normalized) ? normalized : "normal";
 }
 
 function normalizeCompletionType(value) {

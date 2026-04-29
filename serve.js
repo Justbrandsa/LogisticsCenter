@@ -119,6 +119,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_delivery_location_name",
       "p_scheduled_for",
       "p_priority",
+      "p_route_timing",
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
@@ -144,6 +145,7 @@ const RPC_DEFINITIONS = Object.freeze({
       "p_delivery_location_name",
       "p_scheduled_for",
       "p_priority",
+      "p_route_timing",
       "p_allow_duplicate",
       "p_notice",
       "p_move_to_factory",
@@ -2072,6 +2074,15 @@ function getOrderPriority(order) {
   return ["high", "medium", "low"].includes(priority) ? priority : "medium";
 }
 
+function getOrderRouteTiming(order) {
+  const routeTiming = String(order?.routeTiming || "normal").trim().toLowerCase();
+  return routeTiming === "later" ? "later" : "normal";
+}
+
+function getOrderRouteTimingLabel(order) {
+  return getOrderRouteTiming(order) === "later" ? "Later in route" : "Normal route";
+}
+
 function getOrderDriverIssue(order) {
   const label = getOrderFlagLabel(order);
   const note = String(order?.driverFlagNote || "").trim();
@@ -2240,6 +2251,7 @@ function buildOrderCsvRow(order) {
     order.deliveryAddress || "",
     getOrderEntryTypeLabel(order.entryType),
     capitalize(getOrderPriority(order)),
+    getOrderRouteTimingLabel(order),
     getOrderOtherReferenceLines(order).join(" | "),
     order.stockDescription || "",
     order.branding || "",
@@ -2269,6 +2281,7 @@ function buildOrdersCsv(orders) {
       "Delivery address",
       "Entry type",
       "Priority",
+      "Route timing",
       "Other references",
       "Stock required",
       "Branding",

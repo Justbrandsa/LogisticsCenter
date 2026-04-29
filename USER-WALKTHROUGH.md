@@ -159,13 +159,14 @@ To create a new entry:
 5. Choose a saved delivery location or add a one-off delivery address if it is a delivery.
 6. Tick `Save this delivery address as a reusable client location` when the destination should be available for future deliveries.
 7. Tick `Mark this as a priority stop` if needed.
-8. Enter the inhouse order number.
-9. Add any sales order number, invoice number, or PO number if available.
-10. Enter the stock description.
-11. Add optional branding or notice text.
-12. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
-13. If needed, tick `Admin override for duplicate or return stop`.
-14. Select `Create entry`.
+8. Tick `Keep this stop for later in the route` when the driver must visit it after normal stops, even if it is geographically closer.
+9. Enter the inhouse order number.
+10. Add any sales order number, invoice number, or PO number if available.
+11. Enter the stock description.
+12. Add optional branding or notice text.
+13. For collections, enable `Move collected stock to a factory` if required and select the destination factory.
+14. If needed, tick `Admin override for duplicate or return stop`.
+15. Select `Create entry`.
 
 Important notes:
 
@@ -294,6 +295,8 @@ Sales cannot change stock records.
 Use `Driver Lists` to review the live queues per driver and confirm what is currently on each route.
 
 Each entry now shows its scheduled date so future work can be assigned ahead of time without losing track of which day it belongs to.
+
+Entries marked as later stops stay on the live list for the day, but the route planner puts them after normal stops before optimizing that later section.
 
 ## Logistics Walkthrough
 
