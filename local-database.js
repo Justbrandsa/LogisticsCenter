@@ -52,6 +52,9 @@ const STOCK_MOVEMENT_TYPES = new Set(["in", "out"]);
 const INHOUSE_ORDER_PREFIXES = Object.freeze([
   "SS",
   "SB",
+  "SAMAR",
+  "SASB",
+  "SASS",
   "MAR",
   "MOR",
   "ORDER",

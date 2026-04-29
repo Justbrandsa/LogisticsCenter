@@ -1,7 +1,7 @@
 const SESSION_KEY = "route-ledger-session-token-v2";
 const SNAPSHOT_REFRESH_LOG_KEY = "route-ledger-last-refresh-v1";
 const THEME_KEY = "route-ledger-theme-v1";
-const FLASH_TIMEOUT_MS = 3200;
+const FLASH_TIMEOUT_MS = 6500;
 const TIME_ZONE = "Africa/Johannesburg";
 const API_ROOT = "/api";
 const APP_NAME = "Logictics Centre";
@@ -15,6 +15,9 @@ const STOCK_RECENT_ACTIVITY_HOURS = 24;
 const INHOUSE_ORDER_PREFIXES = Object.freeze([
   "SS",
   "SB",
+  "SAMAR",
+  "SASB",
+  "SASS",
   "MAR",
   "MOR",
   "ORDER",
@@ -1228,6 +1231,11 @@ async function handleClick(event) {
 
   const action = button.dataset.action;
   const currentUser = state.snapshot.user;
+
+  if (action === "dismiss-flash") {
+    clearFlash();
+    return;
+  }
 
   if (action === "logout") {
     await logout();
@@ -7618,7 +7626,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
       <div class="form-grid">
         <label>
           Inhouse order number
-          <input name="quoteNumber" type="text" value="${escapeHtml(quoteNumber)}" placeholder="SS, SB, MAR, MOR, Order, SO, PSS, PSB, PMAR, PMOR, BAR" required>
+          <input name="quoteNumber" type="text" value="${escapeHtml(quoteNumber)}" placeholder="SS, SB, SAMAR, SASB, SASS, MAR, MOR, Order, SO, PSS, PSB, PMAR, PMOR, BAR" required>
         </label>
         <label>
           Sales order number
@@ -7947,7 +7955,6 @@ function renderGlobalLocationGroup(group, viewerRole) {
   const navigationUrl = getGoogleMapsNavigateUrl(locationRecord);
   const stopCardKey = buildGlobalLocationGroupKey(group.key);
   const isOpen = isStopCardOpen(stopCardKey);
-  const noticeCount = group.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card global-location-group${isOpen ? " is-open" : " is-collapsed"}">
@@ -7963,7 +7970,6 @@ function renderGlobalLocationGroup(group, viewerRole) {
           ${group.completedCount ? `<span class="chip">${group.completedCount} completed</span>` : ""}
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
           ${group.laterCount ? `<span class="chip chip-route-later">${group.laterCount} later</span>` : ""}
-          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
         </div>
       </div>
       <div class="action-row stop-actions">
@@ -8006,12 +8012,11 @@ function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
   const canEdit = viewerRole === "admin" || (viewerRole === "sales" && order.status === "active");
   const isPriority = isPriorityOrder(order);
-  const hasNotice = getOrderNoticeLines(order).length > 0;
   const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
 
   return `
-    <div class="order-card${isPriority ? " order-card-priority" : ""}${hasNotice ? " order-card-has-notice" : ""}">
+    <div class="order-card${isPriority ? " order-card-priority" : ""}">
       <div class="stop-header">
         <div>
           <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
@@ -8037,8 +8042,8 @@ function renderGlobalOrderCard(order, viewerRole) {
           ${renderStatusChip(order.status)}
         </div>
       </div>
-      ${renderOrderNotice(order)}
       ${renderOrderStockDetails(order)}
+      ${renderOrderNotice(order)}
       <p class="order-card-meta-note">
         ${escapeHtml(`Created by ${order.createdByName || "Unknown"}${createdAt ? ` on ${createdAt}` : ""}`)}
       </p>
@@ -8901,15 +8906,13 @@ function renderDriverOrderCard(order, viewerRole, options = {}) {
   const locationAddress = Object.prototype.hasOwnProperty.call(options, "locationAddress")
     ? String(options.locationAddress || "").trim()
     : String(order.locationAddress || "").trim();
-  const hasNotice = getOrderNoticeLines(order).length > 0;
 
   return `
-    <div class="order-card${isPriority ? " order-card-priority" : ""}${hasNotice ? " order-card-has-notice" : ""}">
+    <div class="order-card${isPriority ? " order-card-priority" : ""}">
       <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
       <div class="order-meta">
         ${getOrderListReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
       </div>
-      ${renderOrderNotice(order)}
       ${renderOrderStockDetails(order)}
       <div class="chip-row">
         ${renderTypeChip(order.entryType)}
@@ -8922,6 +8925,7 @@ function renderDriverOrderCard(order, viewerRole, options = {}) {
         <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
         ${renderStatusChip(order.status)}
       </div>
+      ${renderOrderNotice(order)}
       ${renderOrderStopSummary(locationLabel, locationName, locationAddress)}
       ${showActions
     ? `
@@ -9043,7 +9047,6 @@ function renderDropOffCard(group, index, viewerRole, driverUserId = "") {
   const isOpen = isStopCardOpen(stopCardKey);
   const locationName = String(group.location?.name || "").trim();
   const locationAddress = String(group.location?.address || "").trim();
-  const noticeCount = group.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card${group.priorityCount ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
@@ -9055,7 +9058,6 @@ function renderDropOffCard(group, index, viewerRole, driverUserId = "") {
         </div>
         <div class="chip-row">
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
-          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
           <span class="chip">${group.orders.length} order${group.orders.length === 1 ? "" : "s"}</span>
         </div>
       </div>
@@ -9109,7 +9111,6 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
   const legLabel = stop.hasCoordinates && stop.legKm !== null
     ? `${stop.legKm.toFixed(1)} km leg`
     : "Coordinates pending";
-  const noticeCount = stop.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}${stop.isLaterRouteStop ? " stop-card-later" : ""}${isOpen ? " is-open" : " is-collapsed"}">
@@ -9122,7 +9123,6 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
         <div class="chip-row">
           ${stop.isPriority ? '<span class="chip chip-priority-high">Priority stop</span>' : ""}
           ${stop.isLaterRouteStop ? '<span class="chip chip-route-later">Later stop</span>' : ""}
-          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
           <span class="chip">${legLabel}</span>
           <span class="chip">${stop.orders.length} order${stop.orders.length === 1 ? "" : "s"}</span>
         </div>
@@ -9428,7 +9428,19 @@ function renderFlash() {
     return "";
   }
 
-  return `<div class="flash flash-${flash.type}">${escapeHtml(flash.message)}</div>`;
+  const type = flash.type === "error" ? "error" : "success";
+  const label = type === "error" ? "Needs attention" : "Done";
+
+  return `
+    <div class="flash flash-${type}" role="${type === "error" ? "alert" : "status"}" aria-live="${type === "error" ? "assertive" : "polite"}" tabindex="-1" data-flash-message>
+      <span class="flash-icon" aria-hidden="true">${type === "error" ? "!" : "OK"}</span>
+      <span class="flash-copy">
+        <span class="flash-label">${escapeHtml(label)}</span>
+        <span class="flash-message">${escapeHtml(flash.message)}</span>
+      </span>
+      <button type="button" class="flash-close" data-action="dismiss-flash" aria-label="Dismiss message">x</button>
+    </div>
+  `;
 }
 
 function renderSupplierOptions() {
@@ -11349,8 +11361,7 @@ function renderOrderNotice(order, emptyLabel = "") {
   }
 
   return `
-    <div class="order-notice" role="note" tabindex="-1" data-order-notice>
-      <span class="order-notice-label">Notice</span>
+    <div class="order-notice">
       ${lines.map((line) => `<span class="order-notice-line">${escapeHtml(line)}</span>`).join("")}
     </div>
   `;
@@ -11414,16 +11425,16 @@ function getOrderNoticeLines(order) {
   const completion = getOrderCompletionNoticeText(order);
   const rolloverNotice = getRolloverNoticeText(order);
 
-  if (notice) {
-    lines.push(notice);
-  }
-
   if (driverFlag) {
     lines.push(driverFlag);
   }
 
   if (pickupNotice) {
     lines.push(pickupNotice);
+  }
+
+  if (notice) {
+    lines.push(notice);
   }
 
   if (moveToFactory) {
@@ -11760,14 +11771,33 @@ function showFlash(message, type) {
   flash = { message, type };
   if (flashTimer) {
     window.clearTimeout(flashTimer);
+    flashTimer = null;
   }
 
   render();
+  focusFlashMessage();
 
   flashTimer = window.setTimeout(() => {
-    flash = null;
-    render();
+    clearFlash();
   }, FLASH_TIMEOUT_MS);
+}
+
+function clearFlash() {
+  flash = null;
+  if (flashTimer) {
+    window.clearTimeout(flashTimer);
+    flashTimer = null;
+  }
+  render();
+}
+
+function focusFlashMessage() {
+  window.requestAnimationFrame(() => {
+    const flashEl = document.querySelector("[data-flash-message]");
+    if (flashEl instanceof HTMLElement) {
+      flashEl.focus({ preventScroll: true });
+    }
+  });
 }
 
 function escapeHtml(value) {
