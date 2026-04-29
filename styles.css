@@ -4657,7 +4657,9 @@ tr:last-child td {
   }
 
   .dispatch-tab-panel .table-card > .table-toolbar {
-    top: 0.35rem;
+    position: static;
+    top: auto;
+    z-index: auto;
     padding: 0.65rem;
   }
 
