@@ -310,6 +310,7 @@ const state = {
   databaseStorageLabel: "",
   databaseSeededFromSnapshot: false,
   mailConfigured: false,
+  mailDisabled: false,
   mailConfigReason: "",
   mailFromDisplay: "",
   mailSenderName: "Logistics Centre",
@@ -431,6 +432,7 @@ async function boot() {
     state.databaseStorageLabel = status.storageLabel || "";
     state.databaseSeededFromSnapshot = Boolean(status.seededFromBundledSnapshot);
     state.mailConfigured = Boolean(status.mailConfigured);
+    state.mailDisabled = Boolean(status.mailDisabled);
     state.mailConfigReason = status.mailReason || "";
     state.mailFromDisplay = status.mailFromDisplay || state.mailFromDisplay;
     state.mailSenderName = status.mailSenderName || state.mailSenderName;
@@ -475,6 +477,7 @@ async function fetchServerStatus() {
     storageLabel: payload?.storageLabel || "",
     seededFromBundledSnapshot: Boolean(payload?.seededFromBundledSnapshot),
     mailConfigured: Boolean(payload?.mailConfigured),
+    mailDisabled: Boolean(payload?.mailDisabled),
     mailReason: payload?.mailReason || "",
     mailFromDisplay: payload?.mailFromDisplay || "",
     mailSenderName: payload?.mailSenderName || "",
@@ -1079,6 +1082,7 @@ function applyMailSettingsState(settings) {
   const normalized = normalizeMailSettings(settings);
   state.maintenanceMailSettings = normalized;
   state.mailConfigured = normalized.configured;
+  state.mailDisabled = normalized.disabled;
   state.mailConfigReason = normalized.reason;
   state.mailFromDisplay = normalized.fromDisplay || normalized.fromAddress || "";
   state.mailSenderName = normalized.senderName || state.mailSenderName;
@@ -1086,7 +1090,15 @@ function applyMailSettingsState(settings) {
   state.artworkTo = normalized.artworkTo || state.artworkTo;
 }
 
+function isMailDeliveryAvailable() {
+  return state.mailConfigured && !state.mailDisabled;
+}
+
 function getMailConfigErrorText() {
+  if (state.mailDisabled || state.maintenanceMailSettings?.disabled) {
+    return "Email delivery is temporarily disabled from Maintenance.";
+  }
+
   if (state.maintenanceMailSettings?.reason) {
     return state.maintenanceMailSettings.reason;
   }
@@ -3159,12 +3171,33 @@ function focusOrderForm() {
       return;
     }
 
-    form.scrollIntoView({ behavior: "smooth", block: "start" });
-    const firstField = form.querySelector('[name="locationId"]');
+    const composer = form.closest(".entry-composer");
+    const scrollTarget = composer instanceof HTMLElement ? composer : form;
+    scrollTarget.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    const firstField = getFirstVisibleOrderFormField(form);
     if (firstField instanceof HTMLElement) {
       firstField.focus();
     }
   });
+}
+
+function getFirstVisibleOrderFormField(form) {
+  const fields = Array.from(
+    form.querySelectorAll("select, textarea, input:not([type='hidden'])"),
+  );
+
+  return fields.find((field) => {
+    if (!(field instanceof HTMLElement)) {
+      return false;
+    }
+
+    const control = field;
+    const isDisabled = "disabled" in control && Boolean(control.disabled);
+    const isReadonly = "readOnly" in control && Boolean(control.readOnly);
+    const isHidden = control.offsetParent === null;
+    return !isDisabled && !isReadonly && !isHidden;
+  }) || null;
 }
 
 function focusStockItemForm() {
@@ -6406,10 +6439,10 @@ function renderMaintenanceMailPanel() {
           <button type="button" class="button button-secondary" data-action="refresh-mail-settings"${state.busy ? " disabled" : ""}>
             Refresh settings
           </button>
-          <button type="button" class="button button-secondary" data-action="email-test"${state.busy ? " disabled" : ""}>
+          <button type="button" class="button button-secondary" data-action="email-test"${state.busy || !isMailDeliveryAvailable() ? " disabled" : ""}>
             Send test email
           </button>
-          <button type="button" class="button button-secondary" data-action="email-rollover-test"${state.busy ? " disabled" : ""}>
+          <button type="button" class="button button-secondary" data-action="email-rollover-test"${state.busy || !isMailDeliveryAvailable() ? " disabled" : ""}>
             Send rollover test
           </button>
         </div>
@@ -6710,11 +6743,11 @@ function renderArtworkRequestPanel(viewerRole) {
           Notes
           <textarea name="notes" placeholder="Artwork size, finish, due date, or any design instruction"></textarea>
         </label>
-        <button type="submit" class="button button-secondary"${state.busy || !state.mailConfigured ? " disabled" : ""}>
+        <button type="submit" class="button button-secondary"${state.busy || !isMailDeliveryAvailable() ? " disabled" : ""}>
           Send artwork request
         </button>
-        ${!state.mailConfigured
-        ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
+        ${!isMailDeliveryAvailable()
+        ? `<p class="field-note">${escapeHtml(getMailConfigErrorText())}</p>`
         : ""
       }
       </form>
@@ -7640,7 +7673,7 @@ function renderEntryForm(currentUser, allowDuplicateOverride, options = {}) {
               Admin override for duplicate or return stop
             </label>
             <p class="field-note">
-              This only lets admins send a driver back to a stop they already completed today. Same-location duplicate inhouse order numbers are always blocked.
+              This lets admins confirm a deliberate duplicate or send a driver back to a stop they already completed today.
             </p>
           `
       : ""
@@ -7773,21 +7806,21 @@ function renderGlobalOrdersSection(viewerRole) {
                 <button
                   class="button button-secondary"
                   data-action="email-test"
-                  ${state.busy || !state.mailConfigured ? "disabled" : ""}
+                  ${state.busy || !isMailDeliveryAvailable() ? "disabled" : ""}
                 >
                   Test Email
                 </button>
                 <button
                   class="button button-secondary"
                   data-action="email-rollover-test"
-                  ${state.busy || !state.mailConfigured ? "disabled" : ""}
+                  ${state.busy || !isMailDeliveryAvailable() ? "disabled" : ""}
                 >
                   Test Rollover Email
                 </button>
                 <button
                   class="button button-primary"
                   data-action="email-global-csv"
-                  ${state.busy || !state.mailConfigured ? "disabled" : ""}
+                  ${state.busy || !isMailDeliveryAvailable() ? "disabled" : ""}
                 >
                   Email CSV
                 </button>
@@ -7796,8 +7829,8 @@ function renderGlobalOrdersSection(viewerRole) {
       : ""
     }
       </div>
-      ${canExport && !state.mailConfigured
-      ? `<p class="field-note">${escapeHtml(state.mailConfigReason || "Email delivery is not configured yet.")}</p>`
+      ${canExport && !isMailDeliveryAvailable()
+      ? `<p class="field-note">${escapeHtml(getMailConfigErrorText())}</p>`
       : ""
     }
       ${dateOptions.length ? renderGlobalListDateFilterPanel(dateOptions, sortedOrders.length) : ""}
@@ -7914,6 +7947,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
   const navigationUrl = getGoogleMapsNavigateUrl(locationRecord);
   const stopCardKey = buildGlobalLocationGroupKey(group.key);
   const isOpen = isStopCardOpen(stopCardKey);
+  const noticeCount = group.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card global-location-group${isOpen ? " is-open" : " is-collapsed"}">
@@ -7929,6 +7963,7 @@ function renderGlobalLocationGroup(group, viewerRole) {
           ${group.completedCount ? `<span class="chip">${group.completedCount} completed</span>` : ""}
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
           ${group.laterCount ? `<span class="chip chip-route-later">${group.laterCount} later</span>` : ""}
+          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
         </div>
       </div>
       <div class="action-row stop-actions">
@@ -7971,11 +8006,12 @@ function renderGlobalOrderCard(order, viewerRole) {
   const canDelete = viewerRole === "admin";
   const canEdit = viewerRole === "admin" || (viewerRole === "sales" && order.status === "active");
   const isPriority = isPriorityOrder(order);
+  const hasNotice = getOrderNoticeLines(order).length > 0;
   const referenceLines = getOrderListReferenceLines(order);
   const createdAt = formatDateTime(order.createdAt);
 
   return `
-    <div class="order-card${isPriority ? " order-card-priority" : ""}">
+    <div class="order-card${isPriority ? " order-card-priority" : ""}${hasNotice ? " order-card-has-notice" : ""}">
       <div class="stop-header">
         <div>
           <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
@@ -8001,8 +8037,8 @@ function renderGlobalOrderCard(order, viewerRole) {
           ${renderStatusChip(order.status)}
         </div>
       </div>
-      ${renderOrderStockDetails(order)}
       ${renderOrderNotice(order)}
+      ${renderOrderStockDetails(order)}
       <p class="order-card-meta-note">
         ${escapeHtml(`Created by ${order.createdByName || "Unknown"}${createdAt ? ` on ${createdAt}` : ""}`)}
       </p>
@@ -8865,13 +8901,15 @@ function renderDriverOrderCard(order, viewerRole, options = {}) {
   const locationAddress = Object.prototype.hasOwnProperty.call(options, "locationAddress")
     ? String(options.locationAddress || "").trim()
     : String(order.locationAddress || "").trim();
+  const hasNotice = getOrderNoticeLines(order).length > 0;
 
   return `
-    <div class="order-card${isPriority ? " order-card-priority" : ""}">
+    <div class="order-card${isPriority ? " order-card-priority" : ""}${hasNotice ? " order-card-has-notice" : ""}">
       <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
       <div class="order-meta">
         ${getOrderListReferenceLines(order).map((line) => `<span>${escapeHtml(line)}</span>`).join("")}
       </div>
+      ${renderOrderNotice(order)}
       ${renderOrderStockDetails(order)}
       <div class="chip-row">
         ${renderTypeChip(order.entryType)}
@@ -8884,7 +8922,6 @@ function renderDriverOrderCard(order, viewerRole, options = {}) {
         <span class="chip">Created by ${escapeHtml(order.createdByName)}</span>
         ${renderStatusChip(order.status)}
       </div>
-      ${renderOrderNotice(order)}
       ${renderOrderStopSummary(locationLabel, locationName, locationAddress)}
       ${showActions
     ? `
@@ -9006,6 +9043,7 @@ function renderDropOffCard(group, index, viewerRole, driverUserId = "") {
   const isOpen = isStopCardOpen(stopCardKey);
   const locationName = String(group.location?.name || "").trim();
   const locationAddress = String(group.location?.address || "").trim();
+  const noticeCount = group.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card${group.priorityCount ? " stop-card-priority" : ""}${isOpen ? " is-open" : " is-collapsed"}">
@@ -9017,6 +9055,7 @@ function renderDropOffCard(group, index, viewerRole, driverUserId = "") {
         </div>
         <div class="chip-row">
           ${group.priorityCount ? `<span class="chip chip-priority-high">${group.priorityCount} priority</span>` : ""}
+          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
           <span class="chip">${group.orders.length} order${group.orders.length === 1 ? "" : "s"}</span>
         </div>
       </div>
@@ -9070,6 +9109,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
   const legLabel = stop.hasCoordinates && stop.legKm !== null
     ? `${stop.legKm.toFixed(1)} km leg`
     : "Coordinates pending";
+  const noticeCount = stop.orders.filter((order) => getOrderNoticeLines(order).length > 0).length;
 
   return `
     <article class="stop-card${stop.isPriority ? " stop-card-priority" : ""}${stop.isLaterRouteStop ? " stop-card-later" : ""}${isOpen ? " is-open" : " is-collapsed"}">
@@ -9082,6 +9122,7 @@ function renderStopCard(stop, index, viewerRole, driverUserId = "") {
         <div class="chip-row">
           ${stop.isPriority ? '<span class="chip chip-priority-high">Priority stop</span>' : ""}
           ${stop.isLaterRouteStop ? '<span class="chip chip-route-later">Later stop</span>' : ""}
+          ${noticeCount ? `<span class="chip chip-warning">${noticeCount} notice${noticeCount === 1 ? "" : "s"}</span>` : ""}
           <span class="chip">${legLabel}</span>
           <span class="chip">${stop.orders.length} order${stop.orders.length === 1 ? "" : "s"}</span>
         </div>
@@ -11213,7 +11254,7 @@ function buildDispatchCloseoutCsvContent(closeoutState) {
 }
 
 async function emailOrdersCsv() {
-  if (!state.mailConfigured) {
+  if (!isMailDeliveryAvailable()) {
     showFlash(getMailConfigErrorText(), "error");
     return;
   }
@@ -11241,7 +11282,7 @@ async function emailOrdersCsv() {
 }
 
 async function sendTestEmail() {
-  if (!state.mailConfigured) {
+  if (!isMailDeliveryAvailable()) {
     showFlash(getMailConfigErrorText(), "error");
     return;
   }
@@ -11269,7 +11310,7 @@ async function sendTestEmail() {
 }
 
 async function sendRolloverTestEmail() {
-  if (!state.mailConfigured) {
+  if (!isMailDeliveryAvailable()) {
     showFlash(getMailConfigErrorText(), "error");
     return;
   }
@@ -11308,7 +11349,8 @@ function renderOrderNotice(order, emptyLabel = "") {
   }
 
   return `
-    <div class="order-notice">
+    <div class="order-notice" role="note" tabindex="-1" data-order-notice>
+      <span class="order-notice-label">Notice</span>
       ${lines.map((line) => `<span class="order-notice-line">${escapeHtml(line)}</span>`).join("")}
     </div>
   `;
@@ -11372,16 +11414,16 @@ function getOrderNoticeLines(order) {
   const completion = getOrderCompletionNoticeText(order);
   const rolloverNotice = getRolloverNoticeText(order);
 
+  if (notice) {
+    lines.push(notice);
+  }
+
   if (driverFlag) {
     lines.push(driverFlag);
   }
 
   if (pickupNotice) {
     lines.push(pickupNotice);
-  }
-
-  if (notice) {
-    lines.push(notice);
   }
 
   if (moveToFactory) {

@@ -3178,6 +3178,9 @@ class LocalDatabase {
         driverUserId: driver?.id || "",
         quoteNumber,
         locationId,
+        entryType,
+        deliveryAddress: finalDeliveryAddress,
+        deliveryLocationId,
         scheduledFor,
         allowDuplicate,
       });
@@ -3395,6 +3398,9 @@ class LocalDatabase {
           driverUserId: driver?.id || "",
           quoteNumber,
           locationId,
+          entryType,
+          deliveryAddress: finalDeliveryAddress,
+          deliveryLocationId,
           scheduledFor,
           allowDuplicate,
         });
@@ -3510,6 +3516,7 @@ class LocalDatabase {
           driverUserId: driver.id,
           quoteNumber: order.inhouse_order_number,
           locationId: order.location_id,
+          checkDuplicate: false,
           scheduledFor: order.scheduled_for,
           allowDuplicate,
         });
@@ -4602,21 +4609,47 @@ class LocalDatabase {
     return { id };
   }
 
-  assertOrderAssignmentAllowed({ actor, orderId, driverUserId, quoteNumber, locationId, scheduledFor, allowDuplicate }) {
-    const duplicate = this.get(
-      `
-        select id
-        from orders
-        where id <> ?
-          and lower(trim(inhouse_order_number)) = lower(trim(?))
-          and location_id = ?
-          and status = 'active'
-        limit 1
-      `,
-      [orderId || "", quoteNumber, locationId],
-    );
-    if (duplicate) {
-      throw createHttpError(400, "Duplicate blocked. This inhouse order number already has an active entry for that pickup location.");
+  assertOrderAssignmentAllowed({
+    actor,
+    orderId,
+    driverUserId,
+    quoteNumber,
+    locationId,
+    entryType = "",
+    deliveryAddress = "",
+    deliveryLocationId = "",
+    scheduledFor,
+    allowDuplicate,
+    checkDuplicate = true,
+  }) {
+    if (checkDuplicate) {
+      const duplicate = this.get(
+        `
+          select id
+          from orders
+          where id <> ?
+            and lower(trim(inhouse_order_number)) = lower(trim(?))
+            and location_id = ?
+            and entry_type = ?
+            and scheduled_for = ?
+            and coalesce(delivery_location_id, '') = coalesce(?, '')
+            and lower(trim(delivery_address)) = lower(trim(?))
+            and status = 'active'
+          limit 1
+        `,
+        [
+          orderId || "",
+          quoteNumber,
+          locationId,
+          entryType,
+          scheduledFor,
+          deliveryLocationId || null,
+          deliveryAddress || "",
+        ],
+      );
+      if (duplicate && !(actor.role === "admin" && allowDuplicate)) {
+        throw createHttpError(400, "Duplicate blocked. This inhouse order number already has an active entry for the same pickup, destination, and date.");
+      }
     }
 
     if (!driverUserId) {

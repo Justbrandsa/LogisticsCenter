@@ -257,7 +257,9 @@ function startServer() {
     console.log(
       mailStatus.configured
         ? `CSV mail-out is configured via ${mailStatus.provider} for ${mailStatus.from} -> ${mailStatus.to}.`
-        : `CSV mail-out is not configured yet: ${mailStatus.reason}`,
+        : mailStatus.disabled
+          ? `CSV mail-out is paused: ${mailStatus.reason}`
+          : `CSV mail-out is not configured yet: ${mailStatus.reason}`,
     );
     networkUrls.forEach((url) => {
       console.log(`Route Ledger network URL: ${url}`);
@@ -294,6 +296,7 @@ async function routeRequest(request, response) {
       sendJson(response, 200, {
         ...database.getStatus(),
         mailConfigured: mailStatus.configured,
+        mailDisabled: mailStatus.disabled,
         mailReason: mailStatus.reason,
         mailProvider: mailStatus.provider,
         mailFrom: mailStatus.from,
@@ -358,7 +361,8 @@ async function routeRequest(request, response) {
       let responseData = data;
       const warnings = [];
       await maybeSendCarryOverEmail(functionName, data);
-      if (driverTransferEmailContext) {
+      const mailDisabled = mailer.isDisabled();
+      if (driverTransferEmailContext && !mailDisabled) {
         try {
           await mailer.sendDriverTransferEmail(driverTransferEmailContext);
         } catch (error) {
@@ -366,7 +370,7 @@ async function routeRequest(request, response) {
           console.error("Failed to send driver transfer email.", error);
         }
       }
-      if (adminActionEmailContext && Number(data?.updatedOrders || 0) > 0) {
+      if (adminActionEmailContext && Number(data?.updatedOrders || 0) > 0 && !mailDisabled) {
         try {
           await mailer.sendAdminActionNotification({
             ...adminActionEmailContext,
@@ -377,7 +381,7 @@ async function routeRequest(request, response) {
           console.error("Failed to send admin action email.", error);
         }
       }
-      if (droppedOfficeEmailContext) {
+      if (droppedOfficeEmailContext && !mailDisabled) {
         try {
           await mailer.sendDroppedOfficeEmail(droppedOfficeEmailContext);
         } catch (error) {
@@ -1100,9 +1104,7 @@ function createMailer() {
 
   async function getAuthorizedMailContext(token, allowedRoles, deniedMessage) {
     const runtime = getRuntime();
-    if (!runtime.status.configured) {
-      throw createHttpError(503, runtime.status.reason || "Email delivery is not configured.");
-    }
+    assertMailCanSend(runtime);
 
     if (!token) {
       throw createHttpError(400, "Session token is required.");
@@ -1126,7 +1128,19 @@ function createMailer() {
     };
   }
 
+  function assertMailCanSend(runtime) {
+    if (runtime.config.disabled || runtime.status.disabled) {
+      throw createHttpError(409, "Email delivery is temporarily disabled from Maintenance.");
+    }
+
+    if (!runtime.status.configured) {
+      throw createHttpError(503, runtime.status.reason || "Email delivery is not configured.");
+    }
+  }
+
   async function sendMessage(runtime, message) {
+    assertMailCanSend(runtime);
+
     const senderAddress = String(message.fromAddress || runtime.config.from || "").trim();
     const senderName = String(message.senderName || runtime.status.senderName || "").trim();
 
@@ -1152,6 +1166,9 @@ function createMailer() {
   return {
     getStatus() {
       return { ...getRuntime().status };
+    },
+    isDisabled() {
+      return Boolean(getRuntime().status.disabled);
     },
     getManagementSettings() {
       const runtime = getRuntime();
@@ -1270,9 +1287,7 @@ function createMailer() {
     async sendCarryOverEmail(rollover, options = {}) {
       const runtime = getRuntime();
       const { status } = runtime;
-      if (!status.configured) {
-        throw createHttpError(503, status.reason || "Email delivery is not configured.");
-      }
+      assertMailCanSend(runtime);
 
       const carriedOrders = Array.isArray(rollover?.carriedOrders)
         ? rollover.carriedOrders.filter(Boolean)
@@ -1338,9 +1353,7 @@ function createMailer() {
     async sendDriverTransferEmail(transfer) {
       const runtime = getRuntime();
       const { status } = runtime;
-      if (!status.configured) {
-        throw createHttpError(503, status.reason || "Email delivery is not configured.");
-      }
+      assertMailCanSend(runtime);
 
       const order = transfer?.order || null;
       if (!order) {
@@ -1390,9 +1403,7 @@ function createMailer() {
     async sendAdminActionNotification(notification) {
       const runtime = getRuntime();
       const { status } = runtime;
-      if (!status.configured) {
-        throw createHttpError(503, status.reason || "Email delivery is not configured.");
-      }
+      assertMailCanSend(runtime);
 
       const affectedCount = Number(notification?.affectedCount || 0);
       if (affectedCount <= 0) {
@@ -1454,9 +1465,7 @@ function createMailer() {
     async sendDroppedOfficeEmail(notification) {
       const runtime = getRuntime();
       const { status } = runtime;
-      if (!status.configured) {
-        throw createHttpError(503, status.reason || "Email delivery is not configured.");
-      }
+      assertMailCanSend(runtime);
 
       const order = notification?.order || null;
       if (!order) {
@@ -1523,9 +1532,7 @@ function createMailer() {
     async sendOrderDeleteLogEmail(entries) {
       const runtime = getRuntime();
       const { status } = runtime;
-      if (!status.configured) {
-        throw createHttpError(503, status.reason || "Email delivery is not configured.");
-      }
+      assertMailCanSend(runtime);
 
       const items = Array.isArray(entries) ? entries.filter(Boolean) : [];
       const affectedCount = items.length;
