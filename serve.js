@@ -160,6 +160,10 @@ const RPC_DEFINITIONS = Object.freeze({
   pick_up_order: { params: ["p_token", "p_order_id"] },
   complete_order: { params: ["p_token", "p_order_id", "p_completion_type"] },
   delete_order: { params: ["p_token", "p_order_id"] },
+  save_daily_closeout: {
+    params: ["p_token", "p_closeout_date", "p_status", "p_notes", "p_checklist_json", "p_summary_json", "p_unresolved_json"],
+  },
+  reopen_daily_closeout: { params: ["p_token", "p_closeout_date"] },
 });
 
 const database = createDatabase();

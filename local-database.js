@@ -37,6 +37,17 @@ const ORDER_STATUSES = new Set(["active", "completed"]);
 const ORDER_ENTRY_TYPES = new Set(["collection", "delivery"]);
 const ORDER_FLAG_TYPES = new Set(["not_collected", "not_ready"]);
 const ORDER_COMPLETION_TYPES = new Set(["office", "factory"]);
+const DAILY_CLOSEOUT_STATUSES = new Set(["draft", "closed"]);
+const DAILY_CLOSEOUT_REQUIRED_CHECKS = Object.freeze([
+  "unassignedReviewed",
+  "activeReviewed",
+  "pickedUpReviewed",
+  "followUpsReviewed",
+  "laterReviewed",
+  "deletedReviewed",
+  "rolloverReviewed",
+  "exportReviewed",
+]);
 const STOCK_MOVEMENT_TYPES = new Set(["in", "out"]);
 const INHOUSE_ORDER_PREFIXES = Object.freeze([
   "SS",
@@ -775,6 +786,10 @@ class LocalDatabase {
           return this.completeOrder(parameters);
         case "delete_order":
           return this.deleteOrder(parameters);
+        case "save_daily_closeout":
+          return this.saveDailyCloseout(parameters);
+        case "reopen_daily_closeout":
+          return this.reopenDailyCloseout(parameters);
         default:
           throw createHttpError(404, "Unknown RPC function.");
       }
@@ -1074,6 +1089,7 @@ class LocalDatabase {
       locations: Number(this.get("select count(*) as count from locations")?.count || 0),
       orders: Number(this.get("select count(*) as count from orders")?.count || 0),
       order_delete_log: Number(this.get("select count(*) as count from order_delete_log")?.count || 0),
+      daily_closeouts: Number(this.get("select count(*) as count from daily_closeouts")?.count || 0),
       stock_items: Number(this.get("select count(*) as count from stock_items")?.count || 0),
       stock_movements: Number(this.get("select count(*) as count from stock_movements")?.count || 0),
       artwork_requests: Number(this.get("select count(*) as count from artwork_requests")?.count || 0),
@@ -1089,6 +1105,7 @@ class LocalDatabase {
       locations: this.all("select * from locations order by created_at asc, id asc"),
       orders: this.all("select * from orders order by created_at asc, order_number asc, id asc"),
       order_delete_log: this.all("select * from order_delete_log order by deleted_at asc, id asc"),
+      daily_closeouts: this.all("select * from daily_closeouts order by closeout_date asc, created_at asc, id asc"),
       stock_items: this.all("select * from stock_items order by created_at asc, id asc"),
       stock_movements: this.all("select * from stock_movements order by created_at asc, id asc"),
       artwork_requests: this.all("select * from artwork_requests order by sent_at asc, id asc"),
@@ -1105,6 +1122,7 @@ class LocalDatabase {
       this.run("delete from artwork_requests");
       this.run("delete from stock_movements");
       this.run("delete from stock_items");
+      this.run("delete from daily_closeouts");
       this.run("delete from order_delete_log");
       this.run("delete from orders");
       this.run("delete from locations");
@@ -1385,6 +1403,48 @@ class LocalDatabase {
             importedInteger(row.notification_attempts, 0),
             importedText(row.last_notification_error),
             importedNullableTimestamp(row.notification_sent_at),
+          ],
+        );
+      });
+
+      data.daily_closeouts.forEach((row) => {
+        this.run(
+          `
+            insert into daily_closeouts (
+              id,
+              closeout_date,
+              status,
+              notes,
+              checklist_json,
+              summary_json,
+              unresolved_json,
+              created_by_user_id,
+              created_at,
+              updated_by_user_id,
+              updated_at,
+              closed_by_user_id,
+              closed_at,
+              reopened_by_user_id,
+              reopened_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            requireImportedText(row.id, "Imported closeout id is required."),
+            importedDate(row.closeout_date),
+            importedCloseoutStatus(row.status),
+            importedText(row.notes),
+            importedJsonText(row.checklist_json),
+            importedJsonText(row.summary_json),
+            importedJsonText(row.unresolved_json),
+            requireImportedText(row.created_by_user_id, "Imported closeout created_by_user_id is required."),
+            importedTimestamp(row.created_at),
+            importedNullableText(row.updated_by_user_id),
+            importedTimestamp(row.updated_at),
+            importedNullableText(row.closed_by_user_id),
+            importedNullableTimestamp(row.closed_at),
+            importedNullableText(row.reopened_by_user_id),
+            importedNullableTimestamp(row.reopened_at),
           ],
         );
       });
@@ -1693,6 +1753,28 @@ class LocalDatabase {
       create index if not exists order_delete_log_pending_idx
         on order_delete_log(notification_sent_at, deleted_at);
 
+      create table if not exists daily_closeouts (
+        id text primary key,
+        closeout_date text not null unique,
+        status text not null default 'draft',
+        notes text not null default '',
+        checklist_json text not null default '{}',
+        summary_json text not null default '{}',
+        unresolved_json text not null default '{}',
+        created_by_user_id text not null references app_users(id) on delete restrict,
+        created_at text not null,
+        updated_by_user_id text references app_users(id) on delete set null,
+        updated_at text not null,
+        closed_by_user_id text references app_users(id) on delete set null,
+        closed_at text,
+        reopened_by_user_id text references app_users(id) on delete set null,
+        reopened_at text,
+        check (status in ('draft', 'closed'))
+      );
+
+      create index if not exists daily_closeouts_status_idx
+        on daily_closeouts(status, closeout_date);
+
       create table if not exists stock_items (
         id text primary key,
         name text not null,
@@ -1781,6 +1863,7 @@ class LocalDatabase {
     this.ensureAppUsersRoleSchema();
     this.ensureReusableDeliveryLocationSchema();
     this.ensureOrderRouteTimingSchema();
+    this.ensureDailyCloseoutSchema();
   }
 
   getTableSql(tableName) {
@@ -1843,6 +1926,32 @@ class LocalDatabase {
     if (!this.hasTableColumn("order_delete_log", "route_timing")) {
       this.db.exec("alter table order_delete_log add column route_timing text not null default 'normal';");
     }
+  }
+
+  ensureDailyCloseoutSchema() {
+    this.db.exec(`
+      create table if not exists daily_closeouts (
+        id text primary key,
+        closeout_date text not null unique,
+        status text not null default 'draft',
+        notes text not null default '',
+        checklist_json text not null default '{}',
+        summary_json text not null default '{}',
+        unresolved_json text not null default '{}',
+        created_by_user_id text not null references app_users(id) on delete restrict,
+        created_at text not null,
+        updated_by_user_id text references app_users(id) on delete set null,
+        updated_at text not null,
+        closed_by_user_id text references app_users(id) on delete set null,
+        closed_at text,
+        reopened_by_user_id text references app_users(id) on delete set null,
+        reopened_at text,
+        check (status in ('draft', 'closed'))
+      );
+
+      create index if not exists daily_closeouts_status_idx
+        on daily_closeouts(status, closeout_date);
+    `);
   }
 
   rebuildLocationsForClientType() {
@@ -2089,6 +2198,8 @@ class LocalDatabase {
       const suppliers = this.selectSnapshotSuppliers(actor);
       const locations = this.selectSnapshotLocations(actor);
       const orders = this.selectSnapshotOrders(actor);
+      const orderDeleteLog = this.selectSnapshotOrderDeleteLog(actor);
+      const dailyCloseouts = this.selectSnapshotDailyCloseouts(actor);
       const stockItems = this.selectSnapshotStockItems(actor);
       const stockMovements = this.selectSnapshotStockMovements(actor);
       const artworkRequests = this.selectSnapshotArtworkRequests(actor);
@@ -2101,6 +2212,8 @@ class LocalDatabase {
         suppliers,
         locations,
         orders,
+        orderDeleteLog,
+        dailyCloseouts,
         stockItems,
         stockMovements,
         artworkRequests,
@@ -3691,6 +3804,165 @@ class LocalDatabase {
     });
   }
 
+  saveDailyCloseout(parameters = {}) {
+    const actor = this.requireUser(parameters?.p_token, ["admin", "sales"]);
+    const closeoutDate = normalizeOptionalDate(parameters?.p_closeout_date);
+    if (!closeoutDate) {
+      throw createHttpError(400, "Closeout date is required.");
+    }
+
+    const status = normalizeCloseoutStatus(parameters?.p_status);
+    if (!DAILY_CLOSEOUT_STATUSES.has(status)) {
+      throw createHttpError(400, "Invalid closeout status.");
+    }
+    if (status === "closed" && actor.role !== "admin") {
+      throw createHttpError(403, "Only admin users can close a day.");
+    }
+
+    const notes = normalizeOptionalText(parameters?.p_notes);
+    const checklist = normalizeCloseoutJson(parameters?.p_checklist_json, {});
+    const summary = normalizeCloseoutJson(parameters?.p_summary_json, {});
+    const unresolved = normalizeCloseoutJson(parameters?.p_unresolved_json, {});
+    if (status === "closed" && !isDailyCloseoutChecklistComplete(checklist)) {
+      throw createHttpError(400, "Complete every closeout checklist item before closing the day.");
+    }
+
+    return this.withTransaction(() => {
+      const existing = this.selectDailyCloseoutByDate(closeoutDate);
+      if (existing?.status === "closed" && status !== "closed") {
+        throw createHttpError(400, "This day is already closed. Reopen it before saving changes.");
+      }
+      if (existing?.status === "closed" && actor.role !== "admin") {
+        throw createHttpError(403, "Only admin users can update a closed day.");
+      }
+
+      const now = nowIso();
+      const checklistJson = JSON.stringify(checklist);
+      const summaryJson = JSON.stringify(summary);
+      const unresolvedJson = JSON.stringify(unresolved);
+
+      if (!existing) {
+        this.run(
+          `
+            insert into daily_closeouts (
+              id,
+              closeout_date,
+              status,
+              notes,
+              checklist_json,
+              summary_json,
+              unresolved_json,
+              created_by_user_id,
+              created_at,
+              updated_by_user_id,
+              updated_at,
+              closed_by_user_id,
+              closed_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            randomId(),
+            closeoutDate,
+            status,
+            notes,
+            checklistJson,
+            summaryJson,
+            unresolvedJson,
+            actor.id,
+            now,
+            actor.id,
+            now,
+            status === "closed" ? actor.id : null,
+            status === "closed" ? now : null,
+          ],
+        );
+      } else {
+        this.run(
+          `
+            update daily_closeouts
+            set status = ?,
+                notes = ?,
+                checklist_json = ?,
+                summary_json = ?,
+                unresolved_json = ?,
+                updated_by_user_id = ?,
+                updated_at = ?,
+                closed_by_user_id = case when ? = 'closed' then ? else closed_by_user_id end,
+                closed_at = case when ? = 'closed' then ? else closed_at end
+            where id = ?
+          `,
+          [
+            status,
+            notes,
+            checklistJson,
+            summaryJson,
+            unresolvedJson,
+            actor.id,
+            now,
+            status,
+            actor.id,
+            status,
+            now,
+            existing.id,
+          ],
+        );
+      }
+
+      return {
+        ok: true,
+        closeoutDate,
+        status,
+        updatedBy: actor.id,
+      };
+    });
+  }
+
+  reopenDailyCloseout(parameters = {}) {
+    const actor = this.requireUser(parameters?.p_token, ["admin"]);
+    const closeoutDate = normalizeOptionalDate(parameters?.p_closeout_date);
+    if (!closeoutDate) {
+      throw createHttpError(400, "Closeout date is required.");
+    }
+
+    return this.withTransaction(() => {
+      const existing = this.selectDailyCloseoutByDate(closeoutDate);
+      if (!existing) {
+        throw createHttpError(400, "No closeout has been saved for that date yet.");
+      }
+      if (existing.status !== "closed") {
+        throw createHttpError(400, "That closeout is already open.");
+      }
+
+      const now = nowIso();
+      this.run(
+        `
+          update daily_closeouts
+          set status = 'draft',
+              updated_by_user_id = ?,
+              updated_at = ?,
+              closed_by_user_id = null,
+              closed_at = null,
+              reopened_by_user_id = ?,
+              reopened_at = ?
+          where id = ?
+        `,
+        [actor.id, now, actor.id, now, existing.id],
+      );
+
+      return {
+        ok: true,
+        closeoutDate,
+        status: "draft",
+        reopenedBy: actor.id,
+      };
+    });
+  }
+
+  selectDailyCloseoutByDate(closeoutDate) {
+    return this.get("select * from daily_closeouts where closeout_date = ? limit 1", [closeoutDate]);
+  }
+
   selectSnapshotUsers(actor) {
     if (actor.role === "admin") {
       const rows = this.all("select * from app_users order by lower(name), created_at");
@@ -3766,6 +4038,85 @@ class LocalDatabase {
       return [];
     }
     return this.selectOrderRows("where o.driver_user_id = ?", [actor.id]);
+  }
+
+  selectSnapshotOrderDeleteLog(actor) {
+    if (!["admin", "sales"].includes(actor.role)) {
+      return [];
+    }
+    const rows = this.all(
+      `
+        select
+          id,
+          order_id as orderId,
+          order_number as orderNumber,
+          reference,
+          quote_number as quoteNumber,
+          sales_order_number as salesOrderNumber,
+          invoice_number as invoiceNumber,
+          po_number as poNumber,
+          entry_type as entryType,
+          priority,
+          route_timing as routeTiming,
+          delivery_address as deliveryAddress,
+          delivery_location_id as deliveryLocationId,
+          delivery_location_name as deliveryLocationName,
+          delivery_location_address as deliveryLocationAddress,
+          branding,
+          stock_description as stockDescription,
+          notes,
+          move_to_factory as moveToFactory,
+          factory_destination_location_id as factoryDestinationLocationId,
+          factory_destination_name as factoryDestinationName,
+          factory_destination_address as factoryDestinationAddress,
+          location_id as locationId,
+          location_name as locationName,
+          location_address as locationAddress,
+          driver_user_id as driverUserId,
+          driver_name as driverName,
+          created_by_user_id as createdByUserId,
+          created_by_name as createdByName,
+          created_at as createdAt,
+          scheduled_for as scheduledFor,
+          original_scheduled_for as originalScheduledFor,
+          carry_over_count as carryOverCount,
+          status,
+          deleted_by_user_id as deletedByUserId,
+          deleted_by_name as deletedByName,
+          deleted_by_role as deletedByRole,
+          deleted_at as deletedAt,
+          notification_attempts as notificationAttempts,
+          last_notification_error as lastNotificationError,
+          notification_sent_at as notificationSentAt
+        from order_delete_log
+        order by deleted_at desc, id desc
+      `,
+    );
+    return rows.map((row) => this.buildDeleteLogRow(row));
+  }
+
+  selectSnapshotDailyCloseouts(actor) {
+    if (!["admin", "sales"].includes(actor.role)) {
+      return [];
+    }
+    const rows = this.all(
+      `
+        select
+          d.*,
+          c.name as createdByName,
+          c.role as createdByRole,
+          u.name as updatedByName,
+          b.name as closedByName,
+          r.name as reopenedByName
+        from daily_closeouts d
+        join app_users c on c.id = d.created_by_user_id
+        left join app_users u on u.id = d.updated_by_user_id
+        left join app_users b on b.id = d.closed_by_user_id
+        left join app_users r on r.id = d.reopened_by_user_id
+        order by d.closeout_date desc, d.created_at desc
+      `,
+    );
+    return rows.map((row) => this.buildDailyCloseoutJson(row));
   }
 
   selectSnapshotStockItems(actor) {
@@ -4082,6 +4433,31 @@ class LocalDatabase {
       notificationAttempts: Number(row.notificationAttempts || 0),
       lastNotificationError: row.lastNotificationError || "",
       notificationSentAt: row.notificationSentAt || null,
+    };
+  }
+
+  buildDailyCloseoutJson(row) {
+    return {
+      id: row.id,
+      closeoutDate: row.closeout_date || row.closeoutDate || "",
+      status: row.status || "draft",
+      notes: row.notes || "",
+      checklist: parseStoredJsonObject(row.checklist_json || row.checklistJson, {}),
+      summary: parseStoredJsonObject(row.summary_json || row.summaryJson, {}),
+      unresolved: parseStoredJsonObject(row.unresolved_json || row.unresolvedJson, {}),
+      createdByUserId: row.created_by_user_id || row.createdByUserId || "",
+      createdByName: row.createdByName || "",
+      createdByRole: row.createdByRole || "",
+      createdAt: row.created_at || row.createdAt || null,
+      updatedByUserId: row.updated_by_user_id || row.updatedByUserId || "",
+      updatedByName: row.updatedByName || "",
+      updatedAt: row.updated_at || row.updatedAt || null,
+      closedByUserId: row.closed_by_user_id || row.closedByUserId || "",
+      closedByName: row.closedByName || "",
+      closedAt: row.closed_at || row.closedAt || null,
+      reopenedByUserId: row.reopened_by_user_id || row.reopenedByUserId || "",
+      reopenedByName: row.reopenedByName || "",
+      reopenedAt: row.reopened_at || row.reopenedAt || null,
     };
   }
 
@@ -4707,9 +5083,57 @@ function normalizeRouteTiming(value) {
   return normalizeOptionalText(value).toLowerCase() || "normal";
 }
 
+function normalizeCloseoutStatus(value) {
+  return normalizeOptionalText(value).toLowerCase() || "draft";
+}
+
+function normalizeCloseoutJson(value, fallback = {}) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+
+  const text = normalizeOptionalText(value);
+  if (!text) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : fallback;
+  } catch (error) {
+    throw createHttpError(400, "Closeout data could not be read.");
+  }
+}
+
+function parseStoredJsonObject(value, fallback = {}) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function isDailyCloseoutChecklistComplete(checklist) {
+  return DAILY_CLOSEOUT_REQUIRED_CHECKS.every((key) => Boolean(checklist?.[key]));
+}
+
 function importedRouteTiming(value) {
   const normalized = normalizeRouteTiming(value);
   return ORDER_ROUTE_TIMINGS.has(normalized) ? normalized : "normal";
+}
+
+function importedCloseoutStatus(value) {
+  const normalized = normalizeCloseoutStatus(value);
+  return DAILY_CLOSEOUT_STATUSES.has(normalized) ? normalized : "draft";
 }
 
 function normalizeCompletionType(value) {
@@ -4770,6 +5194,7 @@ function normalizeImportData(rawData) {
     locations: Array.isArray(data.locations) ? data.locations : [],
     orders: Array.isArray(data.orders) ? data.orders : [],
     order_delete_log: Array.isArray(data.order_delete_log) ? data.order_delete_log : [],
+    daily_closeouts: Array.isArray(data.daily_closeouts) ? data.daily_closeouts : [],
     stock_items: Array.isArray(data.stock_items) ? data.stock_items : [],
     stock_movements: Array.isArray(data.stock_movements) ? data.stock_movements : [],
     artwork_requests: Array.isArray(data.artwork_requests) ? data.artwork_requests : [],
@@ -4800,6 +5225,25 @@ function importedText(value, fallback = "") {
     return value.toISOString();
   }
   return String(value);
+}
+
+function importedJsonText(value) {
+  if (value === null || value === undefined || value === "") {
+    return "{}";
+  }
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return value;
+    } catch (error) {
+      return "{}";
+    }
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return "{}";
+  }
 }
 
 function importedNullableText(value) {

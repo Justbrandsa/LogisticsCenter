@@ -55,8 +55,31 @@ const PAGE_SIZES = {
   driverLists: 3,
   completedEntries: 10,
 };
+const DISPATCH_TABS = Object.freeze([
+  { id: "today", label: "Today" },
+  { id: "drivers", label: "Drivers" },
+  { id: "unassigned", label: "Unassigned" },
+  { id: "closeout", label: "Closeout" },
+]);
+const DEFAULT_DISPATCH_TAB = "today";
+const LEGACY_DISPATCH_PAGE_TABS = Object.freeze({
+  entries: "today",
+  assignments: "unassigned",
+  drivers: "drivers",
+});
+const DAILY_CLOSEOUT_REQUIRED_CHECKS = Object.freeze([
+  "unassignedReviewed",
+  "activeReviewed",
+  "pickedUpReviewed",
+  "followUpsReviewed",
+  "laterReviewed",
+  "deletedReviewed",
+  "rolloverReviewed",
+  "exportReviewed",
+]);
 const GUIDE_PAGE_SUMMARIES = Object.freeze({
   dashboard: "Start here for the live summary of the workspace so you can see what needs attention before moving into detailed pages.",
+  dispatch: "Use Dispatch for today's live list, driver queues, unassigned work, and closeout exports in one mobile-first workspace.",
   entries: "Use this page to create work, search the grouped global register, and handle CSV or email actions for the live list.",
   assignments: "Use this page to move active work onto drivers, rebalance it between drivers, or return it to the queue without losing context.",
   stock: "Use this page to review stock activity, QR tools, movement history, and artwork requests according to your permissions.",
@@ -84,6 +107,7 @@ const ROLE_GUIDES = Object.freeze({
     ],
     pageNotes: {
       dashboard: "Use Dashboard for your first read of the day. It tells you how much live work is open, what is still unassigned, how many drivers are active, and how much has already been completed.",
+      dispatch: "Use Dispatch for the live list, entry creation, unassigned queue, driver route review, and closeout export without jumping between separate pages.",
       entries: "Use Global List to create new work, search the live register, review grouped stops, and send or export the shared CSV that office staff use as a working list.",
       assignments: "Use Assignments when dispatch is ready to move jobs onto drivers, rebalance active work between drivers, or return a job to the unassigned queue.",
       stock: "Use Stock to manage stock items, correct movement history, work with QR labels or scanning, and send artwork requests when a production handoff is needed.",
@@ -93,14 +117,14 @@ const ROLE_GUIDES = Object.freeze({
     },
     dailyFlow: [
       "Start on Dashboard so you can spot pressure points early, especially unassigned work, driver coverage, and any unusual completed volume.",
-      "Move to Global List to create new entries, review the live grouped register, and confirm that high-priority or duplicate-sensitive jobs have been captured correctly.",
-      "Open Assignments once dispatch is ready and move queued work onto the right drivers without overloading a single route.",
-      "Check Driver Lists after dispatch to confirm stop order, priority jobs, and the latest driver location information.",
+      "Open Dispatch to create new entries, review the live grouped register, and confirm that high-priority or duplicate-sensitive jobs have been captured correctly.",
+      "Use the Unassigned tab once dispatch is ready and move queued work onto the right drivers without overloading a single route.",
+      "Check the Drivers tab after dispatch to confirm stop order, priority jobs, and the latest driver location information.",
       "Use Stock and Network during the day whenever source data, movement history, QR tooling, or location records need correction.",
     ],
     keyTasks: [
       { label: "Create entries", text: "When an entry is saved, matching stock items are also created from the stock description, so this step affects both the route list and the stock ledger." },
-      { label: "Dispatch cleanly", text: "Keep jobs Unassigned until the route plan is ready, then allocate them from Assignments so driver lists stay deliberate instead of being edited repeatedly." },
+      { label: "Dispatch cleanly", text: "Keep jobs Unassigned until the route plan is ready, then allocate them from the Dispatch Unassigned tab so driver lists stay deliberate instead of being edited repeatedly." },
       { label: "Use override carefully", text: "Admin override is there for deliberate duplicate quotes or same-day return situations, not as a shortcut around normal duplicate protection." },
       { label: "Protect history", text: "Deleting a stock item also removes its movement and artwork history, so only delete when you are certain the record should not exist." },
     ],
@@ -121,32 +145,33 @@ const ROLE_GUIDES = Object.freeze({
     ],
     startingChecks: [
       "Check Dashboard first to understand open work, unassigned volume, and how much activity has already been loaded onto drivers.",
-      "Search Global List before creating a new job so you do not accidentally duplicate a quote or stop already in progress.",
+      "Search Dispatch before creating a new job so you do not accidentally duplicate a quote or stop already in progress.",
       "If you need to share the list externally, confirm the email controls or export action you plan to use before the work gets busy.",
     ],
     pageNotes: {
       dashboard: "Use Dashboard to get a quick office view of open work, your current entry load, the number of unassigned jobs, and how much is already moving through drivers.",
+      dispatch: "Use Dispatch to create entries, search today's list, assign unassigned work, check driver queues, and share/export the live list from one place.",
       entries: "Use Global List to create new entries, search existing work, check grouped stops, and send or export the live CSV that the wider team uses.",
       assignments: "Use Assignments to work through the unassigned queue and rebalance active jobs when the route plan changes during the day.",
       stock: "Use Stock as a read-only reference when you need visibility into recent arrivals, current on-hand quantities, or movement history linked to active work.",
       drivers: "Use Driver Lists to confirm what each driver currently has, how the route is grouped, and whether priority work is showing where you expect it.",
     },
     dailyFlow: [
-      "Create new work from Global List as soon as it is confirmed, and leave the driver Unassigned if dispatch will decide later.",
-      "Use Assignments to move through the unassigned queue in batches and keep route changes tidy instead of editing one stop at a time in different places.",
-      "Open Driver Lists to confirm what each driver is carrying and whether priority jobs are showing in the right sequence.",
+      "Create new work from Dispatch as soon as it is confirmed, and leave the driver Unassigned if dispatch will decide later.",
+      "Use the Unassigned tab to move through the queue in batches and keep route changes tidy instead of editing one stop at a time in different places.",
+      "Open the Drivers tab to confirm what each driver is carrying and whether priority jobs are showing in the right sequence.",
       "Send or export the CSV when the live list is ready to share with the rest of the team or outside stakeholders.",
     ],
     keyTasks: [
       { label: "Create work", text: "Enter the quote first, then complete the stock description, pickup location, and delivery details so the live list and stock records stay clear." },
-      { label: "Assign work", text: "Use the assignment filter to focus on Unassigned items so you can dispatch quickly without losing track of work already placed on drivers." },
-      { label: "Share the list", text: "Use Download CSV, Test Email, or Email CSV from Global List depending on whether you need a quick export, a delivery test, or the live file sent out." },
+      { label: "Assign work", text: "Use the Dispatch Unassigned tab so you can place queued work quickly without losing track of work already on drivers." },
+      { label: "Share the list", text: "Use Download CSV, Test Email, or Email CSV from Dispatch depending on whether you need a quick export, a delivery test, or the live file sent out." },
       { label: "Check stock", text: "Use Stock when you need extra context about recent arrivals or current on-hand quantities linked to a customer or reference." },
     ],
     tips: [
       "Sales cannot use admin override, delete entries, edit stock records, or change protected setup data such as users and locations.",
       "Duplicate checks and completed-stop protection still apply even when you assign a driver at entry creation time.",
-      "If a customer calls about an existing job, search Global List first instead of creating a fresh entry for the same quote or location.",
+      "If a customer calls about an existing job, search Dispatch first instead of creating a fresh entry for the same quote or location.",
     ],
   },
   logistics: {
@@ -293,12 +318,14 @@ const state = {
   maintenanceMailSettings: null,
   maintenanceMailSettingsLoading: false,
   currentPage: "",
+  dispatchTab: DEFAULT_DISPATCH_TAB,
   mobileNavOpen: false,
   editingUserId: "",
   editingSupplierId: "",
   editingLocationId: "",
   editingOrderId: "",
   orderEditReturnPage: "",
+  orderEditReturnDispatchTab: "",
   editingStockItemId: "",
   editingStockMovementId: "",
   stockMovementSelectedItemId: "",
@@ -354,6 +381,8 @@ const state = {
     suppliers: [],
     locations: [],
     orders: [],
+    orderDeleteLog: [],
+    dailyCloseouts: [],
     stockItems: [],
     stockMovements: [],
     artworkRequests: [],
@@ -508,6 +537,7 @@ async function refreshPublicState() {
   state.editingLocationId = "";
   state.editingOrderId = "";
   state.orderEditReturnPage = "";
+  state.orderEditReturnDispatchTab = "";
   state.editingStockItemId = "";
   state.editingStockMovementId = "";
   state.stockMovementSelectedItemId = "";
@@ -579,6 +609,7 @@ async function refreshSnapshot(options = {}) {
     ) {
       state.editingOrderId = "";
       state.orderEditReturnPage = "";
+      state.orderEditReturnDispatchTab = "";
     }
     if (state.editingStockItemId && !state.snapshot.stockItems.some((item) => item.id === state.editingStockItemId)) {
       state.editingStockItemId = "";
@@ -630,6 +661,7 @@ async function refreshSnapshot(options = {}) {
     ) {
       state.editingOrderId = "";
       state.orderEditReturnPage = "";
+      state.orderEditReturnDispatchTab = "";
     }
     state.publicState = normalizePublicState(data);
     state.needsBootstrap = false;
@@ -981,6 +1013,8 @@ function createEmptySnapshot() {
     suppliers: [],
     locations: [],
     orders: [],
+    orderDeleteLog: [],
+    dailyCloseouts: [],
     stockItems: [],
     stockMovements: [],
     artworkRequests: [],
@@ -1011,6 +1045,8 @@ function normalizeSnapshot(data) {
     suppliers: Array.isArray(data?.suppliers) ? data.suppliers : [],
     locations: Array.isArray(data?.locations) ? data.locations : [],
     orders: Array.isArray(data?.orders) ? data.orders : [],
+    orderDeleteLog: Array.isArray(data?.orderDeleteLog) ? data.orderDeleteLog : [],
+    dailyCloseouts: Array.isArray(data?.dailyCloseouts) ? data.dailyCloseouts : [],
     stockItems: Array.isArray(data?.stockItems) ? data.stockItems : [],
     stockMovements: Array.isArray(data?.stockMovements) ? data.stockMovements : [],
     artworkRequests: Array.isArray(data?.artworkRequests) ? data.artworkRequests : [],
@@ -1165,6 +1201,11 @@ async function handleSubmit(event) {
   if (formId === "maintenance-mail-settings" && (currentUser.role === "admin" || currentUser.role === "maintenance")) {
     await saveMaintenanceMailSettings(formData);
   }
+
+  if (formId === "daily-closeout" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
+    await saveDailyCloseout(form, submitter?.dataset.closeoutStatus || "draft");
+  }
 }
 
 async function handleClick(event) {
@@ -1213,12 +1254,24 @@ async function handleClick(event) {
     return;
   }
 
+  if (action === "set-dispatch-tab" && canUseDispatchWorkspace(currentUser.role)) {
+    const nextTab = normalizeDispatchTabId(button.dataset.dispatchTab);
+    state.currentPage = "dispatch";
+    state.dispatchTab = nextTab;
+    state.mobileNavOpen = false;
+    window.history.replaceState(null, "", `${window.location.pathname}#dispatch`);
+    render();
+    return;
+  }
+
   if (action === "toggle-entry-form" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     const willOpen = !state.entryFormOpen;
+    state.dispatchTab = DEFAULT_DISPATCH_TAB;
     state.entryFormOpen = willOpen;
     if (!state.entryFormOpen) {
       state.editingOrderId = "";
       state.orderEditReturnPage = "";
+      state.orderEditReturnDispatchTab = "";
     }
     render();
     if (willOpen) {
@@ -1241,6 +1294,16 @@ async function handleClick(event) {
 
   if (action === "export-global-csv" && (currentUser.role === "admin" || currentUser.role === "sales")) {
     exportOrdersCsv();
+    return;
+  }
+
+  if (action === "export-dispatch-closeout-csv" && (currentUser.role === "admin" || currentUser.role === "sales")) {
+    exportDispatchCloseoutCsv();
+    return;
+  }
+
+  if (action === "reopen-daily-closeout" && currentUser.role === "admin") {
+    await reopenDailyCloseout(button.dataset.closeoutDate || "");
     return;
   }
 
@@ -2013,6 +2076,63 @@ async function runMutation(functionName, parameters, successMessage) {
   }
 }
 
+async function saveDailyCloseout(form, status = "draft") {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  const formData = new FormData(form);
+  const closeoutDate = String(formData.get("closeoutDate") || "").trim();
+  const closeoutStatus = status === "closed" ? "closed" : "draft";
+  const closeoutState = getDailyCloseoutState(closeoutDate);
+  const checklist = buildDailyCloseoutChecklistFromForm(form, closeoutState);
+
+  if (closeoutStatus === "closed" && !isDailyCloseoutChecklistComplete(checklist)) {
+    showFlash("Complete every closeout checklist item before closing the day.", "error");
+    render();
+    return;
+  }
+
+  const successMessage = closeoutStatus === "closed"
+    ? "Daily closeout closed."
+    : "Daily closeout draft saved.";
+
+  await runMutation(
+    "save_daily_closeout",
+    {
+      p_token: sessionToken,
+      p_closeout_date: closeoutDate,
+      p_status: closeoutStatus,
+      p_notes: String(formData.get("notes") || "").trim(),
+      p_checklist_json: JSON.stringify(checklist),
+      p_summary_json: JSON.stringify(buildDailyCloseoutSummaryPayload(closeoutState)),
+      p_unresolved_json: JSON.stringify(buildDailyCloseoutUnresolvedPayload(closeoutState)),
+    },
+    successMessage,
+  );
+}
+
+async function reopenDailyCloseout(closeoutDate) {
+  const dateStamp = String(closeoutDate || "").trim();
+  if (!dateStamp) {
+    return;
+  }
+
+  const confirmed = window.confirm(`Reopen the closeout for ${formatDateOnly(dateStamp) || dateStamp}?`);
+  if (!confirmed) {
+    return;
+  }
+
+  await runMutation(
+    "reopen_daily_closeout",
+    {
+      p_token: sessionToken,
+      p_closeout_date: dateStamp,
+    },
+    "Daily closeout reopened.",
+  );
+}
+
 async function refreshMaintenanceMailSettings(options = {}) {
   const { silent = false } = options;
   if (!silent) {
@@ -2440,16 +2560,24 @@ async function updateOrder(formData, currentUser) {
   }
 
   const returnPage = state.orderEditReturnPage;
+  const returnDispatchTab = state.orderEditReturnDispatchTab;
   state.editingOrderId = "";
   state.orderEditReturnPage = "";
+  state.orderEditReturnDispatchTab = "";
   state.entryFormOpen = false;
 
-  if (returnPage && returnPage !== "entries") {
+  if (returnPage && returnPage !== "dispatch") {
     state.currentPage = returnPage;
     syncEntryFormVisibility(returnPage);
     window.history.replaceState(null, "", `${window.location.pathname}#${returnPage}`);
     render();
     return;
+  }
+
+  if (returnPage === "dispatch" && returnDispatchTab) {
+    state.currentPage = "dispatch";
+    state.dispatchTab = normalizeDispatchTabId(returnDispatchTab);
+    window.history.replaceState(null, "", `${window.location.pathname}#dispatch`);
   }
 
   render();
@@ -2479,29 +2607,37 @@ function openOrderEditor(orderId) {
   state.flaggingOrderId = "";
   state.transferringOrderId = "";
   state.editingOrderId = order.id;
-  state.orderEditReturnPage = state.currentPage && state.currentPage !== "entries" ? state.currentPage : "";
+  state.orderEditReturnPage = state.currentPage || "dispatch";
+  state.orderEditReturnDispatchTab = state.currentPage === "dispatch" && state.dispatchTab !== DEFAULT_DISPATCH_TAB
+    ? state.dispatchTab
+    : "";
+  state.currentPage = "dispatch";
+  state.dispatchTab = DEFAULT_DISPATCH_TAB;
   state.entryFormOpen = true;
 
-  if (state.currentPage === "entries") {
-    render();
-    focusOrderForm();
-    return;
-  }
-
-  setCurrentPage("entries");
+  window.history.replaceState(null, "", `${window.location.pathname}#dispatch`);
+  render();
   focusOrderForm();
 }
 
 function cancelOrderEdit() {
   const returnPage = state.orderEditReturnPage;
+  const returnDispatchTab = state.orderEditReturnDispatchTab;
   state.editingOrderId = "";
   state.orderEditReturnPage = "";
+  state.orderEditReturnDispatchTab = "";
   state.entryFormOpen = false;
 
-  if (returnPage && returnPage !== "entries") {
+  if (returnPage && returnPage !== "dispatch") {
     setCurrentPage(returnPage);
     void refreshSnapshot({ silent: true });
     return;
+  }
+
+  if (returnPage === "dispatch" && returnDispatchTab) {
+    state.currentPage = "dispatch";
+    state.dispatchTab = normalizeDispatchTabId(returnDispatchTab);
+    window.history.replaceState(null, "", `${window.location.pathname}#dispatch`);
   }
 
   render();
@@ -2514,7 +2650,8 @@ async function saveLocationAssignment(button, currentUser) {
     return;
   }
 
-  const group = getFilteredAssignmentLocationGroups().find((entry) => entry.key === groupKey);
+  const source = String(button.dataset.assignmentSource || "").trim();
+  const group = getAssignmentLocationGroupsForSource(source).find((entry) => entry.key === groupKey);
   if (!group || !group.orders.length) {
     return;
   }
@@ -3007,7 +3144,10 @@ function syncPostRenderUi() {
   void syncStockScannerUi();
 
   const currentUser = state.snapshot.user;
-  if (currentUser?.role === "admin" && state.currentPage === "drivers") {
+  if (currentUser?.role === "admin" && (
+    state.currentPage === "drivers"
+    || (state.currentPage === "dispatch" && state.dispatchTab === "drivers")
+  )) {
     drawAdminDriverLocationMap();
   }
 }
@@ -3412,6 +3552,7 @@ function buildFilteredLocationGroup(group, orders) {
     activeCount: orders.filter((order) => order.status === "active").length,
     completedCount: orders.filter((order) => order.status === "completed").length,
     priorityCount: orders.filter((order) => isPriorityOrder(order)).length,
+    laterCount: orders.filter((order) => isLaterRouteOrder(order)).length,
   };
 }
 
@@ -4710,12 +4851,10 @@ function getNavigationItems(role) {
   if (role === "admin") {
     return [
       { id: "dashboard", label: "Dashboard" },
-      { id: "entries", label: "Global List" },
-      { id: "assignments", label: "Assignments" },
+      { id: "dispatch", label: "Dispatch" },
       { id: "stock", label: "Stock" },
       { id: "network", label: "Network" },
       { id: "users", label: "Users" },
-      { id: "drivers", label: "Driver Lists" },
       { id: "guide", label: "Guide" },
     ];
   }
@@ -4723,10 +4862,8 @@ function getNavigationItems(role) {
   if (role === "sales") {
     return [
       { id: "dashboard", label: "Dashboard" },
-      { id: "entries", label: "Global List" },
-      { id: "assignments", label: "Assignments" },
+      { id: "dispatch", label: "Dispatch" },
       { id: "stock", label: "Stock" },
-      { id: "drivers", label: "Driver Lists" },
       { id: "guide", label: "Guide" },
     ];
   }
@@ -4753,18 +4890,43 @@ function getNavigationItems(role) {
   ];
 }
 
+function canUseDispatchWorkspace(role) {
+  return role === "admin" || role === "sales";
+}
+
+function isDispatchTabId(tabId) {
+  return DISPATCH_TABS.some((tab) => tab.id === tabId);
+}
+
+function normalizeDispatchTabId(tabId) {
+  const value = String(tabId || "").trim();
+  return isDispatchTabId(value) ? value : DEFAULT_DISPATCH_TAB;
+}
+
+function resolveNavigationTarget(pageId, role) {
+  const normalizedPageId = String(pageId || "").trim();
+  const legacyDispatchTab = LEGACY_DISPATCH_PAGE_TABS[normalizedPageId];
+  if (canUseDispatchWorkspace(role) && legacyDispatchTab) {
+    state.dispatchTab = legacyDispatchTab;
+    return "dispatch";
+  }
+
+  return normalizedPageId;
+}
+
 function syncEntryFormVisibility(pageId = state.currentPage) {
   const currentUser = state.snapshot.user;
   const canUseEntryForm = Boolean(
     currentUser
-    && (currentUser.role === "admin" || currentUser.role === "sales")
-    && pageId === "entries",
+    && canUseDispatchWorkspace(currentUser.role)
+    && resolveNavigationTarget(pageId, currentUser.role) === "dispatch",
   );
 
   if (!canUseEntryForm) {
     state.entryFormOpen = false;
     state.editingOrderId = "";
     state.orderEditReturnPage = "";
+    state.orderEditReturnDispatchTab = "";
   }
 
   if (
@@ -4773,6 +4935,7 @@ function syncEntryFormVisibility(pageId = state.currentPage) {
   ) {
     state.editingOrderId = "";
     state.orderEditReturnPage = "";
+    state.orderEditReturnDispatchTab = "";
   }
 }
 
@@ -4787,14 +4950,16 @@ function syncCurrentPage() {
 
   const items = getNavigationItems(currentUser.role);
   const pageIds = items.map((item) => item.id);
-  const hashPage = getHashPageId();
+  const hashPage = resolveNavigationTarget(getHashPageId(), currentUser.role);
+  const currentPage = resolveNavigationTarget(state.currentPage, currentUser.role);
   const nextPage = pageIds.includes(hashPage)
     ? hashPage
-    : pageIds.includes(state.currentPage)
-      ? state.currentPage
+    : pageIds.includes(currentPage)
+      ? currentPage
       : items[0].id;
 
   state.currentPage = nextPage;
+  state.dispatchTab = normalizeDispatchTabId(state.dispatchTab);
   syncEntryFormVisibility(nextPage);
   const targetHash = `#${nextPage}`;
   if (window.location.hash !== targetHash) {
@@ -4809,14 +4974,16 @@ function setCurrentPage(pageId) {
   }
 
   const items = getNavigationItems(currentUser.role);
-  if (!items.some((item) => item.id === pageId)) {
+  const targetPageId = resolveNavigationTarget(pageId, currentUser.role);
+  if (!items.some((item) => item.id === targetPageId)) {
     return;
   }
 
-  state.currentPage = pageId;
+  state.currentPage = targetPageId;
+  state.dispatchTab = normalizeDispatchTabId(state.dispatchTab);
   state.mobileNavOpen = false;
-  syncEntryFormVisibility(pageId);
-  window.history.replaceState(null, "", `${window.location.pathname}#${pageId}`);
+  syncEntryFormVisibility(targetPageId);
+  window.history.replaceState(null, "", `${window.location.pathname}#${targetPageId}`);
   render();
 }
 
@@ -4827,14 +4994,19 @@ function handleHashChange() {
   }
 
   const items = getNavigationItems(currentUser.role);
-  const hashPage = getHashPageId();
+  const hashPage = resolveNavigationTarget(getHashPageId(), currentUser.role);
   if (!items.some((item) => item.id === hashPage)) {
     return;
   }
 
   state.currentPage = hashPage;
+  state.dispatchTab = normalizeDispatchTabId(state.dispatchTab);
   state.mobileNavOpen = false;
   syncEntryFormVisibility(hashPage);
+  const targetHash = `#${hashPage}`;
+  if (window.location.hash !== targetHash) {
+    window.history.replaceState(null, "", `${window.location.pathname}${targetHash}`);
+  }
   render();
 }
 
@@ -5153,10 +5325,643 @@ function renderGuideListItem(item) {
   return `<li>${escapeHtml(String(item || "").trim())}</li>`;
 }
 
+function renderDispatchWorkspace(viewerRole) {
+  const activeTab = normalizeDispatchTabId(state.dispatchTab);
+  const liveDate = getLiveScheduleDate() || getCurrentLocalDateValue();
+  const liveOrders = getDispatchOrdersForDate(liveDate);
+  const liveActiveOrders = liveOrders.filter((order) => order.status === "active");
+  const liveCompletedOrders = liveOrders.filter((order) => order.status === "completed");
+  const liveUnassignedOrders = liveActiveOrders.filter((order) => !order.driverUserId);
+  const livePickedUpOrders = liveActiveOrders.filter((order) => isOrderPickedUp(order));
+  const livePriorityOrders = liveActiveOrders.filter((order) => isPriorityOrder(order));
+  const liveLaterOrders = liveActiveOrders.filter((order) => isLaterRouteOrder(order));
+
+  return `
+    <section class="dispatch-workspace">
+      <section class="dispatch-hero">
+        <div class="dispatch-hero-copy">
+          <p class="eyebrow">Dispatch</p>
+          <h2>Today's workbench</h2>
+          <p>Capture entries, assign unallocated work, review driver queues, and close out the live list without moving between separate dispatch pages.</p>
+        </div>
+        <div class="dispatch-quick-stats" aria-label="Dispatch summary">
+          ${renderDispatchStat("Live date", formatDateOnly(liveDate) || liveDate || "Not synced")}
+          ${renderDispatchStat("Open", liveActiveOrders.length)}
+          ${renderDispatchStat("Unassigned", liveUnassignedOrders.length)}
+          ${renderDispatchStat("Picked up", livePickedUpOrders.length)}
+          ${renderDispatchStat("Completed", liveCompletedOrders.length)}
+          ${renderDispatchStat("Priority", livePriorityOrders.length)}
+          ${renderDispatchStat("Later", liveLaterOrders.length)}
+        </div>
+      </section>
+      ${renderFlash()}
+      ${renderDispatchTabs(activeTab, {
+    today: liveOrders.length,
+    drivers: getDriverUsers().length,
+    unassigned: liveUnassignedOrders.length,
+    closeout: liveCompletedOrders.length,
+  })}
+      <section class="dispatch-tab-panel" aria-live="polite">
+        ${renderDispatchTabContent(activeTab, viewerRole)}
+      </section>
+    </section>
+  `;
+}
+
+function renderDispatchStat(label, value) {
+  return `
+    <div class="dispatch-stat">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+    </div>
+  `;
+}
+
+function renderDispatchTabs(activeTab, counts = {}) {
+  return `
+    <nav class="dispatch-tabs" aria-label="Dispatch tabs">
+      ${DISPATCH_TABS.map((tab) => {
+    const isActive = tab.id === activeTab;
+    const count = Object.prototype.hasOwnProperty.call(counts, tab.id) ? counts[tab.id] : "";
+    return `
+          <button
+            type="button"
+            class="dispatch-tab-button${isActive ? " is-active" : ""}"
+            data-action="set-dispatch-tab"
+            data-dispatch-tab="${escapeHtml(tab.id)}"
+            aria-current="${isActive ? "page" : "false"}"
+            ${state.busy ? " disabled" : ""}
+          >
+            <span>${escapeHtml(tab.label)}</span>
+            ${count !== "" ? `<strong>${escapeHtml(String(count))}</strong>` : ""}
+          </button>
+        `;
+  }).join("")}
+    </nav>
+  `;
+}
+
+function renderDispatchTabContent(activeTab, viewerRole) {
+  if (activeTab === "drivers") {
+    return renderDriverListOverview(viewerRole);
+  }
+
+  if (activeTab === "unassigned") {
+    return renderUnassignedDispatchPanel(viewerRole);
+  }
+
+  if (activeTab === "closeout") {
+    return renderDispatchCloseoutPanel(viewerRole);
+  }
+
+  const allowDuplicateOverride = viewerRole === "admin";
+  const subtitle = viewerRole === "admin"
+    ? "Leave the driver unassigned to queue work for later dispatch. Admins can still authorize duplicate quote entries or send a driver back to a stop completed earlier today."
+    : "Leave the driver unassigned to hold the work for later dispatch. Duplicate protection and completed-stop protection still apply when a driver is selected.";
+
+  return `
+    ${renderEntryComposerSection(state.snapshot.user, allowDuplicateOverride, subtitle)}
+    ${renderGlobalOrdersSection(viewerRole)}
+  `;
+}
+
+function renderUnassignedDispatchPanel(viewerRole) {
+  const unassignedOrders = getUnassignedActiveOrders().sort(orderAssignmentSort);
+  const locationGroups = getFilteredAssignmentLocationGroups(unassignedOrders);
+  const page = getPaginationData(locationGroups, "assignments", PAGE_SIZES.assignments);
+  const priorityCount = unassignedOrders.filter((order) => isPriorityOrder(order)).length;
+  const laterCount = unassignedOrders.filter((order) => isLaterRouteOrder(order)).length;
+
+  return `
+    <section class="table-card dispatch-allocation-panel">
+      <div class="table-toolbar">
+        <div class="stock-section-copy">
+          <p class="eyebrow">Unassigned</p>
+          <h3 class="panel-title">Ready to allocate</h3>
+          <p class="panel-subtitle">Only active entries without a driver appear here, grouped by pickup location so you can place a whole stop in one move.</p>
+          <p class="stock-results-note">
+            ${escapeHtml(`${unassignedOrders.length} unassigned entr${unassignedOrders.length === 1 ? "y" : "ies"} across ${locationGroups.length} pickup location${locationGroups.length === 1 ? "" : "s"}.`)}
+          </p>
+        </div>
+        <div class="chip-row dispatch-panel-chips">
+          <span class="chip chip-warning">${unassignedOrders.length} unassigned</span>
+          ${priorityCount ? `<span class="chip chip-priority-high">${priorityCount} priority</span>` : ""}
+          ${laterCount ? `<span class="chip chip-route-later">${laterCount} later</span>` : ""}
+        </div>
+      </div>
+      <div class="global-location-groups">
+        ${page.items.length
+      ? page.items.map((group) => renderAssignmentLocationGroup(group, viewerRole, { assignmentSource: "unassigned" })).join("")
+      : `<div class="empty-state">No unassigned active entries right now.</div>`
+    }
+      </div>
+      ${renderPaginationControls("assignments", page)}
+    </section>
+  `;
+}
+
+function renderDispatchCloseoutPanel(viewerRole) {
+  const dateStamp = getLiveScheduleDate() || getCurrentLocalDateValue();
+  const closeoutState = getDailyCloseoutState(dateStamp);
+  const {
+    orders,
+    activeOrders,
+    completedOrders,
+    unassignedOrders,
+    assignedOrders,
+    pickedUpOrders,
+    followUpOrders,
+    laterOrders,
+    deletedEntries,
+    rolloverCandidates,
+  } = closeoutState;
+  const closeoutRecord = getDailyCloseoutForDate(dateStamp);
+  const driverSummaries = getDispatchCloseoutDriverSummaries(orders);
+
+  return `
+    <section class="table-card dispatch-closeout-panel">
+      <div class="table-toolbar">
+        <div class="stock-section-copy">
+          <p class="eyebrow">Closeout</p>
+          <h3 class="panel-title">Live date summary</h3>
+          <p class="panel-subtitle">A snapshot of today's scheduled work using the same order data as the live list and driver queues.</p>
+          <p class="stock-results-note">${escapeHtml(formatDateOnly(dateStamp) || dateStamp || "Live date not synced")}</p>
+        </div>
+        <div class="action-row dispatch-closeout-actions">
+          <button
+            type="button"
+            class="button button-secondary"
+            data-action="export-dispatch-closeout-csv"
+            ${state.busy || !orders.length ? " disabled" : ""}
+          >
+            Export closeout CSV
+          </button>
+        </div>
+      </div>
+      ${renderDailyCloseoutStatus(closeoutRecord, dateStamp)}
+      <div class="dispatch-closeout-grid" aria-label="Closeout metrics">
+        ${renderDispatchStat("Scheduled", orders.length)}
+        ${renderDispatchStat("Active", activeOrders.length)}
+        ${renderDispatchStat("Completed", completedOrders.length)}
+        ${renderDispatchStat("Assigned", assignedOrders.length)}
+        ${renderDispatchStat("Unassigned", unassignedOrders.length)}
+        ${renderDispatchStat("Picked up", pickedUpOrders.length)}
+        ${renderDispatchStat("Follow-up", followUpOrders.length)}
+        ${renderDispatchStat("Later", laterOrders.length)}
+        ${renderDispatchStat("Deleted", deletedEntries.length)}
+      </div>
+      ${renderDailyCloseoutWorkflow(dateStamp, closeoutRecord, closeoutState, viewerRole)}
+      ${driverSummaries.length ? renderDispatchCloseoutDriverSummary(driverSummaries) : ""}
+      <div class="dispatch-closeout-lists">
+        ${renderCloseoutOrderList("Needs attention", [...unassignedOrders, ...followUpOrders].sort(orderAssignmentSort), "No unassigned or flagged active entries.")}
+        ${renderCloseoutOrderList("Still active", activeOrders.sort(orderAssignmentSort), "No active entries remain for the live date.")}
+        ${renderCloseoutOrderList("Rollover candidates", rolloverCandidates.sort(orderAssignmentSort), "No active entries need rollover review.")}
+        ${renderCloseoutOrderList("Completed", completedOrders.sort(orderDisplaySort), "No completed entries for the live date yet.")}
+        ${renderCloseoutDeletedList(deletedEntries)}
+      </div>
+    </section>
+  `;
+}
+
+function getDispatchOrdersForDate(dateStamp) {
+  return [...filterOrdersForScheduledDate(state.snapshot.orders, dateStamp)].sort(orderDisplaySort);
+}
+
+function getDailyCloseoutState(dateStamp) {
+  const orders = getDispatchOrdersForDate(dateStamp);
+  const activeOrders = orders.filter((order) => order.status === "active");
+  const completedOrders = orders.filter((order) => order.status === "completed");
+  const unassignedOrders = activeOrders.filter((order) => !order.driverUserId);
+  const assignedOrders = activeOrders.filter((order) => order.driverUserId);
+  const pickedUpOrders = activeOrders.filter((order) => isOrderPickedUp(order));
+  const notPickedUpOrders = activeOrders.filter((order) => !isOrderPickedUp(order));
+  const followUpOrders = activeOrders.filter((order) => getOrderFlagLabel(order));
+  const laterOrders = activeOrders.filter((order) => isLaterRouteOrder(order));
+  const rolloverCandidates = activeOrders.filter((order) => order.status === "active");
+  const deletedEntries = getCloseoutDeletedEntriesForDate(dateStamp);
+
+  return {
+    dateStamp,
+    orders,
+    activeOrders,
+    completedOrders,
+    unassignedOrders,
+    assignedOrders,
+    pickedUpOrders,
+    notPickedUpOrders,
+    followUpOrders,
+    laterOrders,
+    rolloverCandidates,
+    deletedEntries,
+  };
+}
+
+function getDailyCloseoutForDate(dateStamp) {
+  return state.snapshot.dailyCloseouts.find((closeout) => closeout.closeoutDate === dateStamp) || null;
+}
+
+function getCloseoutDeletedEntriesForDate(dateStamp) {
+  return state.snapshot.orderDeleteLog
+    .filter((entry) => String(entry.scheduledFor || "").trim() === dateStamp)
+    .sort((left, right) => String(right.deletedAt || "").localeCompare(String(left.deletedAt || "")));
+}
+
+function renderDailyCloseoutStatus(closeoutRecord, dateStamp) {
+  if (!closeoutRecord) {
+    return `
+      <section class="daily-closeout-status">
+        <div>
+          <p class="eyebrow">Closeout status</p>
+          <h4>Not started</h4>
+          <p>No saved closeout record exists for ${escapeHtml(formatDateOnly(dateStamp) || dateStamp)} yet.</p>
+        </div>
+        <span class="chip chip-warning">Draft needed</span>
+      </section>
+    `;
+  }
+
+  const isClosed = closeoutRecord.status === "closed";
+  const timestamp = isClosed ? closeoutRecord.closedAt : closeoutRecord.updatedAt;
+  const userName = isClosed
+    ? closeoutRecord.closedByName || closeoutRecord.updatedByName || "Unknown"
+    : closeoutRecord.updatedByName || closeoutRecord.createdByName || "Unknown";
+  const statusText = isClosed
+    ? `Closed by ${userName}${timestamp ? ` on ${formatDateTime(timestamp)}` : ""}.`
+    : `Draft last saved by ${userName}${timestamp ? ` on ${formatDateTime(timestamp)}` : ""}.`;
+  const reopenedText = closeoutRecord.reopenedAt
+    ? ` Reopened by ${closeoutRecord.reopenedByName || "Unknown"} on ${formatDateTime(closeoutRecord.reopenedAt)}.`
+    : "";
+
+  return `
+    <section class="daily-closeout-status${isClosed ? " is-closed" : ""}">
+      <div>
+        <p class="eyebrow">Closeout status</p>
+        <h4>${isClosed ? "Day closed" : "Draft in progress"}</h4>
+        <p>${escapeHtml(`${statusText}${reopenedText}`)}</p>
+      </div>
+      <span class="chip ${isClosed ? "chip-success" : "chip-warning"}">${isClosed ? "Closed" : "Draft"}</span>
+    </section>
+  `;
+}
+
+function renderDailyCloseoutWorkflow(dateStamp, closeoutRecord, closeoutState, viewerRole) {
+  const isClosed = closeoutRecord?.status === "closed";
+  const canClose = viewerRole === "admin";
+  const checklist = getDailyCloseoutChecklistForRender(closeoutRecord, closeoutState);
+  const complete = isDailyCloseoutChecklistComplete(checklist);
+  const notes = closeoutRecord?.notes || "";
+
+  return `
+    <form class="daily-closeout-form" data-form="daily-closeout">
+      <input type="hidden" name="closeoutDate" value="${escapeHtml(dateStamp)}">
+      <div class="daily-closeout-form-head">
+        <div>
+          <p class="eyebrow">Checklist</p>
+          <h4>End-of-day review</h4>
+          <p class="panel-subtitle">Save a draft while work is still moving, then close the day once every item has been reviewed.</p>
+        </div>
+        <div class="chip-row">
+          <span class="chip ${complete ? "chip-success" : "chip-warning"}">${complete ? "Checklist complete" : "Checklist open"}</span>
+          ${isClosed ? '<span class="chip chip-success">Locked</span>' : ""}
+        </div>
+      </div>
+      <div class="daily-closeout-checklist">
+        ${renderDailyCloseoutChecklistItem({
+    key: "unassignedReviewed",
+    label: "Unassigned work reviewed",
+    detail: `${closeoutState.unassignedOrders.length} unassigned active entr${closeoutState.unassignedOrders.length === 1 ? "y" : "ies"}.`,
+    count: closeoutState.unassignedOrders.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "activeReviewed",
+    label: "Open work reviewed",
+    detail: `${closeoutState.notPickedUpOrders.length} active entr${closeoutState.notPickedUpOrders.length === 1 ? "y has" : "ies have"} not been picked up.`,
+    count: closeoutState.notPickedUpOrders.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "pickedUpReviewed",
+    label: "Picked-up work reviewed",
+    detail: `${closeoutState.pickedUpOrders.length} picked-up active entr${closeoutState.pickedUpOrders.length === 1 ? "y is" : "ies are"} not completed.`,
+    count: closeoutState.pickedUpOrders.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "followUpsReviewed",
+    label: "Driver follow-ups reviewed",
+    detail: `${closeoutState.followUpOrders.length} active follow-up flag${closeoutState.followUpOrders.length === 1 ? "" : "s"}.`,
+    count: closeoutState.followUpOrders.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "laterReviewed",
+    label: "Later stops reviewed",
+    detail: `${closeoutState.laterOrders.length} later stop${closeoutState.laterOrders.length === 1 ? "" : "s"} still on the live date.`,
+    count: closeoutState.laterOrders.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "deletedReviewed",
+    label: "Deleted entries reviewed",
+    detail: `${closeoutState.deletedEntries.length} deleted entr${closeoutState.deletedEntries.length === 1 ? "y" : "ies"} logged for this scheduled date.`,
+    count: closeoutState.deletedEntries.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "rolloverReviewed",
+    label: "Rollover plan reviewed",
+    detail: `${closeoutState.rolloverCandidates.length} active entr${closeoutState.rolloverCandidates.length === 1 ? "y remains" : "ies remain"} for dispatch decision.`,
+    count: closeoutState.rolloverCandidates.length,
+  }, checklist, isClosed)}
+        ${renderDailyCloseoutChecklistItem({
+    key: "exportReviewed",
+    label: "Export or handover confirmed",
+    detail: "Daily CSV/export handoff has been checked or intentionally skipped.",
+    count: 0,
+  }, checklist, isClosed)}
+      </div>
+      <label class="daily-closeout-notes">
+        Closeout notes
+        <textarea name="notes" placeholder="Handover notes, blockers, exceptions, or why remaining work is still open." ${isClosed ? "readonly" : ""}>${escapeHtml(notes)}</textarea>
+      </label>
+      <div class="action-row daily-closeout-actions">
+        ${!isClosed
+      ? `
+            <button type="submit" class="button button-secondary" data-closeout-status="draft"${state.busy ? " disabled" : ""}>
+              Save draft
+            </button>
+            ${canClose
+        ? `
+                <button type="submit" class="button button-primary" data-closeout-status="closed"${state.busy ? " disabled" : ""}>
+                  Close day
+                </button>
+              `
+        : ""
+      }
+          `
+      : canClose
+        ? `
+              <button
+                type="button"
+                class="button button-secondary"
+                data-action="reopen-daily-closeout"
+                data-closeout-date="${escapeHtml(dateStamp)}"
+                ${state.busy ? " disabled" : ""}
+              >
+                Reopen closeout
+              </button>
+            `
+        : '<span class="muted">Closed by admin. Reopen is admin-only.</span>'
+    }
+      </div>
+    </form>
+  `;
+}
+
+function renderDailyCloseoutChecklistItem(item, checklist, disabled) {
+  const checked = Boolean(checklist[item.key]);
+  return `
+    <label class="daily-closeout-check">
+      <input
+        type="checkbox"
+        name="${escapeHtml(item.key)}"
+        ${checked ? " checked" : ""}
+        ${disabled ? " disabled" : ""}
+      >
+      <span class="daily-closeout-check-copy">
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.detail)}</span>
+      </span>
+      <span class="chip ${Number(item.count || 0) ? "chip-warning" : "chip-success"}">${Number(item.count || 0) ? item.count : "Clear"}</span>
+    </label>
+  `;
+}
+
+function getDailyCloseoutChecklistForRender(closeoutRecord, closeoutState) {
+  return {
+    ...getDefaultDailyCloseoutChecklist(closeoutState),
+    ...(closeoutRecord?.checklist || {}),
+  };
+}
+
+function getDefaultDailyCloseoutChecklist(closeoutState) {
+  return {
+    unassignedReviewed: closeoutState.unassignedOrders.length === 0,
+    activeReviewed: closeoutState.notPickedUpOrders.length === 0,
+    pickedUpReviewed: closeoutState.pickedUpOrders.length === 0,
+    followUpsReviewed: closeoutState.followUpOrders.length === 0,
+    laterReviewed: closeoutState.laterOrders.length === 0,
+    deletedReviewed: closeoutState.deletedEntries.length === 0,
+    rolloverReviewed: closeoutState.rolloverCandidates.length === 0,
+    exportReviewed: false,
+  };
+}
+
+function isDailyCloseoutChecklistComplete(checklist) {
+  return DAILY_CLOSEOUT_REQUIRED_CHECKS.every((key) => Boolean(checklist?.[key]));
+}
+
+function buildDailyCloseoutChecklistFromForm(form, closeoutState) {
+  const defaults = getDefaultDailyCloseoutChecklist(closeoutState);
+  return Object.fromEntries(
+    DAILY_CLOSEOUT_REQUIRED_CHECKS.map((key) => [key, defaults[key] || Boolean(form.querySelector(`[name="${key}"]:checked`))]),
+  );
+}
+
+function buildDailyCloseoutSummaryPayload(closeoutState) {
+  return {
+    date: closeoutState.dateStamp,
+    generatedAt: new Date().toISOString(),
+    scheduled: closeoutState.orders.length,
+    active: closeoutState.activeOrders.length,
+    completed: closeoutState.completedOrders.length,
+    assigned: closeoutState.assignedOrders.length,
+    unassigned: closeoutState.unassignedOrders.length,
+    pickedUp: closeoutState.pickedUpOrders.length,
+    notPickedUp: closeoutState.notPickedUpOrders.length,
+    followUp: closeoutState.followUpOrders.length,
+    later: closeoutState.laterOrders.length,
+    deleted: closeoutState.deletedEntries.length,
+    rolloverCandidates: closeoutState.rolloverCandidates.length,
+  };
+}
+
+function buildDailyCloseoutUnresolvedPayload(closeoutState) {
+  return {
+    unassignedOrderIds: closeoutState.unassignedOrders.map((order) => order.id),
+    activeOrderIds: closeoutState.activeOrders.map((order) => order.id),
+    pickedUpOrderIds: closeoutState.pickedUpOrders.map((order) => order.id),
+    followUpOrderIds: closeoutState.followUpOrders.map((order) => order.id),
+    laterOrderIds: closeoutState.laterOrders.map((order) => order.id),
+    rolloverCandidateOrderIds: closeoutState.rolloverCandidates.map((order) => order.id),
+    deletedLogIds: closeoutState.deletedEntries.map((entry) => entry.id),
+  };
+}
+
+function getDispatchCloseoutDriverSummaries(orders) {
+  const grouped = new Map();
+
+  orders.forEach((order) => {
+    const driverId = String(order.driverUserId || "").trim() || "__unassigned__";
+    if (!grouped.has(driverId)) {
+      grouped.set(driverId, {
+        id: driverId,
+        name: driverId === "__unassigned__" ? "Unassigned" : getDriverDisplayName(order),
+        active: 0,
+        completed: 0,
+        pickedUp: 0,
+        followUp: 0,
+      });
+    }
+
+    const summary = grouped.get(driverId);
+    if (order.status === "completed") {
+      summary.completed += 1;
+    } else {
+      summary.active += 1;
+    }
+
+    if (isOrderPickedUp(order)) {
+      summary.pickedUp += 1;
+    }
+
+    if (getOrderFlagLabel(order)) {
+      summary.followUp += 1;
+    }
+  });
+
+  return Array.from(grouped.values()).sort((left, right) => {
+    if (left.id === "__unassigned__") {
+      return -1;
+    }
+    if (right.id === "__unassigned__") {
+      return 1;
+    }
+    return left.name.localeCompare(right.name, "en-ZA", { sensitivity: "base" });
+  });
+}
+
+function renderDispatchCloseoutDriverSummary(driverSummaries) {
+  return `
+    <section class="dispatch-driver-summary" aria-label="Driver closeout summary">
+      ${driverSummaries.map((driver) => `
+        <article class="dispatch-driver-summary-row">
+          <strong>${escapeHtml(driver.name)}</strong>
+          <span>${escapeHtml(`${driver.active} active`)}</span>
+          <span>${escapeHtml(`${driver.completed} completed`)}</span>
+          ${driver.pickedUp ? `<span>${escapeHtml(`${driver.pickedUp} picked up`)}</span>` : ""}
+          ${driver.followUp ? `<span>${escapeHtml(`${driver.followUp} follow-up`)}</span>` : ""}
+        </article>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderCloseoutOrderList(title, orders, emptyText) {
+  const uniqueOrders = Array.from(new Map(orders.map((order) => [order.id, order])).values());
+
+  return `
+    <section class="closeout-list">
+      <div class="closeout-list-header">
+        <h4>${escapeHtml(title)}</h4>
+        <span class="chip">${uniqueOrders.length}</span>
+      </div>
+      ${uniqueOrders.length
+      ? uniqueOrders.map((order) => renderCloseoutOrderRow(order)).join("")
+      : `<div class="empty-state">${escapeHtml(emptyText)}</div>`
+    }
+    </section>
+  `;
+}
+
+function renderCloseoutOrderRow(order) {
+  const flagLabel = getOrderFlagLabel(order);
+
+  return `
+    <article class="closeout-order-row">
+      <div class="closeout-order-main">
+        <strong>${escapeHtml(getOrderPrimaryDisplay(order))}</strong>
+        <span>${renderOrderListReferenceSummary(order, "No extra references")}</span>
+      </div>
+      <div class="chip-row">
+        ${renderStatusChip(order.status)}
+        ${renderTypeChip(order.entryType)}
+        ${renderOrderPriorityChip(order)}
+        ${renderOrderRouteTimingChip(order)}
+        ${renderOrderPickupChip(order)}
+        ${order.driverUserId
+      ? `<span class="chip">${escapeHtml(getDriverDisplayName(order))}</span>`
+      : '<span class="chip chip-warning">Unassigned</span>'
+    }
+        ${flagLabel ? `<span class="chip chip-warning">${escapeHtml(flagLabel)}</span>` : ""}
+      </div>
+      <p>${escapeHtml(order.locationName || "Unknown pickup")} ${order.locationAddress ? `<span>${escapeHtml(order.locationAddress)}</span>` : ""}</p>
+    </article>
+  `;
+}
+
+function renderCloseoutDeletedList(deletedEntries) {
+  return `
+    <section class="closeout-list">
+      <div class="closeout-list-header">
+        <h4>Deleted entries</h4>
+        <span class="chip">${deletedEntries.length}</span>
+      </div>
+      ${deletedEntries.length
+      ? deletedEntries.map((entry) => renderCloseoutDeletedRow(entry)).join("")
+      : '<div class="empty-state">No deleted entries were logged for this scheduled date.</div>'
+    }
+    </section>
+  `;
+}
+
+function renderCloseoutDeletedRow(entry) {
+  const deletedBy = [entry.deletedByName || "Unknown", capitalize(entry.deletedByRole || "")].filter(Boolean).join(" / ");
+  const deletedAt = formatDateTime(entry.deletedAt) || "Unknown time";
+
+  return `
+    <article class="closeout-order-row closeout-deleted-row">
+      <div class="closeout-order-main">
+        <strong>${escapeHtml(getDeleteLogPrimaryDisplay(entry))}</strong>
+        <span>${renderDeletedEntryReferenceSummary(entry)}</span>
+      </div>
+      <div class="chip-row">
+        ${renderTypeChip(entry.entryType)}
+        ${entry.driverName ? `<span class="chip">${escapeHtml(entry.driverName)}</span>` : '<span class="chip chip-warning">Unassigned</span>'}
+        <span class="chip chip-warning">Deleted</span>
+      </div>
+      <p>${escapeHtml(entry.locationName || "Unknown pickup")} ${entry.locationAddress ? `<span>${escapeHtml(entry.locationAddress)}</span>` : ""}</p>
+      <p>${escapeHtml(`Deleted by ${deletedBy} on ${deletedAt}.`)}</p>
+    </article>
+  `;
+}
+
+function getDeleteLogPrimaryDisplay(entry) {
+  const quoteNumber = String(entry?.quoteNumber || "").trim();
+  if (quoteNumber) {
+    return `Inhouse ${quoteNumber}`;
+  }
+  const orderNumber = String(entry?.orderNumber || "").trim();
+  return orderNumber ? `Entry ${orderNumber}` : "Deleted entry";
+}
+
+function renderDeletedEntryReferenceSummary(entry) {
+  const lines = [
+    entry.salesOrderNumber ? `SO ${entry.salesOrderNumber}` : "",
+    entry.invoiceNumber ? `Invoice ${entry.invoiceNumber}` : "",
+    entry.poNumber ? `PO ${entry.poNumber}` : "",
+  ].filter(Boolean);
+
+  if (!lines.length) {
+    return '<span class="muted">No extra references</span>';
+  }
+
+  return lines.map((line) => `<span class="muted">${escapeHtml(line)}</span>`).join("<br>");
+}
+
 function renderAdminPageContent() {
   const activeOrders = getActiveOrders();
   const unassignedOrders = getUnassignedActiveOrders();
   const completedOrders = getCompletedOrders();
+
+  if (state.currentPage === "dispatch") {
+    return renderDispatchWorkspace("admin");
+  }
 
   if (state.currentPage === "entries") {
     return `
@@ -5257,12 +6062,10 @@ function renderAdminPageContent() {
       ${renderMetric("Completed entries", completedOrders.length)}
     </section>
     <section class="panel-grid">
-      ${renderPageSummaryCard("Global List", "Add new work and send, test, or download the CSV register.", "entries")}
-      ${renderPageSummaryCard("Assignments", "Allocate queued work to drivers and reassign active entries.", "assignments")}
+      ${renderPageSummaryCard("Dispatch", "Create work, review today's list, assign unassigned stops, and export closeout.", "dispatch")}
       ${renderPageSummaryCard("Stock", "Track stock, send artwork requests, and remove unused items before history exists.", "stock")}
       ${renderPageSummaryCard("Network", "Maintain pickup, factory, and client delivery locations.", "network")}
       ${renderPageSummaryCard("Users", "Manage admin, sales, driver, logistics, and maintenance accounts.", "users")}
-      ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
 }
@@ -5271,6 +6074,10 @@ function renderSalesPageContent() {
   const ordersCreated = countOrdersCreatedByCurrentUser();
   const activeOrders = getActiveOrders();
   const unassignedOrders = getUnassignedActiveOrders();
+
+  if (state.currentPage === "dispatch") {
+    return renderDispatchWorkspace("sales");
+  }
 
   if (state.currentPage === "entries") {
     return `
@@ -5344,10 +6151,8 @@ function renderSalesPageContent() {
       ${renderMetric("Unassigned", unassignedOrders.length)}
     </section>
     <section class="panel-grid">
-      ${renderPageSummaryCard("Global List", "Create new work and email, test, or download the CSV register.", "entries")}
-      ${renderPageSummaryCard("Assignments", "Assign queued work to drivers and rebalance active entries.", "assignments")}
+      ${renderPageSummaryCard("Dispatch", "Create entries, assign queued work, check drivers, and share the live CSV.", "dispatch")}
       ${renderPageSummaryCard("Stock", "Review what has arrived in stock without changing logistics records.", "stock")}
-      ${renderPageSummaryCard("Driver lists", "Review active work separated by driver.", "drivers")}
     </section>
   `;
 }
@@ -6633,7 +7438,7 @@ function renderEntryComposerSection(currentUser, allowDuplicateOverride, subtitl
     <section class="panel entry-composer">
       <div class="entry-composer-header">
         <div class="entry-composer-copy">
-          <p class="eyebrow">Global List</p>
+          <p class="eyebrow">Dispatch</p>
           <h3 class="panel-title">${isEditing ? "Edit entry" : "Create a new entry"}</h3>
           <p class="panel-subtitle">${escapeHtml(
     isEditing
@@ -7437,7 +8242,8 @@ function renderGlobalOrderRow(order, viewerRole) {
   `;
 }
 
-function renderAssignmentLocationGroup(group, viewerRole) {
+function renderAssignmentLocationGroup(group, viewerRole, options = {}) {
+  const assignmentSource = String(options.assignmentSource || "").trim();
   const locationRecord = getLocation(group.locationId) || {
     name: group.locationName,
     address: group.locationAddress,
@@ -7513,6 +8319,7 @@ function renderAssignmentLocationGroup(group, viewerRole) {
                   class="button button-primary"
                   data-action="save-location-assignment"
                   data-group-key="${escapeHtml(group.key)}"
+                  data-assignment-source="${escapeHtml(assignmentSource)}"
                   ${state.busy ? " disabled" : ""}
                 >
                   Save location
@@ -9045,6 +9852,14 @@ function getFilteredAssignmentLocationGroups(orders = getFilteredAssignmentOrder
     });
 }
 
+function getAssignmentLocationGroupsForSource(source = "") {
+  if (source === "unassigned") {
+    return getFilteredAssignmentLocationGroups(getUnassignedActiveOrders().sort(orderAssignmentSort));
+  }
+
+  return getFilteredAssignmentLocationGroups();
+}
+
 function getAssignmentLocationDriverLine(group) {
   const parts = group.driverSummaries.map((driver) => `${driver.name} (${driver.count})`);
   if (group.unassignedCount) {
@@ -10300,6 +11115,101 @@ function exportOrdersCsv() {
   anchor.remove();
   URL.revokeObjectURL(url);
   showFlash(`CSV export downloaded for ${formatDateOnly(dateStamp) || dateStamp}.`, "success");
+}
+
+function exportDispatchCloseoutCsv() {
+  const dateStamp = getLiveScheduleDate() || getCurrentLocalDateValue();
+  const closeoutState = getDailyCloseoutState(dateStamp);
+  if (!closeoutState.orders.length && !closeoutState.deletedEntries.length) {
+    showFlash(`There are no entries scheduled for ${formatDateOnly(dateStamp) || "the live date"} yet.`, "error");
+    return;
+  }
+
+  const csv = buildDispatchCloseoutCsvContent(closeoutState);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = `route-ledger-closeout-${dateStamp}.csv`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  showFlash(`Closeout CSV downloaded for ${formatDateOnly(dateStamp) || dateStamp}.`, "success");
+}
+
+function buildDispatchCloseoutCsvContent(closeoutState) {
+  const lineBreak = "\r\n";
+  const summary = buildDailyCloseoutSummaryPayload(closeoutState);
+  const summaryRows = [
+    ["Closeout summary", ""],
+    ["Date", formatDateOnly(closeoutState.dateStamp) || closeoutState.dateStamp],
+    ["Scheduled", summary.scheduled],
+    ["Active", summary.active],
+    ["Completed", summary.completed],
+    ["Assigned", summary.assigned],
+    ["Unassigned", summary.unassigned],
+    ["Picked up", summary.pickedUp],
+    ["Follow-up", summary.followUp],
+    ["Later", summary.later],
+    ["Deleted", summary.deleted],
+    ["Rollover candidates", summary.rolloverCandidates],
+    [],
+    ["Live entries"],
+  ];
+
+  const orderCsv = buildOrdersCsvContent(closeoutState.orders).replace(/^\uFEFFsep=,\r?\n/, "");
+  const deletedRows = [
+    [],
+    ["Deleted entries"],
+    [
+      "Inhouse order",
+      "Other references",
+      "Pickup location",
+      "Pickup address",
+      "Assigned driver",
+      "Entry type",
+      "Priority",
+      "Route timing",
+      "Status at delete",
+      "Created by",
+      "Created",
+      "Scheduled",
+      "Deleted by",
+      "Deleted at",
+      "Stock required",
+      "Notes",
+    ],
+    ...closeoutState.deletedEntries.map((entry) => [
+      getDeleteLogPrimaryDisplay(entry),
+      [
+        entry.salesOrderNumber ? `SO ${entry.salesOrderNumber}` : "",
+        entry.invoiceNumber ? `Invoice ${entry.invoiceNumber}` : "",
+        entry.poNumber ? `PO ${entry.poNumber}` : "",
+      ].filter(Boolean).join(" | "),
+      entry.locationName || "",
+      entry.locationAddress || "",
+      entry.driverName || "Unassigned",
+      capitalize(entry.entryType || ""),
+      capitalize(entry.priority || ""),
+      getOrderRouteTimingLabel(entry),
+      capitalize(entry.status || ""),
+      entry.createdByName || "",
+      formatDateTime(entry.createdAt),
+      formatDateOnly(entry.scheduledFor) || entry.scheduledFor || "",
+      [entry.deletedByName || "", capitalize(entry.deletedByRole || "")].filter(Boolean).join(" / "),
+      formatDateTime(entry.deletedAt),
+      entry.stockDescription || "",
+      entry.notes || "",
+    ]),
+  ];
+
+  return `\uFEFFsep=,${lineBreak}${summaryRows
+    .map((columns) => columns.map(escapeCsvValue).join(","))
+    .join(lineBreak)}${lineBreak}${orderCsv}${lineBreak}${deletedRows
+    .map((columns) => columns.map(escapeCsvValue).join(","))
+    .join(lineBreak)}`;
 }
 
 async function emailOrdersCsv() {
