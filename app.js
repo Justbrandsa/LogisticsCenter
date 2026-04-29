@@ -3760,10 +3760,18 @@ function matchesNetworkSearch(location, query = state.networkSearchQuery) {
     return true;
   }
 
+  const coordinates = getCoordinates(location);
+  const coordinateFields = coordinates
+    ? [
+      formatLocationCoordinate(coordinates.lat),
+      formatLocationCoordinate(coordinates.lng),
+    ]
+    : [];
   const fields = [
     location?.name,
     location?.locationType,
     location?.address,
+    ...coordinateFields,
     location?.contactPerson,
     location?.contactNumber,
   ]
@@ -7380,7 +7388,7 @@ function renderSupplierNetworkSection() {
         <div class="table-toolbar stock-table-toolbar">
           <div class="stock-section-copy">
             <p class="stock-results-note">${escapeHtml(getNetworkSearchSummary(filteredLocations.length, totalLocations))}</p>
-            <p class="network-search-hint">Search visible location fields as you type. Use multiple words to narrow the list by name, type, address, or contact.</p>
+            <p class="network-search-hint">Search visible location fields as you type. Use multiple words to narrow the list by name, type, address, coordinates, or contact.</p>
           </div>
           <label class="stock-search">
             Search locations
@@ -8440,13 +8448,18 @@ function renderSupplierRow(supplier) {
 }
 
 function renderLocationRow(location) {
+  const coordinateLine = getLocationCoordinateLine(location);
+
   return `
     <tr>
       <td data-label="Location">
         <strong>${escapeHtml(location.name)}</strong>
       </td>
       <td data-label="Location type">${escapeHtml(capitalize(location.locationType || ""))}</td>
-      <td data-label="Physical address">${escapeHtml(location.address)}</td>
+      <td data-label="Physical address">
+        ${escapeHtml(location.address)}<br>
+        <span class="muted">${escapeHtml(coordinateLine)}</span>
+      </td>
       <td data-label="Contact">${escapeHtml(location.contactPerson || "Not set")}<br><span class="muted">${escapeHtml(location.contactNumber || "Not set")}</span></td>
       <td data-label="Actions">
         <div class="action-row">
@@ -8460,6 +8473,21 @@ function renderLocationRow(location) {
       </td>
     </tr>
   `;
+}
+
+function getLocationCoordinateLine(location) {
+  const coordinates = getCoordinates(location);
+
+  if (!coordinates) {
+    return "Lat: Not set | Lon: Not set";
+  }
+
+  return `Lat: ${formatLocationCoordinate(coordinates.lat)} | Lon: ${formatLocationCoordinate(coordinates.lng)}`;
+}
+
+function formatLocationCoordinate(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(6) : "Not set";
 }
 
 function getReferenceLines(record) {
