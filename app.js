@@ -7796,7 +7796,7 @@ function renderGlobalOrdersSection(viewerRole) {
         </label>
         ${canExport
       ? `
-              <div class="action-row">
+              <div class="action-row global-list-actions">
                 ${viewerRole === "admin"
         ? `
                       <button
