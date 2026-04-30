@@ -4650,15 +4650,14 @@ tr:last-child td {
 
 @media (max-width: 760px) {
   .dispatch-workspace {
-    padding-bottom: calc(7rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
   }
 
   .dispatch-tabs {
-    position: fixed;
-    left: max(0.5rem, env(safe-area-inset-left));
-    right: max(0.5rem, env(safe-area-inset-right));
-    bottom: calc(1rem + env(safe-area-inset-bottom));
-    z-index: 120;
+    position: sticky;
+    top: 4.35rem;
+    z-index: 70;
+    order: -1;
   }
 
   .dispatch-tab-button {
